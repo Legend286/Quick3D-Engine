@@ -53,13 +53,13 @@ if(ENGINE_FETCHCONTENT AND NOT ENGINE_VENDORED_THIRDPARTY)
 
     # MikkTSpace - tangent-space generator.
     FetchContent_Declare(mikktspace
-        GIT_REPOSITORY https://github.com/mmmikk/mikktspace.git
-        GIT_TAG 757e781c)
+        GIT_REPOSITORY https://github.com/mmikk/MikkTSpace.git
+        GIT_TAG 3e895b4)
 
     # xatlas - UV/lightmap unwrap.
     FetchContent_Declare(xatlas
         GIT_REPOSITORY https://github.com/jpcy/xatlas.git
-        GIT_TAG 05a0695)
+        GIT_TAG f700c77)
 
     # tinygltf v2 (v3 is experimental; stay on v2 for stability).
     FetchContent_Declare(tinygltf
@@ -76,7 +76,7 @@ if(ENGINE_FETCHCONTENT AND NOT ENGINE_VENDORED_THIRDPARTY)
     # VHACD - convex decomposition.
     FetchContent_Declare(vhacd
         GIT_REPOSITORY https://github.com/Unity-Technologies/VHACD.git
-        GIT_TAG d720c7d)
+        GIT_TAG 854b3d8)
 
     # Jolt Physics v5 - used as C++ wrapped behind `extern "C"`.
     FetchContent_Declare(jolt
@@ -87,7 +87,7 @@ if(ENGINE_FETCHCONTENT AND NOT ENGINE_VENDORED_THIRDPARTY)
     # miniaudio - audio decoder + playback.
     FetchContent_Declare(miniaudio
         GIT_REPOSITORY https://github.com/mackron/miniaudio.git
-        GIT_TAG v0.11.25
+        GIT_TAG 0.11.25
         GIT_SHALLOW TRUE)
 
     FetchContent_MakeAvailable(flecs cglm mikktspace xatlas tinygltf basis_universal vhacd miniaudio)
