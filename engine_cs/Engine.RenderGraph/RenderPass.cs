@@ -46,6 +46,13 @@ public sealed class RenderGraphContext
     public System.Collections.Generic.Dictionary<ResourceHandle, RhiTexture> Textures { get; } = new();
     public System.Collections.Generic.Dictionary<ResourceHandle, RhiBuffer> Buffers { get; } = new();
 
+    // Logical frame dimensions (swapchain size in physical pixels). Set by
+    // RenderGraphExecutor.SetViewportSize before Execute runs so passes can
+    // pick the correct render-target viewport without re-reading the swapchain
+    // hand-bound by the Renderer.
+    public uint Width;
+    public uint Height;
+
     public bool TryGetTexture(ResourceHandle h, out RhiTexture t) => Textures.TryGetValue(h, out t!);
     public bool TryGetBuffer(ResourceHandle h, out RhiBuffer b) => Buffers.TryGetValue(h, out b!);
 }

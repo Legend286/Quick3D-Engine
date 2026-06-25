@@ -143,17 +143,17 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
     {
         if (!_resourcesReady) RebuildGeometry();
 
-        RhiTexture colorTarget = null!;
-        bool found = false;
-        foreach (var kv in context.Textures)
-        {
-            colorTarget = kv.Value;
-            found = true;
-            break;
-        }
-        if (!found) return;
+        // Bind the swapchain back-buffer explicitly by the sentinel handle
+        // the Renderer uses. Iterating context.Textures is incorrect: the
+        // handle table may be empty for passes that don't read the swapchain,
+        // and Dictionary iteration order is unstable when multiple textures
+        // are declared across passes.
+        if (!context.TryGetTexture(Engine.Game.Renderer.BackBufferHandle,
+                                   out RhiTexture colorTarget))
+            return;
 
-        (uint w, uint h) = (1280u, 720u);
+        uint w = context.Width  > 0 ? context.Width  : 1280;
+        uint h = context.Height > 0 ? context.Height : 720;
 
         sink.BeginRenderPass(colorTarget,
                              RhiNative.LoadOp.Clear,

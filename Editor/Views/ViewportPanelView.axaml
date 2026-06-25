@@ -1,14 +1,10 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="clr-namespace:Engine.Editor.ViewModels"
+             xmlns:views="clr-namespace:Engine.Editor.Views"
              x:Class="Engine.Editor.Views.ViewportPanelView"
              x:CompileBindings="False"
              x:DataType="vm:ViewportPanelViewModel"
              Background="#101418">
-    <Border BorderBrush="#3a4046" BorderThickness="1" Margin="6">
-        <Image Source="{Binding Frame}"
-               Stretch="UniformToFill"
-               HorizontalAlignment="Stretch"
-               VerticalAlignment="Stretch" />
-    </Border>
+    <views:ViewportMetalLayerHost x:Name="MetalHost" />
 </UserControl>

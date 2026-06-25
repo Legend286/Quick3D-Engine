@@ -67,6 +67,7 @@ public sealed class Renderer : IDisposable
     public void RenderFrame(RhiTexture backBuffer, uint width, uint height)
     {
         if (_plan is null || _executor is null) return;
+        _executor.SetViewportSize(width, height);
         _executor.BindSwapchain(backBuffer, BackBufferHandle,
                                  ResourceState.RenderTarget);
         _executor.Execute(_plan);

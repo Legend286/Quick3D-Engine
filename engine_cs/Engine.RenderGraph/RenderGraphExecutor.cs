@@ -34,6 +34,15 @@ public sealed class RenderGraphExecutor : ICommandSink
         _ctx.Textures[handle] = backBuffer;
     }
 
+    /// <summary>Publish the logical frame dimensions to the context so
+    /// passes can size their viewport/scissor without re-reading the
+    /// swapchain image (which carries no public width/height).</summary>
+    public void SetViewportSize(uint width, uint height)
+    {
+        _ctx.Width  = width  > 0 ? width  : 1;
+        _ctx.Height = height > 0 ? height : 1;
+    }
+
     /// <summary>Run the compiled graph: barriers (no-ops on Metal) → passes,
     /// then submit.</summary>
     public void Execute(RenderPlan graph)
