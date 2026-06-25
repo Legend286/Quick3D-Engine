@@ -15,7 +15,7 @@ public sealed class RhiBuffer : IDisposable
     internal RhiBuffer(IntPtr handle, ulong size)
     {
         Handle = handle;
-        Size   = size;
+        Size = size;
     }
 
     public static RhiBuffer Create(RhiDevice device, ulong size, RhiNative.BufferUsage usage)

@@ -15,21 +15,21 @@ public static partial class RhiNative
 
     public enum TextureFormat
     {
-        Undefined        = 0,
-        Rgba8Unorm       = 1,
-        Rgba8Srgb        = 2,
-        Rgba16Float      = 3,
-        Bgra8Unorm       = 4,
-        Depth32Float     = 5,
-        Depth24Stencil8  = 6,
+        Undefined = 0,
+        Rgba8Unorm = 1,
+        Rgba8Srgb = 2,
+        Rgba16Float = 3,
+        Bgra8Unorm = 4,
+        Depth32Float = 5,
+        Depth24Stencil8 = 6,
     }
 
     [Flags]
     public enum BufferUsage : uint
     {
-        None    = 0,
-        Vertex  = 1u << 0,
-        Index   = 1u << 1,
+        None = 0,
+        Vertex = 1u << 0,
+        Index = 1u << 1,
         Uniform = 1u << 2,
         Storage = 1u << 3,
     }
@@ -37,10 +37,10 @@ public static partial class RhiNative
     [Flags]
     public enum ShaderStage : uint
     {
-        None     = 0,
-        Vertex   = 1u << 0,
+        None = 0,
+        Vertex = 1u << 0,
         Fragment = 1u << 1,
-        Compute  = 1u << 2,
+        Compute = 1u << 2,
     }
 
     public enum LoadOp { Load = 0, Clear = 1, Discard = 2 }
@@ -48,20 +48,20 @@ public static partial class RhiNative
 
     public enum ResourceState
     {
-        Undefined        = 0,
-        RenderTarget     = 1,
-        DepthStencil     = 2,
-        ShaderRead       = 3,
-        UnorderedAccess  = 4,
-        CopySrc          = 5,
-        CopyDst          = 6,
-        Present          = 7,
+        Undefined = 0,
+        RenderTarget = 1,
+        DepthStencil = 2,
+        ShaderRead = 3,
+        UnorderedAccess = 4,
+        CopySrc = 5,
+        CopyDst = 6,
+        Present = 7,
     }
 
     public const uint TextureRenderTarget = 1u << 0;
-    public const uint TextureShaderRead    = 1u << 1;
-    public const uint TextureCopySrc       = 1u << 2;
-    public const uint TextureCopyDst       = 1u << 3;
+    public const uint TextureShaderRead = 1u << 1;
+    public const uint TextureCopySrc = 1u << 2;
+    public const uint TextureCopyDst = 1u << 3;
 
     // ---- structs (mirror C layouts; abi first, then fields) ----
 
@@ -173,6 +173,11 @@ public static partial class RhiNative
 
     [LibraryImport(Library, EntryPoint = "rhi_present")]
     public static partial int RhiPresent(IntPtr sc);
+
+    [LibraryImport(Library, EntryPoint = "rhi_swapchain_get_size")]
+    public static partial void RhiSwapchainGetSize(IntPtr sc,
+                                                   out uint outWidth,
+                                                   out uint outHeight);
 
     [LibraryImport(Library, EntryPoint = "rhi_create_buffer")]
     public static partial int RhiCreateBuffer(IntPtr device,

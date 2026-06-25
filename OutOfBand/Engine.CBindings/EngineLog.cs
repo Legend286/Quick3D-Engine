@@ -41,13 +41,13 @@ public static partial class EngineLog
         public IntPtr Name;               // const char*
     }
 
-    public const int EngineLogOff       = 0;
-    public const int EngineLogFatal     = 1;
-    public const int EngineLogError     = 2;
-    public const int EngineLogWarn      = 3;
-    public const int EngineLogInfo      = 4;
-    public const int EngineLogDebug     = 5;
-    public const int EngineLogTrace     = 6;
+    public const int EngineLogOff = 0;
+    public const int EngineLogFatal = 1;
+    public const int EngineLogError = 2;
+    public const int EngineLogWarn = 3;
+    public const int EngineLogInfo = 4;
+    public const int EngineLogDebug = 5;
+    public const int EngineLogTrace = 6;
 
     [LibraryImport("EngineC", EntryPoint = "engine_log_init")]
     public static partial int EngineLogInit(in EngineLogConfig config);
@@ -114,12 +114,12 @@ public static class EngineLogConfigBuilder
 
         return new Engine.CBindings.EngineLog.EngineLogConfig
         {
-            Abi                 = (uint)Marshal.SizeOf<Engine.CBindings.EngineLog.EngineLogConfig>(),
-            GlobalLevel         = globalLevel,
+            Abi = (uint)Marshal.SizeOf<Engine.CBindings.EngineLog.EngineLogConfig>(),
+            GlobalLevel = globalLevel,
             RingCapacityRecords = ringCapacityRecords,
-            MaxMsgBytes         = maxMsgBytes,
-            EnableCrashDump     = enableCrashDump ? 1 : 0,
-            CrashDumpPath       = pathPtr,
+            MaxMsgBytes = maxMsgBytes,
+            EnableCrashDump = enableCrashDump ? 1 : 0,
+            CrashDumpPath = pathPtr,
         };
     }
 }

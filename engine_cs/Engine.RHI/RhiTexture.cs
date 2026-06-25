@@ -14,7 +14,7 @@ public sealed class RhiTexture : IDisposable
     internal RhiTexture(IntPtr handle, bool ownsHandle)
     {
         Handle = handle;
-        _owns  = ownsHandle;
+        _owns = ownsHandle;
     }
 
     public static RhiTexture CreateRenderTarget(RhiDevice device, uint w, uint h,
@@ -39,7 +39,9 @@ public sealed class RhiTexture : IDisposable
         var desc = new RhiNative.TextureDesc
         {
             Abi = 1,
-            Width = w, Height = h, MipLevels = 1,
+            Width = w,
+            Height = h,
+            MipLevels = 1,
             Format = RhiNative.TextureFormat.Depth32Float,
             UsageFlags = RhiNative.TextureRenderTarget,
         };

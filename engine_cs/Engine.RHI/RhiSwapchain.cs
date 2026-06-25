@@ -10,17 +10,32 @@ public sealed class RhiSwapchain : IDisposable
 {
     private readonly RhiDevice _device;
     public IntPtr Handle { get; private set; }
-    public uint Width  { get; }
-    public uint Height { get; }
+    public uint Width
+    {
+        get
+        {
+            if (Handle == IntPtr.Zero) return 0;
+            RhiNative.RhiSwapchainGetSize(Handle, out uint w, out _);
+            return w;
+        }
+    }
+
+    public uint Height
+    {
+        get
+        {
+            if (Handle == IntPtr.Zero) return 0;
+            RhiNative.RhiSwapchainGetSize(Handle, out _, out uint h);
+            return h;
+        }
+    }
 
     internal RhiSwapchain(RhiDevice device, IntPtr osWindow, uint w, uint h)
     {
         _device = device;
         int rc = RhiNative.RhiCreateSwapchain(device.Handle, osWindow, w, h, out IntPtr sc);
         if (rc != 0) throw new InvalidOperationException($"rhi_create_swapchain rc={rc}");
-        Handle  = sc;
-        Width   = w;
-        Height  = h;
+        Handle = sc;
     }
 
     /// <summary>Acquire the next drawable as an <see cref="RhiTexture"/>.

@@ -47,7 +47,7 @@ public static class AvaloniaNativeWindowInterop
         var top = TopLevel.GetTopLevel(window);
         if (top is not null && top.RenderScaling > 0)
             scale = top.RenderScaling;
-        double w = window.Width  * scale;
+        double w = window.Width * scale;
         double h = window.Height * scale;
         if (w < 1) w = 1;
         if (h < 1) h = 1;
