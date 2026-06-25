@@ -99,7 +99,9 @@ endif()
 # ----------------------------------------------------------------------------
 
 add_library(EngineC
-    STATIC  # Static so the C# project via NativeReferences can link once.
+    SHARED  # dlopen'd at C# runtime via DllImport("EngineC") - the static
+            # NativeReferences path was retired when the binding csproj moved
+            # to <Content Include> of the dylib. .a would not satisfy P/Invoke.
     engine_c/engine_log.c
     engine_c/rhi/rhi_dispatch.c
 )
@@ -121,13 +123,25 @@ target_include_directories(EngineC
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/engine_c
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine_c/rhi)
 
-target_link_libraries(EngineC PRIVATE
-    cglm flecs mikktspace miniaudio)
+# EngineC's actual .c/.mm sources don't #include cglm/flecs/mikktspace/miniaudio -
+# those are reserved for future surface expansion in engine_cs/Game, not the
+# RHI/log C ABI. Linking them in here only forces cmake to materialize the
+# full FetchContent chain, which is expensive and currently breaks the SHARED
+# link ("ld: library 'cglm' not found"). Remove when those deps are wired
+# through engine_cs/* consumers.
+# target_link_libraries(EngineC PRIVATE cglm flecs mikktspace miniaudio)
 
 target_compile_options(EngineC PRIVATE
     -Wall -Wextra -Wpedantic
     -Wno-unused-parameter
     $<$<COMPILE_LANGUAGE:C>:-Wno-unused-variable -Wno-unused-function -Wno-implicit-fallthrough>)
+
+# Make dylib install_name portable so .NET Runtime (LibraryImport("EngineC"))
+# can resolve it through @rpath lookup, not a stale absolute build path.
+set_target_properties(EngineC PROPERTIES
+    MACOSX_RPATH ON
+    INSTALL_NAME_DIR "@rpath"
+    BUILD_RPATH   "@loader_path")
 
 # ----------------------------------------------------------------------------
 # Jolt Physics - thin C-export wrapper. Built in Phase 3 once the Jolt

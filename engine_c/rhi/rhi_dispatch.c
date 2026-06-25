@@ -26,6 +26,11 @@ void rhi_backend_register(const RhiBackend* backend) {
     }
 }
 
+/* Forward-declared so the dispatcher entry points below can call it without
+ * triggering ISO C99 implicit-function-declaration. Definition is at the
+ * bottom of this file. */
+static void rhi_ensure_default_backends(void);
+
 __attribute__((constructor))
 static void rhi_dispatch_init_log(void) {
     ENGINE_LOG_INFO("rhi", "dispatcher ready (registered=%u)", g_backend_count);
@@ -34,6 +39,7 @@ static void rhi_dispatch_init_log(void) {
 /* ----- Dispatcher entry points ----- */
 
 int32_t rhi_init(RhiDevice** out_device) {
+    rhi_ensure_default_backends();
     if (g_active < 0) {
         ENGINE_LOG_ERROR("rhi", "no backend registered (build rhi_metal.mm?)");
         return -1;
@@ -129,9 +135,17 @@ void rhi_cmd_dispatch(RhiEncoder* e, uint32_t gx, uint32_t gy, uint32_t gz) {
 }
 
 extern void rhi_metal_register(void);
+
+/* Lazy-register Metal on first rhi_init. The previous __attribute__((constructor))
+ * that ran at dylib-load time crashed under Avalonia on macOS with
+ * EXC_BAD_ACCESS(0x0) inside rhi_metal_register + 428 — Foundation /
+ * AppKit frameworks are still mid-initialization at static-init time on
+ * the Avalonia host, and the absolute pointer relocations the .mm TU emits
+ * into rhi_metal_register's call sequence are not yet valid. Calling into
+ * RHI from C# after AvaloniaMain is up is safe; constructors are not. */
+static void rhi_ensure_default_backends(void) {
+    if (g_backend_count > 0) return;   /* already registered (idempotent) */
 #ifdef __APPLE__
-__attribute__((constructor))
-static void rhi_register_default_backends(void) {
     rhi_metal_register();
-}
 #endif
+}

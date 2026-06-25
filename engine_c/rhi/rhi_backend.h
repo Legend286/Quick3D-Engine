@@ -4,6 +4,10 @@
 
 #include "rhi.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Backend vtable. Visible to BOTH the dispatcher (rhi_dispatch.c) and every
  * backend implementation (rhi_metal.mm, future rhi_vulkan.c). Each compiled-in
@@ -70,5 +74,9 @@ typedef struct RhiBackend {
 
 /* Backends call this at static-init time via constructor attribute. */
 void rhi_backend_register(const RhiBackend* backend);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 #endif /* ENGINE_RHI_BACKEND_H */
