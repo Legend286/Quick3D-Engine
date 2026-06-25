@@ -53,4 +53,19 @@ public static class AvaloniaNativeWindowInterop
         if (h < 1) h = 1;
         return ((uint)w, (uint)h);
     }
+
+    /// <summary>Allocate a child NSView hosting a CAMetalLayer-compatible
+    /// hierarchy under <paramref name="parent"/>. The view is autoreleased-
+    /// pool-managed; caller owns one strong reference until
+    /// <see cref="DestroyMacosMetalView"/> is invoked.</summary>
+    public static IntPtr CreateMacosMetalView(IntPtr parent, uint width, uint height)
+        => RhiNative.RhiCreateMacosMetalView(parent, width, height);
+
+    /// <summary>Release the NSView returned from
+    /// <see cref="CreateMacosMetalView"/>. Removes the child from its
+    /// superview and drops ARC's strong reference; safe to call from any
+    /// thread (the @autoreleasepool scope inside the .mm side strictly
+    /// contains the AppKit message dispatch).</summary>
+    public static void DestroyMacosMetalView(IntPtr view)
+        => RhiNative.RhiDestroyMacosMetalView(view);
 }

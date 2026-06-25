@@ -13,6 +13,14 @@
 // ivars. Caller frees via rhi_destroy_* which calls free() and lets ARC
 // release the underlying objects. Texture impls are allocated per
 // acquire_next_image - the consumer (executor / readback) is the owner.
+//
+// macOS embedding: a `CAMetalLayer` lives as a sublayer of an `NSView`
+// created via `rhi_create_macos_metal_view`. The C# Editor wires this up
+// through Avalonia's NativeControlHost, attaching the host to a panel so
+// `metal_create_swapchain` finds the NSView in the visual tree, attaches a
+// fresh CAMetalLayer as a sublayer, and CoreAnimation composites the drawn
+// drawables onto the screen. Autoresizing masks keep the sublayer bound to
+// the view's bounds; destroy_swapchain removes the sublayer.
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -152,22 +160,41 @@ static void metal_shutdown(RhiDevice* device) {
     delete di;  // ARC zeroes the ivars -> releases device and queue
 }
 
-static int32_t metal_create_swapchain(RhiDevice* d, void* os_win_handle,
+static int32_t metal_create_swapchain(RhiDevice* d, void* os_view_handle,
                                        uint32_t w, uint32_t h, RhiSwapchain** out) {
     @autoreleasepool {
         RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        NSWindow* win = (__bridge NSWindow*)os_win_handle;
-        if (!win) {
-            ENGINE_LOG_ERROR("rhi_metal", "swapchain needs an NSWindow*");
+        NSView* view = (__bridge NSView*)os_view_handle;
+        if (!view) {
+            ENGINE_LOG_ERROR("rhi_metal", "swapchain needs an NSView*");
             return -1;
+        }
+        // Ensure the host NSView has a root CALayer to attach CAMetalLayer to.
+        // Avalonia.Native's EmbeddableControlHost installs a CAHostedLayer on
+        // the NSView (so the framework can composite the hosted content with
+        // its surrounding native widgets). We DO NOT replace that layer -
+        // overriding it would break Avalonia's embed geometry. If the view
+        // has no layer yet (unhosted path), set wantsLayer so AppKit has a
+        // surface ready and the addSublayer below finds a parent to attach
+        // to. The CAMetalLayer sublayer slots into either tree unchanged.
+        view.wantsLayer = YES;
+        if (view.layer == nil) {
+            // AppKit is lazy on layer allocation when the view isn't yet in
+            // a window hierarchy; manufacture a vanilla root layer so the
+            // sublayer attach below isn't a no-op on nil.
+            view.layer = [CALayer layer];
         }
         CAMetalLayer* layer = [CAMetalLayer layer];
         layer.device      = di->device;
         layer.drawableSize = CGSizeMake((CGFloat)w, (CGFloat)h);
         layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         layer.framebufferOnly = YES;  // hi-perf path
-        win.contentView.wantsLayer = YES;
-        win.contentView.layer      = layer;
+        layer.frame = view.bounds;
+        // autoresizingMask keeps the sublayer locked to view.bounds when the
+        // host is resized; drawableSize is updated explicitly by the C# side
+        // (autoresizing does NOT propagate drawableSize on its own).
+        layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+        [view.layer addSublayer:layer];
         RhiSwapchainImpl* sc = new RhiSwapchainImpl();
         sc->layer       = layer;
         sc->drawable    = nil;
@@ -182,6 +209,14 @@ static int32_t metal_create_swapchain(RhiDevice* d, void* os_win_handle,
 static void metal_destroy_swapchain(RhiSwapchain* p) {
     if (!p) return;
     RhiSwapchainImpl* sc = reinterpret_cast<RhiSwapchainImpl*>(p);
+    @autoreleasepool {
+        // Detach CAMetalLayer from its parent view's layer hierarchy so a
+        // resize-driven destroy+create cycle doesn't stack up sublayers on
+        // the host view. ARC drops the NSView reference when our impl goes
+        // out of scope on Linux/Windows where there's no superview remove;
+        // Cocoa honors removeFromSuperlayer as the canonical cleanup.
+        [sc->layer removeFromSuperlayer];
+    }
     delete sc;
 }
 
@@ -532,6 +567,48 @@ static void metal_cmd_dispatch(RhiEncoder* enc, uint32_t gx, uint32_t gy, uint32
 }
 
 }  // anonymous namespace
+
+// ----- macOS embed helpers -----
+//
+// Allocates a fresh NSView whose frame matches the requested initial size,
+// adds it as a subview of the parent view, and returns the child NSView* with
+// one strong reference (__bridge_retained). The caller owns that reference
+// until rhi_destroy_macos_metal_view is invoked. The child NSView does NOT
+// carry a CAMetalLayer at creation time - that is installed later by
+// rhi_create_swapchain as a sublayer, which is the layer hierarchy Avalonia
+// expects to find when the host publishes a drawable to nextDrawable.
+//
+// The child NSView has autoresizingMask=Width|Height Sizable so AppKit
+// resizes it (and the autoresizingMask'd CAMetalLayer sublayer) when the
+// host's Bounds change.
+
+extern "C" void* metal_create_macos_metal_view(void* parent_view_handle,
+                                                uint32_t width, uint32_t height) {
+    @autoreleasepool {
+        NSView* parent = (__bridge NSView*)parent_view_handle;
+        if (!parent) {
+            ENGINE_LOG_ERROR("rhi_metal", "create_macos_metal_view: null parent");
+            return nullptr;
+        }
+        CGRect r = CGRectMake(0, 0, (CGFloat)width, (CGFloat)height);
+        NSView* metal_view = [[NSView alloc] initWithFrame:r];
+        metal_view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        metal_view.wantsLayer = YES;
+        [parent addSubview:metal_view];
+        return (__bridge_retained void*)metal_view;
+    }
+}
+
+extern "C" void metal_destroy_macos_metal_view(void* view_handle) {
+    @autoreleasepool {
+        NSView* view = (__bridge_transfer NSView*)view_handle;
+        if (!view) return;
+        [view removeFromSuperview];
+        // ARC zeroes viable references when the autorelease pool drains;
+        // we don't manually release because __bridge_transfer hands the
+        // retain count back to us.
+    }
+}
 
 extern "C" void rhi_metal_register(void) {
     RhiBackend b = {};

@@ -175,10 +175,33 @@ ENGINE_API void     rhi_shutdown(RhiDevice* device);
 
 /* ----- Swapchain ----- */
 
+/* os_window_handle is a platform surface handle. On macOS the Metal backend
+ * interprets it as an `NSView*` (the view into which a `CAMetalLayer` sublayer
+ * is attached). Win32 (Vulkan) treats it as HWND; X11/Linux treats it as
+ * xcb_window_t. Callers are expected to pass the platform-correct type
+ * matching this declaration's ABI.
+ */
 ENGINE_API int32_t  rhi_create_swapchain(RhiDevice* device,
                                          void* os_window_handle,
                                          uint32_t width, uint32_t height,
                                          RhiSwapchain** out_sc);
+
+/* ----- macOS Metal embed helpers -----
+ *
+ * rhi_create_macos_metal_view / rhi_destroy_macos_metal_view are Metal-only
+ * helpers used to embed a CAMetalLayer-bearing NSView inside an Avalonia
+ * NativeControlHost (or any other framework that needs a discrete, child
+ * NSView backed by a Metal layer). rhi_destroy_macos_metal_view removes the
+ * NSView from its superview and releases the layer; the returned void* from
+ * rhi_create_macos_metal_view is `__bridge_retained` so the caller owns one
+ * strong reference until destroy.
+ *
+ * On non-Apple platforms these return NULL / become no-ops. They are
+ * exported through the dispatcher for ABI uniformity.
+ */
+ENGINE_API void*    rhi_create_macos_metal_view(void* parent_view_handle,
+                                                uint32_t width, uint32_t height);
+ENGINE_API void     rhi_destroy_macos_metal_view(void* view_handle);
 ENGINE_API void     rhi_destroy_swapchain(RhiSwapchain* sc);
 ENGINE_API uint32_t rhi_acquire_next_image(RhiSwapchain* sc,
                                             RhiTexture** out_image);

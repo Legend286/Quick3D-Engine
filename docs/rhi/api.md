@@ -44,9 +44,31 @@ uint32_t rhi_acquire_next_image(RhiSwapchain*, RhiTexture** out_image);
 int32_t  rhi_present(RhiSwapchain*);
 ```
 
-`os_window_handle` is an `NSWindow*` on macOS. See
-`OutOfBand/Engine.CBindings/AvaloniaNativeWindowInterop.cs` for the C#
-side that resolves the pointer reflectively.
+`os_window_handle` is an opaque platform surface pointer. On macOS the
+Metal backend interprets it as an `NSView*` and attaches a
+`CAMetalLayer` as a sublayer of the view's `layer`. Native Win32
+(Vulkan) treats it as `HWND`; X11 Linux treats it as
+`xcb_window_t`. The Editor wires up the macOS case via the embed
+helpers listed below.
+
+### macOS Metal embed helpers
+
+```c
+void* rhi_create_macos_metal_view(void* parent_view_handle,
+                                    uint32_t width, uint32_t height);
+void  rhi_destroy_macos_metal_view(void* view_handle);
+```
+
+These allocate and release an `NSView` that hosts a
+`CAMetalLayer`-compatible layer hierarchy. Used by the Editor
+to embed a Metal-backed surface inside an Avalonia
+`NativeControlHost`. The returned `void*` carries one strong
+reference (`__bridge_retained`); the caller owns that
+reference until `rhi_destroy_macos_metal_view` is invoked.
+On non-Apple platforms these return `NULL` / become no-ops.
+
+See `OutOfBand/Engine.CBindings/AvaloniaNativeWindowInterop.cs`
+for the C# wrappers and the platform-handle reflective lookups.
 
 ### Resources
 
@@ -113,10 +135,16 @@ output on Metal.
 
 The Avalonia viewport panel calls:
 
-1. `AvaloniaNativeWindowInterop.GetMacOsWindowPointer(window)` -> `IntPtr`
-2. `new RhiDevice()` -> calls `rhi_init` (Metal)
-3. `device.CreateSwapchain(nsWindow, w, h)` -> `rhi_create_swapchain`
+1. `ViewportMetalLayerHost` instantiates a child `NSView` via
+   `AvaloniaNativeWindowInterop.CreateMacosMetalView(parent, w, h)`
+   -> `rhi_create_macos_metal_view`.
+2. `new RhiDevice()` -> calls `rhi_init` (Metal).
+3. `device.CreateSwapchain(nsView, w, h)` -> `rhi_create_swapchain`
+   attaches a `CAMetalLayer` sublayer to the host `NSView`.
 4. `swap.TryAcquireNextImage(out image)` -> `rhi_acquire_next_image`
-5. `renderer.RenderFrame(image)` (pass graph compiles each frame)
-6. `image.Readback(...)` -> `rhi_texture_readback`
-7. `swap.Present()` -> `rhi_present`
+   returns a fresh `CAMetalDrawable` backed by a `MTLTexture`.
+5. `renderer.RenderFrame(image, w, h)` compiles/runs the pass graph
+   once per frame; hello-triangle encodes the draw on the
+   back-buffer acquired in (4).
+6. `swap.Present()` -> `rhi_present` (commits the command buffer
+   and CoreAnimation flips the drawable at the next vsync).

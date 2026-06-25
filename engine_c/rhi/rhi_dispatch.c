@@ -136,6 +136,35 @@ void rhi_cmd_dispatch(RhiEncoder* e, uint32_t gx, uint32_t gy, uint32_t gz) {
 
 extern void rhi_metal_register(void);
 
+/* macOS-only embed helpers. The implementations live in rhi_metal.mm; non-Apple
+ * builds get the no-op forwarder below so the C ABI surface stays uniform
+ * across platforms. */
+#ifdef __APPLE__
+extern void* metal_create_macos_metal_view(void* parent_view_handle,
+                                            uint32_t width, uint32_t height);
+extern void  metal_destroy_macos_metal_view(void* view_handle);
+#endif
+
+ENGINE_API void* rhi_create_macos_metal_view(void* parent_view_handle,
+                                             uint32_t width, uint32_t height) {
+#ifdef __APPLE__
+    return metal_create_macos_metal_view(parent_view_handle, width, height);
+#else
+    (void)parent_view_handle;
+    (void)width;
+    (void)height;
+    return NULL;
+#endif
+}
+
+ENGINE_API void rhi_destroy_macos_metal_view(void* view_handle) {
+#ifdef __APPLE__
+    metal_destroy_macos_metal_view(view_handle);
+#else
+    (void)view_handle;
+#endif
+}
+
 /* Lazy-register Metal on first rhi_init. The previous __attribute__((constructor))
  * that ran at dylib-load time crashed under Avalonia on macOS with
  * EXC_BAD_ACCESS(0x0) inside rhi_metal_register + 428 — Foundation /

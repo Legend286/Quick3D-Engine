@@ -211,6 +211,20 @@ public static partial class RhiNative
     [LibraryImport(Library, EntryPoint = "rhi_destroy_pipeline")]
     public static partial void RhiDestroyPipeline(IntPtr p);
 
+    // ---- macOS embed helpers ----
+    //
+    // rhi_create_macos_metal_view / rhi_destroy_macos_metal_view allocate +
+    // destroy a child NSView suitable for hosting a CAMetalLayer sublayer
+    // inside an Avalonia NativeControlHost. P/Invoke surface mirrors the
+    // ENGINE_API C ABI; see engine_c/rhi/rhi.h.
+
+    [LibraryImport(Library, EntryPoint = "rhi_create_macos_metal_view")]
+    public static partial IntPtr RhiCreateMacosMetalView(IntPtr parentViewHandle,
+                                                          uint width, uint height);
+
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_macos_metal_view")]
+    public static partial void RhiDestroyMacosMetalView(IntPtr viewHandle);
+
     [LibraryImport(Library, EntryPoint = "rhi_buffer_upload")]
     public static partial int RhiBufferUpload(IntPtr buf,
                                                IntPtr data,
