@@ -5,12 +5,15 @@
         x:Class="Engine.Editor.MainWindow"
         x:DataType="vm:MainWindowViewModel"
         Width="1280" Height="800"
+        MinWidth="800" MinHeight="500"
+        FontFamily="-apple-system,Segoe UI,Helvetica,Arial,sans-serif"
+        FontSize="13"
         Title="End Engine — Editor">
 
-  <Grid RowDefinitions="Auto,*,Auto" ColumnDefinitions="Auto,*,Auto">
+  <Grid RowDefinitions="Auto,*,Auto" ColumnDefinitions="Auto,4,*,4,Auto">
 
     <!-- Top menu bar -->
-    <Menu Grid.Row="0" Grid.ColumnSpan="3">
+    <Menu Grid.Row="0" Grid.ColumnSpan="5" FontSize="13">
       <MenuItem Header="_File">
         <MenuItem Header="_Open Project…" />
         <MenuItem Header="_Save" />
@@ -35,46 +38,91 @@
       </MenuItem>
     </Menu>
 
-    <!-- Left rail: hierarchy / inspector -->
-    <TabControl Grid.Row="1" Grid.Column="0" Width="260" Margin="4">
+    <!-- Left rail: Hierarchy / Inspector -->
+    <TabControl Grid.Row="1" Grid.Column="0"
+                MinWidth="200" MaxWidth="480"
+                Margin="4">
       <TabItem Header="Hierarchy">
-        <Border Padding="8"><TextBlock Text="(empty - Phase 1)" /></Border>
+        <Border Padding="8">
+          <TextBlock Text="(empty - Phase 1)" FontSize="13" />
+        </Border>
       </TabItem>
       <TabItem Header="Inspector">
-        <Border Padding="8"><TextBlock Text="(empty - Phase 1)" /></Border>
+        <Border Padding="8">
+          <TextBlock Text="(empty - Phase 1)" FontSize="13" />
+        </Border>
       </TabItem>
     </TabControl>
 
-    <!-- Center: viewport + dockable panels below it -->
-    <DockPanel Grid.Row="1" Grid.Column="1" Margin="4" LastChildFill="True">
-      <TabControl DockPanel.Dock="Bottom" Height="200">
+    <!-- Drag handle between left rail and viewport -->
+    <GridSplitter Grid.Row="1" Grid.Column="1"
+                  Width="4"
+                  HorizontalAlignment="Stretch"
+                  ResizeDirection="Columns"
+                  ShowsPreview="True"
+                  Background="#1c1f24" />
+
+    <!-- Center: viewport on top, dockable consoles on the bottom, drag handle
+         between them. Shrinking/expanding the consoles expands the viewport. -->
+    <Grid Grid.Row="1" Grid.Column="2" Margin="4"
+          RowDefinitions="*,4,Auto">
+      <views:ViewportPanelView Grid.Row="0" DataContext="{Binding ViewportVm}" />
+
+      <GridSplitter Grid.Row="1"
+                    Height="4"
+                    HorizontalAlignment="Stretch"
+                    ResizeDirection="Rows"
+                    ShowsPreview="True"
+                    Background="#1c1f24" />
+
+      <TabControl Grid.Row="2"
+                  MinHeight="80" MaxHeight="480"
+                  Height="200">
         <TabItem Header="Console">
           <views:ConsolePanelView DataContext="{Binding ConsoleVm}" />
         </TabItem>
         <TabItem Header="Profiler">
-          <Border Padding="8"><TextBlock Text="(empty - Phase 4)" /></Border>
+          <Border Padding="8">
+            <TextBlock Text="(empty - Phase 4)" FontSize="13" />
+          </Border>
         </TabItem>
         <TabItem Header="Localization">
-          <Border Padding="8"><TextBlock Text="(empty - Phase 4)" /></Border>
+          <Border Padding="8">
+            <TextBlock Text="(empty - Phase 4)" FontSize="13" />
+          </Border>
         </TabItem>
       </TabControl>
+    </Grid>
 
-      <views:ViewportPanelView DataContext="{Binding ViewportVm}" />
-    </DockPanel>
+    <!-- Drag handle between viewport and right rail -->
+    <GridSplitter Grid.Row="1" Grid.Column="3"
+                  Width="4"
+                  HorizontalAlignment="Stretch"
+                  ResizeDirection="Columns"
+                  ShowsPreview="True"
+                  Background="#1c1f24" />
 
-    <!-- Right rail: asset browser -->
-    <TabControl Grid.Row="1" Grid.Column="2" Width="280" Margin="4">
+    <!-- Right rail: Assets / Source Control -->
+    <TabControl Grid.Row="1" Grid.Column="4"
+                MinWidth="200" MaxWidth="480"
+                Margin="4">
       <TabItem Header="Assets">
-        <Border Padding="8"><TextBlock Text="(empty - Phase 2)" /></Border>
+        <Border Padding="8">
+          <TextBlock Text="(empty - Phase 2)" FontSize="13" />
+        </Border>
       </TabItem>
       <TabItem Header="Source Control">
-        <Border Padding="8"><TextBlock Text="(empty - Phase 5)" /></Border>
+        <Border Padding="8">
+          <TextBlock Text="(empty - Phase 5)" FontSize="13" />
+        </Border>
       </TabItem>
     </TabControl>
 
     <!-- Status bar -->
-    <Border Grid.Row="2" Grid.ColumnSpan="3" Background="#1c1f24" Padding="8,4">
-      <TextBlock Text="{Binding StatusText}" Foreground="#aab0b6" />
+    <Border Grid.Row="2" Grid.ColumnSpan="5"
+            Background="#1c1f24" Padding="8,4">
+      <TextBlock Text="{Binding StatusText}"
+                 Foreground="#aab0b6" FontSize="12" />
     </Border>
   </Grid>
 </Window>

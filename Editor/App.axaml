@@ -4,5 +4,16 @@
              RequestedThemeVariant="Dark">
   <Application.Styles>
     <FluentTheme />
+    <!-- Win the type-rhythm battle against FluentTheme's per-control
+         FontSize defaults. Without these selectors Button/MenuItem/TabItem
+         pick up the theme's larger size on macOS, and the editor reads
+         as 'giant text'. Anchoring to 13 keeps a single typographic
+         scale across the whole editor shell. -->
+    <Style Selector="Window">
+      <Setter Property="FontSize" Value="13" />
+    </Style>
+    <Style Selector=":is(Button), :is(MenuItem), :is(TabItem)">
+      <Setter Property="FontSize" Value="13" />
+    </Style>
   </Application.Styles>
 </Application>
