@@ -122,7 +122,14 @@ public sealed class CommandRecorder : IDisposable
             {
                 EngineLog.LogError("command_recorder", $"auto-submit failed: {ex.Message}");
             }
+            _submitted = true;
         }
         GC.SuppressFinalize(this);
     }
+
+    /// <summary>Safety net: if the caller forgets Dispose(), the finalizer
+    /// thread still submits the MTLCommandBuffer before GC reclaims the
+    /// recorded Rhi* handles. Targets the common LLM mistake of letting
+    /// command buffers linger without commit.</summary>
+    ~CommandRecorder() => Dispose();
 }

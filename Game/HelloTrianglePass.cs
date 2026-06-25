@@ -185,12 +185,23 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
 
     public void Dispose()
     {
+        // _vs, _fs, _pipeline are `readonly` (assigned exactly once in the
+        // constructor). Only the mutable _posBuffer / _colBuffer fields can
+        // be nulled here. Nulling them guards the finalizer against
+        // re-disposing a buffer that was already dropped via Dispose().
         _posBuffer?.Dispose();
         _colBuffer?.Dispose();
         _pipeline?.Dispose();
         _vs?.Dispose();
         _fs?.Dispose();
+        _posBuffer = null;
+        _colBuffer = null;
     }
+
+    /// <summary>Safety net: see <see cref="RhiBuffer"/>. Drops the partial
+    /// RHI handle set if a constructor exception escaped without Dispose().
+    /// </summary>
+    ~HelloTrianglePass() => Dispose();
 }
 
 internal struct MeshData

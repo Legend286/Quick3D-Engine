@@ -48,7 +48,16 @@ public sealed class RhiBuffer : IDisposable
     public void Dispose()
     {
         if (Handle == IntPtr.Zero) return;
-        RhiNative.RhiDestroyBuffer(Handle);
+        // Zero the Handle field BEFORE invoking the native destroy so a
+        // failed/partial C-side free doesn't get repeated by the finalizer.
+        var h = Handle;
+        Handle = IntPtr.Zero;
+        RhiNative.RhiDestroyBuffer(h);
         GC.SuppressFinalize(this);
     }
+
+    /// <summary>Safety net: if the caller forgets Dispose(), the finalizer
+    /// thread still drops the native MTLBuffer before GC reclaims. Targets
+    /// the common LLM mistake of creating Rhi* without pairing dispose.</summary>
+    ~RhiBuffer() => Dispose();
 }

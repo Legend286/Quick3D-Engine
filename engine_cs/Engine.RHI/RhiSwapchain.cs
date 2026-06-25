@@ -39,7 +39,14 @@ public sealed class RhiSwapchain : IDisposable
     public void Dispose()
     {
         if (Handle == IntPtr.Zero) return;
-        RhiNative.RhiDestroySwapchain(Handle);
+        // Zero the Handle field BEFORE invoking the native destroy so a
+        // failed/partial C-side free doesn't get repeated by the finalizer.
+        var h = Handle;
+        Handle = IntPtr.Zero;
+        RhiNative.RhiDestroySwapchain(h);
         GC.SuppressFinalize(this);
     }
+
+    /// <summary>Safety net: see <see cref="RhiBuffer"/>.</summary>
+    ~RhiSwapchain() => Dispose();
 }

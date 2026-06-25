@@ -69,7 +69,14 @@ public sealed class RhiTexture : IDisposable
     public void Dispose()
     {
         if (Handle == IntPtr.Zero || !_owns) return;
-        RhiNative.RhiDestroyTexture(Handle);
+        // Zero the Handle field BEFORE invoking the native destroy so a
+        // failed/partial C-side free doesn't get repeated by the finalizer.
+        var h = Handle;
+        Handle = IntPtr.Zero;
+        RhiNative.RhiDestroyTexture(h);
         GC.SuppressFinalize(this);
     }
+
+    /// <summary>Safety net: see <see cref="RhiBuffer"/>.</summary>
+    ~RhiTexture() => Dispose();
 }
