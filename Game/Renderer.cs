@@ -22,7 +22,6 @@ public sealed class Renderer : IDisposable
     private SceneLoader? _loader;
     private string _contentRoot = "Content";
 
-    private RenderGraphExecutor? _executor;
     private RenderPlan? _plan;
 
     /// <summary>Sentinel handle on which the executor binds the swapchain
@@ -55,29 +54,24 @@ public sealed class Renderer : IDisposable
         // where neither old nor new graph is reachable.
         var previous = _plan;
         var newPlan = new RenderGraphCompiler().Compile(passes);
-        _plan     = newPlan;
-        _executor = new RenderGraphExecutor(_device);  // unconditional
-                                                       // - we MUST drop the
-                                                       // old executor's
-                                                       // CommandRecorder.
-
+        _plan = newPlan;
         previous?.Passes?.DisposeAll();
     }
 
     public void RenderFrame(RhiTexture backBuffer, uint width, uint height)
     {
-        if (_plan is null || _executor is null) return;
-        _executor.SetViewportSize(width, height);
-        _executor.BindSwapchain(backBuffer, BackBufferHandle,
-                                 ResourceState.RenderTarget);
-        _executor.Execute(_plan);
+        if (_plan is null) return;
+        using var executor = new RenderGraphExecutor(_device);
+        executor.SetViewportSize(width, height);
+        executor.BindSwapchain(backBuffer, BackBufferHandle,
+                                ResourceState.RenderTarget);
+        executor.Execute(_plan);
     }
 
     public void Dispose()
     {
         _plan?.Passes?.DisposeAll();
         _plan = null;
-        _executor = null;
         _loader = null;
     }
 }

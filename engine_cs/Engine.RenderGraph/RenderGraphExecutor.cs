@@ -7,12 +7,13 @@
 // from graph declarations any more due to a conflict between the pass's
 // own creation and the executor's first-time auto-create.
 
+using System;
 using Engine.CBindings;
 using Engine.RHI;
 
 namespace Engine.RenderGraph;
 
-public sealed class RenderGraphExecutor : ICommandSink
+public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 {
     private readonly RhiDevice _device;
     private readonly CommandRecorder _rec;
@@ -77,4 +78,9 @@ public sealed class RenderGraphExecutor : ICommandSink
     public void Draw(uint vertexCount, uint instanceCount = 1,
                      uint firstVertex = 0, uint firstInstance = 0)
         => _rec.Draw(vertexCount, instanceCount, firstVertex, firstInstance);
+
+    public void Dispose()
+    {
+        _rec.Dispose();
+    }
 }

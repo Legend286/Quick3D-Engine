@@ -59,7 +59,7 @@ public sealed class RenderGraphCompiler
             var list = barrierLists[i];
             foreach (var access in passAccesses[i])
             {
-                var prior = currentStates[access.Resource];
+                var prior = currentStates.GetValueOrDefault(access.Resource, ResourceState.Undefined);
                 if (prior != access.State)
                 {
                     list.Add(new BarrierDecl(access.Resource, prior, access.State));
