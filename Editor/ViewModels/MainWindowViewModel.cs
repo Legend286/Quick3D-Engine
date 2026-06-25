@@ -20,7 +20,8 @@ public partial class MainWindowViewModel : ObservableObject
     {
         if (OperatingSystem.IsMacOS())
         {
-            ViewportVm = new ViewportPanelViewModel(contentRoot: "Content", sceneName: "hello");
+            string contentRoot = System.IO.Path.Combine(App.ProjectRoot, "Content");
+            ViewportVm = new ViewportPanelViewModel(contentRoot: contentRoot, sceneName: "hello");
         }
     }
 

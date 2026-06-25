@@ -10,6 +10,8 @@ namespace Engine.Editor;
 
 public partial class App : Application
 {
+    public static string ProjectRoot { get; internal set; } = "";
+
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
@@ -29,19 +31,21 @@ public partial class App : Application
 /// <summary>
 /// Initialises engine_log from the .eeproj/modules.json#logging block. Falls
 /// back to INFO on missing config per docs/console/logging-config.md.
+/// </summary>
 internal static class EngineLogBootstrap
 {
     public static void InitFromProject(string[] args)
     {
         var projectRoot = ResolveProjectRoot(args);
+        App.ProjectRoot = projectRoot;
         var logging = ModulesJsonLoggingReader.Read(projectRoot);
 
         var config = EngineLogConfigBuilder.Build(
-            globalLevel:          logging.GlobalLevel,
-            ringCapacityRecords:  logging.RingCapacity,
-            maxMsgBytes:          logging.MaxMsgBytes,
-            enableCrashDump:      logging.EnableCrashDump,
-            crashDumpPath:        logging.CrashDumpPath);
+            globalLevel: logging.GlobalLevel,
+            ringCapacityRecords: logging.RingCapacity,
+            maxMsgBytes: logging.MaxMsgBytes,
+            enableCrashDump: logging.EnableCrashDump,
+            crashDumpPath: logging.CrashDumpPath);
 
         int rc = EngineLog.EngineLogInit(in config);
         if (rc != 0)
@@ -71,16 +75,34 @@ internal static class EngineLogBootstrap
                 return Path.GetFullPath(args[i + 1]);
         }
 
-        // Editor default cwd walk: look for .eeproj
-        var dir = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 6; ++i)
+        // Try walking up from AppDomain.CurrentDomain.BaseDirectory first
+        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        if (!string.IsNullOrEmpty(baseDir))
         {
-            if (Directory.Exists(Path.Combine(dir, ".eeproj")))
-                return dir;
-            var parent = Directory.GetParent(dir);
-            if (parent is null) break;
-            dir = parent.FullName;
+            var dir = baseDir;
+            for (int i = 0; i < 8; ++i)
+            {
+                if (Directory.Exists(Path.Combine(dir, ".eeproj")))
+                    return dir;
+                var parent = Directory.GetParent(dir);
+                if (parent is null) break;
+                dir = parent.FullName;
+            }
         }
+
+        // Fallback to walking up from CurrentDirectory
+        {
+            var dir = Directory.GetCurrentDirectory();
+            for (int i = 0; i < 6; ++i)
+            {
+                if (Directory.Exists(Path.Combine(dir, ".eeproj")))
+                    return dir;
+                var parent = Directory.GetParent(dir);
+                if (parent is null) break;
+                dir = parent.FullName;
+            }
+        }
+
         return Directory.GetCurrentDirectory();
     }
 }
