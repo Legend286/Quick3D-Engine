@@ -77,7 +77,7 @@ public partial class ConsoleEntryViewModel : ObservableObject
         Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(rec.TimestampNs / 1_000_000L)
                                   .ToString("HH:mm:ss.fff");
         Module = rec.Module != IntPtr.Zero ? PtrToString(rec.Module) ?? "" : "";
-        Source = rec.File  != IntPtr.Zero
+        Source = rec.File != IntPtr.Zero
             ? $"{PtrToString(rec.File) ?? ""}:{rec.Line}"
             : $"line {rec.Line}";
         Message = rec.Msg != IntPtr.Zero ? PtrToString(rec.Msg) ?? "" : "";
@@ -85,13 +85,13 @@ public partial class ConsoleEntryViewModel : ObservableObject
 
     private static string LevelToString(int level) => level switch
     {
-        EngineLog.EngineLogFatal  => "FATAL",
-        EngineLog.EngineLogError  => "ERROR",
-        EngineLog.EngineLogWarn   => "WARN",
-        EngineLog.EngineLogInfo   => "INFO",
-        EngineLog.EngineLogDebug  => "DEBUG",
-        EngineLog.EngineLogTrace  => "TRACE",
-        _                          => "?",
+        EngineLog.EngineLogFatal => "FATAL",
+        EngineLog.EngineLogError => "ERROR",
+        EngineLog.EngineLogWarn => "WARN",
+        EngineLog.EngineLogInfo => "INFO",
+        EngineLog.EngineLogDebug => "DEBUG",
+        EngineLog.EngineLogTrace => "TRACE",
+        _ => "?",
     };
 
     private static string? PtrToString(IntPtr p)

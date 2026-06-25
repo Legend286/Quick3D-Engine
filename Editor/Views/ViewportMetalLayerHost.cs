@@ -33,7 +33,7 @@ public sealed class ViewportMetalLayerHost : NativeControlHost
     /// The view-model will trigger a swapchain rebuild once the actual
     /// Bounds settle, so any mismatch from this default is corrected
     /// before the first frame is rendered.</summary>
-    public const uint DefaultInitialWidth  = 1280;
+    public const uint DefaultInitialWidth = 1280;
     public const uint DefaultInitialHeight = 720;
 
     private IntPtr _activeHandle;

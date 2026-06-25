@@ -45,4 +45,8 @@
     <Compile Include="..\OutOfBand\Engine.CBindings\AvaloniaNativeWindowInterop.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
 </Project>

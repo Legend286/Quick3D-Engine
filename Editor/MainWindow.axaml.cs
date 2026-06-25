@@ -31,6 +31,17 @@ public partial class MainWindow : Window
 
     private void OnExitClicked(object? sender, RoutedEventArgs e) => Close();
 
+    private void OnToggleConsoleClicked(object? sender, RoutedEventArgs e)
+    {
+        var consoles = this.FindControl<TabControl>("ConsolesTabControl");
+        var icon = this.FindControl<TextBlock>("ConsoleCollapseIcon");
+        if (consoles is not null && icon is not null)
+        {
+            consoles.IsVisible = !consoles.IsVisible;
+            icon.Text = consoles.IsVisible ? "\ue313" : "\ue316";
+        }
+    }
+
     protected override void OnClosed(System.EventArgs e)
     {
         // Release the Metal swapchain + device before tearing down the logger.

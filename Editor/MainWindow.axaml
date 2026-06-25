@@ -10,7 +10,14 @@
         FontSize="13"
         Title="End Engine — Editor">
 
-  <Grid RowDefinitions="Auto,*,Auto" ColumnDefinitions="Auto,4,*,4,Auto">
+  <Grid RowDefinitions="Auto,*,Auto">
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="Auto" MinWidth="200" MaxWidth="480" />
+      <ColumnDefinition Width="4" />
+      <ColumnDefinition Width="*" MinWidth="300" />
+      <ColumnDefinition Width="4" />
+      <ColumnDefinition Width="Auto" MinWidth="200" MaxWidth="480" />
+    </Grid.ColumnDefinitions>
 
     <!-- Top menu bar -->
     <Menu Grid.Row="0" Grid.ColumnSpan="5" FontSize="13">
@@ -59,25 +66,39 @@
                   Width="4"
                   HorizontalAlignment="Stretch"
                   ResizeDirection="Columns"
-                  ShowsPreview="True"
+                  ShowsPreview="False"
                   Background="#1c1f24" />
 
-    <!-- Center: viewport on top, dockable consoles on the bottom, drag handle
-         between them. Shrinking/expanding the consoles expands the viewport. -->
-    <Grid Grid.Row="1" Grid.Column="2" Margin="4"
-          RowDefinitions="*,4,Auto">
+    <!-- Center: viewport on top, collapsable consoles on the bottom -->
+    <Grid Grid.Row="1" Grid.Column="2" Margin="4">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="*" MinHeight="150" />
+        <RowDefinition Height="Auto" />
+        <RowDefinition Height="Auto" />
+      </Grid.RowDefinitions>
       <views:ViewportPanelView Grid.Row="0" DataContext="{Binding ViewportVm}" />
 
-      <GridSplitter Grid.Row="1"
-                    Height="4"
-                    HorizontalAlignment="Stretch"
-                    ResizeDirection="Rows"
-                    ShowsPreview="True"
-                    Background="#1c1f24" />
+      <!-- Divider & Toggle Bar -->
+      <Border Grid.Row="1" Background="#1c1f24" Height="28" BorderBrush="#2d3139" BorderThickness="0,1" Margin="0,4">
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Text="CONSOLE &amp; DIAGNOSTICS" Foreground="#aab0b6" VerticalAlignment="Center" Margin="8,0" FontSize="11" FontWeight="SemiBold" LetterSpacing="0.05" />
+          <Button Grid.Column="1" Width="28" Height="24" Background="Transparent" BorderThickness="0" Padding="0" CornerRadius="3" VerticalAlignment="Center" Margin="0,0,4,0" Click="OnToggleConsoleClicked" ToolTip.Tip="Toggle Console">
+            <Button.Styles>
+              <Style Selector="Button:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+                <Setter Property="Background" Value="#2d3139" />
+              </Style>
+              <Style Selector="Button:pressed /template/ ContentPresenter#PART_ContentPresenter">
+                <Setter Property="Background" Value="#3e4451" />
+              </Style>
+            </Button.Styles>
+            <TextBlock x:Name="ConsoleCollapseIcon" Text="&#xe313;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" FontSize="18" Foreground="#aab0b6" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Button>
+        </Grid>
+      </Border>
 
-      <TabControl Grid.Row="2"
+      <TabControl x:Name="ConsolesTabControl" Grid.Row="2"
                   MinHeight="80" MaxHeight="480"
-                  Height="200">
+                  Height="200" IsVisible="True">
         <TabItem Header="Console">
           <views:ConsolePanelView DataContext="{Binding ConsoleVm}" />
         </TabItem>
@@ -99,7 +120,7 @@
                   Width="4"
                   HorizontalAlignment="Stretch"
                   ResizeDirection="Columns"
-                  ShowsPreview="True"
+                  ShowsPreview="False"
                   Background="#1c1f24" />
 
     <!-- Right rail: Assets / Source Control -->

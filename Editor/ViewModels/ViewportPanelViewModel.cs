@@ -39,7 +39,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     private Renderer? _renderer;
     private IntPtr _nsView;
     private ViewportMetalLayerHost? _host;
-    private uint _width  = ViewportMetalLayerHost.DefaultInitialWidth;
+    private uint _width = ViewportMetalLayerHost.DefaultInitialWidth;
     private uint _height = ViewportMetalLayerHost.DefaultInitialHeight;
     private bool _attached;
     private bool _disposed;
@@ -71,13 +71,11 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             _nsView = _host.NativeViewHandle;
             SyncDimensionsFromHost();
             _device = new RhiDevice();
-            _swap   = _device.CreateSwapchain(_nsView, _width, _height);
+            _swap = _device.CreateSwapchain(_nsView, _width, _height);
             var world = new EcsWorld();
             SeedTriangleEntity(world);
             _renderer = new Renderer(_device, _swap, world);
             _renderer.LoadScene(_contentRoot, "hello");
-
-            _host.SizeChanged += OnHostSizeChanged;
 
             _timer.Start();
         }
@@ -101,7 +99,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         double w = _host.Bounds.Width;
         double h = _host.Bounds.Height;
         if (w < 1 || h < 1) return;
-        _width  = (uint)Math.Max(1, w * scale);
+        _width = (uint)Math.Max(1, w * scale);
         _height = (uint)Math.Max(1, h * scale);
     }
 
@@ -113,22 +111,6 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         return 1.0;
     }
 
-    private void OnHostSizeChanged(object? sender, SizeChangedEventArgs e)
-    {
-        uint prevW = _width, prevH = _height;
-        SyncDimensionsFromHost();
-        if (_width == prevW && _height == prevH) return;
-        try
-        {
-            _swap?.Dispose();
-            _swap = _device?.CreateSwapchain(_nsView, _width, _height);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[engine-viewport] resize failed: {ex.Message}");
-        }
-    }
-
     private void OnTick(object? sender, EventArgs e)
     {
         if (_device is null || _swap is null || _renderer is null) return;
@@ -136,7 +118,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             return;
         try
         {
-            _renderer.RenderFrame(image, _width, _height);
+            _renderer.RenderFrame(image, _swap.Width, _swap.Height);
         }
         catch (Exception ex)
         {
@@ -169,8 +151,6 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         if (_disposed) return;
         _disposed = true;
         _timer.Stop();
-        if (_host is not null)
-            _host.SizeChanged -= OnHostSizeChanged;
         _renderer?.Dispose();
         _swap?.Dispose();
         _device?.Dispose();
