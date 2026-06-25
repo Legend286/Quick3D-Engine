@@ -152,71 +152,71 @@ public static partial class RhiNative
 
     // ---- device / swapchain / resources ----
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_init")]
     public static partial int RhiInit(out IntPtr outDevice);   // RhiDevice*
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_shutdown")]
     public static partial void RhiShutdown(IntPtr device);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_create_swapchain")]
     public static partial int RhiCreateSwapchain(IntPtr device,
                                                   IntPtr osWindowHandle,
                                                   uint width, uint height,
                                                   out IntPtr outSwapchain);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_swapchain")]
     public static partial void RhiDestroySwapchain(IntPtr sc);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_acquire_next_image")]
     public static partial uint RhiAcquireNextImage(IntPtr sc,
                                                    out IntPtr outImage);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_present")]
     public static partial int RhiPresent(IntPtr sc);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_create_buffer")]
     public static partial int RhiCreateBuffer(IntPtr device,
                                                in BufferDesc desc,
                                                out IntPtr outBuf);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_create_texture")]
     public static partial int RhiCreateTexture(IntPtr device,
                                                 in TextureDesc desc,
                                                 out IntPtr outTex);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_create_shader")]
     public static partial int RhiCreateShader(IntPtr device,
                                                in ShaderDesc desc,
                                                out IntPtr outShader);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_create_graphics_pipeline")]
     public static partial int RhiCreateGraphicsPipeline(IntPtr device,
                                                         in GraphicsPipelineDesc desc,
                                                         out IntPtr outPipe);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_create_compute_pipeline")]
     public static partial int RhiCreateComputePipeline(IntPtr device,
                                                        in ComputePipelineDesc desc,
                                                        out IntPtr outPipe);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_buffer")]
     public static partial void RhiDestroyBuffer(IntPtr buf);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_texture")]
     public static partial void RhiDestroyTexture(IntPtr tex);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_shader")]
     public static partial void RhiDestroyShader(IntPtr sh);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_pipeline")]
     public static partial void RhiDestroyPipeline(IntPtr p);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_buffer_upload")]
     public static partial int RhiBufferUpload(IntPtr buf,
                                                IntPtr data,
                                                ulong size);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_texture_readback")]
     public static partial int RhiTextureReadback(IntPtr tex,
                                                  IntPtr outBytes,
                                                  ulong outSize,
@@ -224,60 +224,60 @@ public static partial class RhiNative
 
     // ---- command-list / encoders ----
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_begin_cmdlist")]
     public static partial IntPtr RhiBeginCmdlist(IntPtr device);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_submit")]
     public static partial int RhiSubmit(IntPtr device, IntPtr cmdlist);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_pipeline_barrier")]
     public static partial void RhiCmdPipelineBarrier(IntPtr cmdlist,
                                                       uint count,
                                                       IntPtr barriers);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_begin_render_pass")]
     public static partial IntPtr RhiBeginRenderPass(IntPtr cmdlist,
                                                     in PassDesc desc);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_begin_compute_pass")]
     public static partial IntPtr RhiBeginComputePass(IntPtr cmdlist,
                                                      IntPtr debugName);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_end_pass")]
     public static partial void RhiEndPass(IntPtr encoder);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_bind_pipeline")]
     public static partial void RhiCmdBindPipeline(IntPtr encoder, IntPtr pipeline);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_bind_vertex_buffer")]
     public static partial void RhiCmdBindVertexBuffer(IntPtr encoder,
                                                        uint slot, IntPtr buf,
                                                        ulong offset);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_bind_uniform_buffer")]
     public static partial void RhiCmdBindUniformBuffer(IntPtr encoder,
                                                         uint slot, IntPtr buf);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_set_viewport")]
     public static partial void RhiCmdSetViewport(IntPtr encoder,
                                                   float x, float y,
                                                   float w, float h,
                                                   float minDepth, float maxDepth);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_set_scissor")]
     public static partial void RhiCmdSetScissor(IntPtr encoder,
                                                  uint x, uint y,
                                                  uint w, uint h);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_set_clear_color")]
     public static partial void RhiCmdSetClearColor(IntPtr encoder,
                                                     float r, float g,
                                                     float b, float a);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_draw")]
     public static partial void RhiCmdDraw(IntPtr encoder, in DrawArgs args);
 
-    [LibraryImport(Library)]
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_dispatch")]
     public static partial void RhiCmdDispatch(IntPtr encoder,
                                                uint gx, uint gy, uint gz);
 }

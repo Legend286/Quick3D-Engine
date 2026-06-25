@@ -49,31 +49,31 @@ public static partial class EngineLog
     public const int EngineLogDebug     = 5;
     public const int EngineLogTrace     = 6;
 
-    [LibraryImport("EngineC")]
+    [LibraryImport("EngineC", EntryPoint = "engine_log_init")]
     public static partial int EngineLogInit(in EngineLogConfig config);
 
-    [LibraryImport("EngineC")]
+    [LibraryImport("EngineC", EntryPoint = "engine_log_shutdown")]
     public static partial void EngineLogShutdown();
 
-    [LibraryImport("EngineC")]
+    [LibraryImport("EngineC", EntryPoint = "engine_log_set_global_level")]
     public static partial void EngineLogSetGlobalLevel(int level);
 
-    [LibraryImport("EngineC")]
+    [LibraryImport("EngineC", EntryPoint = "engine_log_global_level_get")]
     public static partial int EngineLogGlobalLevelGet();
 
-    [LibraryImport("EngineC")]
+    [LibraryImport("EngineC", EntryPoint = "engine_log_set_module_level")]
     public static partial void EngineLogSetModuleLevel(IntPtr module, int level);
 
-    [LibraryImport("EngineC")]
+    [LibraryImport("EngineC", EntryPoint = "engine_log_module_level_get")]
     public static unsafe partial int EngineLogModuleLevelGet(byte* module);
 
-    [LibraryImport("EngineC")]
+    [LibraryImport("EngineC", EntryPoint = "engine_log_flush_blocking")]
     public static partial void EngineLogFlushBlocking();
 
-    [LibraryImport("EngineC")]
+    [LibraryImport("EngineC", EntryPoint = "engine_log_dump_diagnostics")]
     public static partial void EngineLogDumpDiagnostics();
 
-    [LibraryImport("EngineC")]
+    [LibraryImport("EngineC", EntryPoint = "engine_log_drain")]
     public static unsafe partial int EngineLogDrain(EngineLogRecord* outRecords, int maxRecords);
 }
 
