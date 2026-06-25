@@ -1,6 +1,6 @@
 # --- Build artefacts --------------------------------------------------------
 out/
-build/
+/build/
 cmake-build-*/
 CMakeUserPresets.json
 

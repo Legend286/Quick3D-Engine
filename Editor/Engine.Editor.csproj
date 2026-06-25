@@ -11,6 +11,7 @@
     <UseAvalonia>true</UseAvalonia>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
   </PropertyGroup>
 
   <ItemGroup>
