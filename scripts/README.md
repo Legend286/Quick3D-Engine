@@ -32,8 +32,8 @@ full matrix. The most common subset:
 | `APP_VERSION` | `CFBundleShortVersionString`. Default `0.1.0`. |
 | `BUILD_NUMBER` | `CFBundleVersion`. Default `1`. |
 | `DOTNET_RUNTIME_ID` | `-r` arg to `dotnet publish`. Default `osx-arm64`. |
-| `DEVELOPER_ID` | Sign identity for `codesign --sign`. Unset -> skip signing. |
-| `KEYCHAIN_PROFILE` | `notarytool --keychain-profile`. Unset -> skip notarisation. |
+| `DEVELOPER_ID` | Sign identity for `codesign --sign`. Unset -> ad-hoc signing fallback (no Hardened Runtime, no notarisation).  |
+| `KEYCHAIN_PROFILE` | `notarytool --keychain-profile`. Unset -> skip notarisation when `DEVELOPER_ID` is set; irrelevant on the ad-hoc path. |
 
 ## Why bash, not CMake or MSBuild
 

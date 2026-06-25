@@ -49,8 +49,8 @@ build; CI injects credentials via standard secret env vars.
 | `APP_VERSION` | `0.1.0` | - |
 | `BUILD_NUMBER` | `1` | - |
 | `DOTNET_RUNTIME_ID` | `osx-arm64` | - |
-| `DEVELOPER_ID` | - | Skip codesign with WARN (stage 4). |
-| `KEYCHAIN_PROFILE` | - | Skip notarisation + staple (stage 6, 7). |
+| `DEVELOPER_ID` | - | Stage 4 falls back to ad-hoc signing (`codesign --deep --force --sign -`). Hardened Runtime + notarisation + stapling are disabled. The resulting `.app` launches locally via `open`, no right-click-Open prompt needed once stage 9 strips quarantine. |
+| `KEYCHAIN_PROFILE` | - | Skip notarisation + staple (stage 6, 7) only if `DEVELOPER_ID` is set; the ad-hoc path already skips these stages unconditionally. |
 | `CMAKE_BUILD_DIR` | `out/build-smoke` | - |
 | `PUBLISH_OUT_DIR` | `out/publish/<RID>` | - |
 
@@ -63,8 +63,35 @@ build; CI injects credentials via standard secret env vars.
 open "out/publish/osx-arm64/EndEngine Editor.app"
 ```
 
-The .app is unsigned; on the developer machine Gatekeeper lets it launch
-anyway (it would warn end users).
+With neither `DEVELOPER_ID` nor `KEYCHAIN_PROFILE` set, stage 4 produces an
+ad-hoc signature (`codesign --deep --force --sign -`) without
+`--options runtime` and without entitlements, and stage 9 strips the
+Gatekeeper quarantine xattr. The .app therefore launches straight from
+`open` on Apple Silicon (the AMFI gate refuses unsigned bundles so we
+must produce *some* signature; ad-hoc is the dev-mode minimum). Hardened
+Runtime is disabled in this build so JIT + memory-write-execute work
+without explicit entitlements, but the same code path can be re-signed
+under Developer ID by simply exporting the credentials and re-running.
+
+**Security note:** the local dev build runs without Hardened Runtime.
+Library validation is off, AMFI is permissive, and JIT pages are
+write+execute without the `--options runtime --entitlements` gate. This
+is acceptable for development; production builds always use the
+Developer ID path with Hardened Runtime + notarisation.
+
+**``--deep --force --sign -`` transitive re-sign note:** the ad-hoc sign
+transitively re-signs the Avalonia.Native.dylib (and libEngineC.dylib)
+inside `Contents/MacOS/`, overwriting Avalonia's upstream Developer-Team
+identity with our ad-hoc `"-"` identity. This is correct for dev-mode; a
+future verification that needs Avalonia's Team ID can re-extract the
+binary from the upstream NuGet package and re-link. Production builds
+under a Developer ID sign with that identity, so the chain is preserved.
+
+**Re-copying the bundle defeats stage 9:** if you `cp` or
+`mv` the `.app` to a new path on the same or another Mac, Finder will
+re-stamp `com.apple.quarantine` on the copy. Re-run
+`xattr -dr com.apple.quarantine "<.app>"` on the destination path to
+keep it launchable without the right-click Open prompt.
 
 ### Production release
 
@@ -174,6 +201,19 @@ it to ~30 MB but requires end users to have .NET 8 installed.
 
 ## Local validation without credentials
 
-Run the script with no `DEVELOPER_ID` env var. The .app is produced but
-unsigned. `open` still launches it locally on the developer machine. This
-is the cheapest CI dry-run for verifying the bundle layout.
+Run the script with no `DEVELOPER_ID` env var. Stage 4 produces an
+ad-hoc signature (so `Contents/_CodeSignature/CodeResources` exists and
+AMFI doesn't kill the process at exec), stage 9 strips the Gatekeeper
+quarantine xattr (so `open` doesn't bounce the bundle). The .app is
+launchable via:
+
+```sh
+open "out/publish/osx-arm64/EndEngine Editor.app"
+# Or directly:
+"out/publish/osx-arm64/EndEngine Editor.app/Contents/MacOS/Engine.Editor"
+```
+
+The cheapest CI dry-run for verifying bundle layout, info.plist
+plutil-validity, and dylib load commands. Not a substitute for the
+Developer ID + notarisation path; unsigned/ad-hoc builds have Hardened
+Runtime disabled and should never reach end users.

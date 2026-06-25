@@ -93,11 +93,34 @@ log_info "Contents/MacOS/Engine.Editor (.NET host)"
 log_info "Contents/MacOS/libEngineC.dylib (from csproj Content Include)"
 log_info "Contents/Info.plist (bundle metadata)"
 
-# ---- stage 4: code sign (Hardened Runtime) ----------------------------------
+# ---- stage 4: code sign (Hardened Runtime + ad-hoc fallback) ---------------
+#
+# Apple Silicon refuses to load executable pages in an unsigned bundle (AMFI
+# SIGKILL the process before main() runs - that's the Dock bounce-and-quit
+# symptom when this stage is skipped). We always produce *some* signature so
+# the bundle is structurally valid:
+#
+#   * Developer ID + Hardened Runtime + notarisation -> production.
+#   * Ad-hoc signing without --options runtime      -> local dev only.
+#
+# Ad-hoc signing intentionally drops --options runtime AND --entitlements:
+#   * Hardened Runtime requires DJSP / Developer-Team validation which only
+#     works with a real Developer ID. Ad-hoc + --options runtime is rejected
+#     by codesign ("invalid entitlements / signature"), so we don't try.
+#   * Without --options runtime, library validation is off, JIT runs without
+#     explicit allow-jit/allow-unsigned-executable-memory entitlements, and
+#     the .NET 8 CoreCLR / Avalonia.Native dylib / libEngineC.dylib all share
+#     a single ad-hoc identity so embedding checks pass.
 if [[ -z "${DEVELOPER_ID}" ]]; then
-    log_warn "DEVELOPER_ID not set - skipping codesign."
-    log_warn "  Export DEVELOPER_ID=\"Developer ID Application: <Team> (<TEAMID>)\" to enable."
-    SIGNED=0
+    log_warn "DEVELOPER_ID not set - applying ad-hoc signature for local dev."
+    log_warn "  Hardened Runtime + notarisation are disabled in this build."
+    log_warn "  To enable, export both env vars described in docs/build/mac-app-bundle.md:"
+    log_warn "      DEVELOPER_ID=\"Developer ID Application: <Team> (<TEAMID>)\""
+    log_warn "      KEYCHAIN_PROFILE=<keychain-notary-profile>"
+    log_section "Stage 4/8 - codesign --deep --force --sign - (ad-hoc)"
+    codesign --deep --force --sign - \
+        "${APP_BUNDLE_DIR}"
+    SIGNED=2
 else
     log_section "Stage 4/8 - codesign --deep --force --options runtime"
     codesign --deep --force --options runtime \
@@ -116,13 +139,11 @@ ditto -c -k --sequesterRsrc --keepParent \
 log_info "${APP_BUNDLE_ZIP}"
 
 # ---- stage 6: notarytool submit + stage 7: stapler staple + stage 8: verify
-if [[ "${SIGNED}" -eq 0 ]]; then
-    log_warn "App is unsigned - skipping notarisation + stapling."
-    log_warn "  Export KEYCHAIN_PROFILE after storing credentials via"
-    log_warn "  'xcrun notarytool store-credentials <profile>' to enable."
+if [[ "${SIGNED}" -eq 2 ]]; then
+    log_warn "App is ad-hoc-signed (DEVELOPER_ID not set); notarisation + stapling disabled."
 elif [[ -z "${KEYCHAIN_PROFILE}" ]]; then
-    log_warn "${DEVELOPER_ID} signed but KEYCHAIN_PROFILE not set - skipping notarisation + stapling."
-    log_warn "  'xcrun notarytool store-credentials <profile>' once, then re-run."
+    log_warn "Notary credentials (KEYCHAIN_PROFILE) not set; skipping notarisation + stapling."
+    log_warn "  Run 'xcrun notarytool store-credentials <profile>' once, then re-run with both env vars."
 else
     log_section "Stage 6/8 - notarytool submit --keychain-profile ${KEYCHAIN_PROFILE}"
     xcrun notarytool submit "${APP_BUNDLE_ZIP}" \
@@ -137,9 +158,27 @@ else
     xcrun stapler validate "${APP_BUNDLE_DIR}"
 fi
 
+# ---- stage 9: strip Gatekeeper quarantine xattr -----------------------------
+#
+# `xattr -dr com.apple.quarantine` zeros the kernel-recorded download
+# provenance so Finder doesn't bounce the bundle with the "is damaged and
+# can't be opened" dialog + an extra "right-click Open" prompt for first
+# launch on the developer machine. Local-only; notarisation gives the same
+# effect for end-users via the stapled ticket, so this is safe.
+log_section "Stage 9/9 - Strip Gatekeeper quarantine xattr"
+xattr -dr com.apple.quarantine "${APP_BUNDLE_DIR}" 2>/dev/null || true
+xattr -dr com.apple.provenance  "${APP_BUNDLE_DIR}" 2>/dev/null || true
+log_info "xattr quarantine + provenance stripped"
+
 # ---- wrap-up ----------------------------------------------------------------
 log_section "Done"
 printf "  App bundle : %s\n" "${APP_BUNDLE_DIR}"
 printf "  Notary zip : %s\n" "${APP_BUNDLE_ZIP}"
+if [[ "${SIGNED}" -eq 2 ]]; then
+    printf "  Sign mode  : ad-hoc (DEVELOPER_ID unset) - local-only\n"
+elif [[ "${SIGNED}" -eq 1 ]]; then
+    printf "  Sign mode  : Developer ID + Hardened Runtime\n"
+fi
 printf "  Inspect    : codesign -dv --verbose=4 %q\n" "${APP_BUNDLE_DIR}"
 printf "  Launch     : open %q\n" "${APP_BUNDLE_DIR}"
+printf "           or: %q/Contents/MacOS/Engine.Editor\n" "${APP_BUNDLE_DIR}"
