@@ -1,0 +1,256 @@
+/* SPDX-License-Identifier: MIT */
+#ifndef ENGINE_RHI_H
+#define ENGINE_RHI_H
+
+/**
+ * RHI (Render Hardware Interface) - public C ABI.
+ * See docs/rhi/api.md for the full surface and docs/renderer/render-graph.md
+ * for how C# orchestrates passes through this surface.
+ *
+ * Stable ABI: bump `ENGINE_ABI_VERSION` on breaking changes.
+ *
+ * Opaque handles are POD-compatible across language boundaries. Backends
+ * (Metal .mm, Vulkan stub) implement the surface; rhi_dispatch.c forwards
+ * each ENGINE_API call to the active RhiBackendVTable.
+ */
+
+#include <stdint.h>
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifndef ENGINE_API
+#  ifdef _WIN32
+#    define ENGINE_API __declspec(dllimport)
+#  else
+#    define ENGINE_API __attribute__((visibility("default")))
+#  endif
+#endif
+
+#define ENGINE_ABI_VERSION_RHI 1
+
+typedef struct RhiDevice         RhiDevice;
+typedef struct RhiSwapchain      RhiSwapchain;
+typedef struct RhiBuffer         RhiBuffer;
+typedef struct RhiTexture        RhiTexture;
+typedef struct RhiShader         RhiShader;
+typedef struct RhiPipeline       RhiPipeline;
+typedef struct RhiCommandList    RhiCommandList;
+typedef struct RhiEncoder        RhiEncoder;
+
+/** Stable resource handle used by the C# render graph. u64 = (generation << 32) | slot_index. */
+typedef uint64_t RhiResourceHandle;
+
+/**
+ * Texture formats. Additions are binary-compatible; unknown values fall through
+ * on consumers that don't know the new code.
+ */
+typedef enum RhiTextureFormat {
+    RHI_FORMAT_UNDEFINED       = 0,
+    RHI_FORMAT_RGBA8_UNORM     = 1,
+    RHI_FORMAT_RGBA8_SRGB      = 2,
+    RHI_FORMAT_RGBA16_FLOAT    = 3,
+    RHI_FORMAT_BGRA8_UNORM     = 4,
+    RHI_FORMAT_DEPTH32_FLOAT   = 5,
+    RHI_FORMAT_DEPTH24_STENCIL8 = 6,
+} RhiTextureFormat;
+
+typedef enum RhiBufferUsage {
+    RHI_BUFFER_VERTEX  = 1u << 0,
+    RHI_BUFFER_INDEX   = 1u << 1,
+    RHI_BUFFER_UNIFORM = 1u << 2,
+    RHI_BUFFER_STORAGE = 1u << 3,
+} RhiBufferUsage;
+
+typedef enum RhiShaderStage {
+    RHI_STAGE_VERTEX   = 1u << 0,
+    RHI_STAGE_FRAGMENT = 1u << 1,
+    RHI_STAGE_COMPUTE  = 1u << 2,
+} RhiShaderStage;
+
+typedef enum RhiLoadOp {
+    RHI_LOAD_OP_LOAD     = 0,
+    RHI_LOAD_OP_CLEAR    = 1,
+    RHI_LOAD_OP_DISCARD  = 2,
+} RhiLoadOp;
+
+typedef enum RhiStoreOp {
+    RHI_STORE_OP_STORE   = 0,
+    RHI_STORE_OP_DISCARD = 1,
+} RhiStoreOp;
+
+/** Resource states tracked by the C# render graph's barrier inference. */
+typedef enum RhiResourceState {
+    RHI_STATE_UNDEFINED          = 0,
+    RHI_STATE_RENDER_TARGET      = 1,
+    RHI_STATE_DEPTH_STENCIL      = 2,
+    RHI_STATE_SHADER_READ        = 3,
+    RHI_STATE_UNORDERED_ACCESS   = 4,
+    RHI_STATE_COPY_SRC           = 5,
+    RHI_STATE_COPY_DST           = 6,
+    RHI_STATE_PRESENT            = 7,
+} RhiResourceState;
+
+/* ----- Resource descriptors ----- */
+
+typedef struct RhiTextureDesc {
+    uint32_t          abi;
+    uint32_t          width;
+    uint32_t          height;
+    uint32_t          mip_levels;
+    RhiTextureFormat  format;
+    uint32_t          usage_flags;       /* RHI_TEXTURE_RENDER_TARGET | SHADER_READ | COPY_* */
+} RhiTextureDesc;
+
+#define RHI_TEXTURE_RENDER_TARGET (1u << 0)
+#define RHI_TEXTURE_SHADER_READ    (1u << 1)
+#define RHI_TEXTURE_COPY_SRC       (1u << 2)
+#define RHI_TEXTURE_COPY_DST       (1u << 3)
+
+typedef struct RhiBufferDesc {
+    uint32_t abi;
+    uint64_t size;
+    uint32_t usage_flags;
+} RhiBufferDesc;
+
+typedef struct RhiShaderDesc {
+    uint32_t      abi;
+    uint32_t      stage_flags;
+    const char*   source;
+    uint32_t      source_len;
+    const char*   entry_point;
+} RhiShaderDesc;
+
+typedef struct RhiGraphicsPipelineDesc {
+    uint32_t          abi;
+    RhiShader*        vertex_shader;
+    RhiShader*        fragment_shader;
+    RhiTextureFormat  color_attachment_format;
+    int32_t           enable_depth;
+    int32_t           sample_count;       /* MSAA; 1 = off */
+} RhiGraphicsPipelineDesc;
+
+typedef struct RhiComputePipelineDesc {
+    uint32_t   abi;
+    RhiShader* compute_shader;
+} RhiComputePipelineDesc;
+
+/* ----- Render-pass attachment + barrier descriptors ----- */
+
+typedef struct RhiPassAttachment {
+    RhiTexture*      texture;
+    RhiLoadOp        load_op;
+    RhiStoreOp       store_op;
+    uint32_t         mip_level;
+} RhiPassAttachment;
+
+typedef struct RhiPassDesc {
+    uint32_t               abi;
+    RhiPassAttachment*     color_attachments;
+    uint32_t               color_count;
+    RhiPassAttachment*     depth_attachment;        /* optional, NULL if not used */
+} RhiPassDesc;
+
+typedef struct RhiBarrier {
+    RhiResourceHandle     resource;
+    uint32_t              padding;
+    RhiResourceState      state_before;
+    RhiResourceState      state_after;
+} RhiBarrier;
+
+typedef struct RhiDrawArgs {
+    uint32_t abi;
+    uint32_t vertex_count;
+    uint32_t instance_count;
+    uint32_t first_vertex;
+    uint32_t first_instance;
+} RhiDrawArgs;
+
+/* ----- Device ----- */
+
+ENGINE_API int32_t  rhi_init(RhiDevice** out_device);
+ENGINE_API void     rhi_shutdown(RhiDevice* device);
+
+/* ----- Swapchain ----- */
+
+ENGINE_API int32_t  rhi_create_swapchain(RhiDevice* device,
+                                         void* os_window_handle,
+                                         uint32_t width, uint32_t height,
+                                         RhiSwapchain** out_sc);
+ENGINE_API void     rhi_destroy_swapchain(RhiSwapchain* sc);
+ENGINE_API uint32_t rhi_acquire_next_image(RhiSwapchain* sc,
+                                            RhiTexture** out_image);
+ENGINE_API int32_t  rhi_present(RhiSwapchain* sc);
+
+/* ----- Resources ----- */
+
+ENGINE_API int32_t  rhi_create_buffer(RhiDevice* device,
+                                      const RhiBufferDesc* desc,
+                                      RhiBuffer** out_buf);
+ENGINE_API int32_t  rhi_create_texture(RhiDevice* device,
+                                       const RhiTextureDesc* desc,
+                                       RhiTexture** out_tex);
+ENGINE_API int32_t  rhi_create_shader(RhiDevice* device,
+                                      const RhiShaderDesc* desc,
+                                      RhiShader** out_shader);
+ENGINE_API int32_t  rhi_create_graphics_pipeline(RhiDevice* device,
+                                                 const RhiGraphicsPipelineDesc* desc,
+                                                 RhiPipeline** out_pipe);
+ENGINE_API int32_t  rhi_create_compute_pipeline(RhiDevice* device,
+                                                const RhiComputePipelineDesc* desc,
+                                                RhiPipeline** out_pipe);
+
+ENGINE_API void     rhi_destroy_buffer(RhiBuffer* buf);
+ENGINE_API void     rhi_destroy_texture(RhiTexture* tex);
+ENGINE_API void     rhi_destroy_shader(RhiShader* sh);
+ENGINE_API void     rhi_destroy_pipeline(RhiPipeline* p);
+
+/* CPU-side mutations. */
+ENGINE_API int32_t  rhi_buffer_upload(RhiBuffer* buf, const void* data, uint64_t size);
+
+/** Read a texture back to CPU bytes. Used for Avalonia viewport display. */
+ENGINE_API int32_t  rhi_texture_readback(RhiTexture* tex,
+                                         void* out_bytes, uint64_t out_size,
+                                         uint32_t out_stride);
+
+/* ----- Command list ----- */
+
+ENGINE_API RhiCommandList* rhi_begin_cmdlist(RhiDevice* device);
+ENGINE_API int32_t         rhi_submit(RhiDevice* device, RhiCommandList* cmdlist);
+ENGINE_API void            rhi_cmd_pipeline_barrier(RhiCommandList* cl,
+                                                   uint32_t count,
+                                                   const RhiBarrier* barriers);
+/* Inside a cmdlist, encoders model render-pass + compute-pass scopes. */
+ENGINE_API RhiEncoder* rhi_begin_render_pass(RhiCommandList* cl,
+                                             const RhiPassDesc* desc);
+ENGINE_API RhiEncoder* rhi_begin_compute_pass(RhiCommandList* cl,
+                                              const char* debug_name);
+ENGINE_API void        rhi_end_pass(RhiEncoder* enc);
+
+ENGINE_API void rhi_cmd_bind_pipeline(RhiEncoder* enc, RhiPipeline* p);
+ENGINE_API void rhi_cmd_bind_vertex_buffer(RhiEncoder* enc,
+                                            uint32_t slot, RhiBuffer* buf,
+                                            uint64_t offset);
+ENGINE_API void rhi_cmd_bind_uniform_buffer(RhiEncoder* enc,
+                                            uint32_t slot, RhiBuffer* buf);
+ENGINE_API void rhi_cmd_set_viewport(RhiEncoder* enc,
+                                     float x, float y,
+                                     float w, float h,
+                                     float min_depth, float max_depth);
+ENGINE_API void rhi_cmd_set_scissor(RhiEncoder* enc,
+                                    uint32_t x, uint32_t y,
+                                    uint32_t w, uint32_t h);
+ENGINE_API void rhi_cmd_set_clear_color(RhiEncoder* enc,
+                                        float r, float g, float b, float a);
+ENGINE_API void rhi_cmd_draw(RhiEncoder* enc, const RhiDrawArgs* args);
+ENGINE_API void rhi_cmd_dispatch(RhiEncoder* enc,
+                                 uint32_t groups_x, uint32_t groups_y,
+                                 uint32_t groups_z);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
+#endif /* ENGINE_RHI_H */
