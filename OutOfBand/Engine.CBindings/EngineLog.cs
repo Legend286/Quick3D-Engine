@@ -6,7 +6,7 @@ namespace Engine.CBindings;
 
 /// <summary>
 /// P/Invoke surface mirroring engine_c/engine_log.h. Stable C ABI.
-public static class EngineLog
+public static partial class EngineLog
 {
     [StructLayout(LayoutKind.Sequential)]
     public struct EngineLogConfig
@@ -89,6 +89,7 @@ public static class EngineLogConfigDisposer
             config.CrashDumpPath = IntPtr.Zero;
         }
     }
+}
 
 /// <summary>
 /// Helpers that translate Avalonia / C# world to the EngineLog ABI.

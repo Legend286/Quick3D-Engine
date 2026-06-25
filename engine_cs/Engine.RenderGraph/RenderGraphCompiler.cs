@@ -28,7 +28,7 @@ namespace Engine.RenderGraph;
 
 public sealed class RenderGraphCompiler
 {
-    public RenderGraph Compile(IReadOnlyList<RenderPass> passes)
+    public RenderPlan Compile(IReadOnlyList<RenderPass> passes)
     {
         var sharedBuilder = new RenderGraphBuilder();
 
@@ -75,7 +75,7 @@ public sealed class RenderGraphCompiler
             }
         }
 
-        return new RenderGraph
+        return new RenderPlan
         {
             ResourceDecls = resourceDecls,
             Passes = passes.ToArray(),
@@ -109,7 +109,7 @@ public sealed class RenderGraphCompiler
     }
 }
 
-public sealed class RenderGraph
+public sealed class RenderPlan
 {
     public required IReadOnlyDictionary<ResourceHandle, ResourceDecl> ResourceDecls { get; init; }
     public required RenderPass[] Passes { get; init; }

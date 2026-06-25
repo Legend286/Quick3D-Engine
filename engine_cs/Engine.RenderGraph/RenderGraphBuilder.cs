@@ -65,7 +65,12 @@ public sealed class RenderGraphBuilder
     internal IReadOnlyList<AccessDecl> PassAccesses => _thisPassAccesses;
 }
 
-internal sealed class ResourceDecl
+// ResourceDecl + AccessDecl are surfaced through the public `RenderGraph`
+// aggregate (RenderGraphCompiler.cs). Their visibility must match — keeping
+// them `internal` makes the public properties return a less-accessible type
+// (compiler error CS0053). They are plain data carriers; future refactors
+// can move them into a dedicated types/records file.
+public sealed class ResourceDecl
 {
     public ResourceHandle Handle;
     public ResourceKind Kind;
@@ -73,6 +78,6 @@ internal sealed class ResourceDecl
     public BufferDesc?  Buffer;
 }
 
-internal sealed record AccessDecl(ResourceHandle Resource,
-                                  ResourceAccess Access,
-                                  ResourceState State);
+public sealed record AccessDecl(ResourceHandle Resource,
+                                ResourceAccess Access,
+                                ResourceState State);

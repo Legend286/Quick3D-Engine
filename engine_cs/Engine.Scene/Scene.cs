@@ -6,7 +6,7 @@ using System.Text.Json.Serialization;
 
 namespace Engine.Scene;
 
-public sealed class Scene
+public sealed class SceneGraph
 {
     [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
     [JsonPropertyName("passes")] public List<ScenePass> Passes { get; set; } = new();

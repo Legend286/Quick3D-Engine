@@ -37,28 +37,32 @@ public sealed class CommandRecorder : IDisposable
             StoreOp = storeOp,
         };
         RhiNative.PassAttachment[] colors = new[] { color };
-        RhiNative.PassAttachment? depthAttach = null;
-        if (depth is not null)
-        {
-            depthAttach = new RhiNative.PassAttachment
-            {
-                Texture = depth.Handle,
-                LoadOp = RhiNative.LoadOp.Clear,
-                StoreOp = RhiNative.StoreOp.Store,
-            };
-        }
         unsafe
         {
+            // depthStruct + dPtr live on this unsafe block's stack so their
+            // address is fixed for the duration of the RhiBeginRenderPass
+            // synchronous call. Using a Nullable<T> + &.Value fails because
+            // Nullable<T>.Value returns a copy.
+            RhiNative.PassAttachment depthStruct = default;
+            RhiNative.PassAttachment* dPtr = null;
+            if (depth is not null)
+            {
+                depthStruct = new RhiNative.PassAttachment
+                {
+                    Texture = depth.Handle,
+                    LoadOp = RhiNative.LoadOp.Clear,
+                    StoreOp = RhiNative.StoreOp.Store,
+                };
+                dPtr = &depthStruct;
+            }
             fixed (RhiNative.PassAttachment* p = colors)
-            fixed (RhiNative.PassAttachment* d = depthAttach.HasValue
-                                                       ? &depthAttach.Value : null)
             {
                 var desc = new RhiNative.PassDesc
                 {
                     Abi = 1,
                     ColorAttachments = (IntPtr)p,
                     ColorCount = (uint)colors.Length,
-                    DepthAttachment = (IntPtr)d,
+                    DepthAttachment = (IntPtr)dPtr,
                 };
                 CurrentEncoder = RhiNative.RhiBeginRenderPass(CmdList, in desc);
             }
@@ -120,7 +124,7 @@ public sealed class CommandRecorder : IDisposable
             try { Submit(); }
             catch (Exception ex)
             {
-                EngineLog.LogError("command_recorder", $"auto-submit failed: {ex.Message}");
+                Console.Error.WriteLine($"[engine-rhi] auto-submit failed: {ex.Message}");
             }
             _submitted = true;
         }

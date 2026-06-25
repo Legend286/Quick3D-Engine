@@ -10,8 +10,42 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <!--
+    The previous version of this csproj used <NativeReference Include="..\..\out\build\Release\libEngineC.a" />,
+    which only works under the legacy .NET Framework MSBuild (it triggers the
+    ResolveNativeReference task). Under .NET Core / .NET 5+ MSBuild that task
+    is unsupported and emits MSB4803, blocking every dependent project.
+
+    Replacement: use a plain <Content Include> so the native artifact gets
+    copied to the managed binary's output directory. At runtime, the .NET
+    AOT / JIT loader dlopens the dylib by walking the standard search path
+    (process dir, AppDomain dir, etc.). See Engine.NativeLoader for an
+    explicit-resolver fallback if the dylib isn't picked up automatically.
+  -->
+  <!--
+    AvaloniaNativeWindowInterop.cs lives in this directory historically so
+    the Editor can reach it without an extra Include path, but it pulls in
+    Avalonia.* namespaces - which the public Engine.CBindings surface
+    (Engine.* P/Invoke wrappers) deliberately never references. Excluding
+    it here keeps the binding library Avalonia-free; callers that need it
+    (the Editor) should add an explicit <Compile Include="..\..\OutOfBand\
+    Engine.CBindings\AvaloniaNativeWindowInterop.cs" /> on their csproj.
+  -->
   <ItemGroup>
-    <NativeReference Include="..\..\out\build\Release\libEngineC.a" />
+    <Compile Remove="AvaloniaNativeWindowInterop.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\out\libEngineC.dylib"
+             Condition="Exists('..\..\out\libEngineC.dylib')">
+      <Link>libEngineC.dylib</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\out\build-smoke\libEngineC.a"
+             Condition="Exists('..\..\out\build-smoke\libEngineC.a')">
+      <Link>libEngineC.a</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

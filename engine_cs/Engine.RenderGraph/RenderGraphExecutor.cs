@@ -7,6 +7,7 @@
 // from graph declarations any more due to a conflict between the pass's
 // own creation and the executor's first-time auto-create.
 
+using Engine.CBindings;
 using Engine.RHI;
 
 namespace Engine.RenderGraph;
@@ -35,7 +36,7 @@ public sealed class RenderGraphExecutor : ICommandSink
 
     /// <summary>Run the compiled graph: barriers (no-ops on Metal) → passes,
     /// then submit.</summary>
-    public void Execute(RenderGraph graph)
+    public void Execute(RenderPlan graph)
     {
         for (int i = 0; i < graph.Passes.Length; ++i)
         {

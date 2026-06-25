@@ -8,7 +8,7 @@ namespace Engine.RHI;
 
 public sealed class RhiPipeline : IDisposable
 {
-    public IntPtr Handle { get; }
+    public IntPtr Handle { get; private set; }
 
     internal RhiPipeline(IntPtr handle) { Handle = handle; }
 

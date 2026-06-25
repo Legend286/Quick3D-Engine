@@ -9,7 +9,7 @@ namespace Engine.RHI;
 public sealed class RhiSwapchain : IDisposable
 {
     private readonly RhiDevice _device;
-    public IntPtr Handle { get; }
+    public IntPtr Handle { get; private set; }
     public uint Width  { get; }
     public uint Height { get; }
 

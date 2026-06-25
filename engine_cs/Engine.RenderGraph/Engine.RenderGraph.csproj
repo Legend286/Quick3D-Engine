@@ -10,5 +10,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Engine.RHI\Engine.RHI.csproj" />
+    <!--
+      Engine.CBindings provides the static C-ABI surface (RhiNative.*,
+      EngineLog.*) that the render-graph executor + ICommandSink speak.
+      Without this, RenderGraphExecutor / RenderPass (both reference
+      RhiNative.LoadOp / StoreOp) fail to compile against the types
+      exposed by the .NET Core P/Invoke library.
+    -->
+    <ProjectReference Include="..\..\OutOfBand\Engine.CBindings\Engine.CBindings.csproj" />
   </ItemGroup>
 </Project>

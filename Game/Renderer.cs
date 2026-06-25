@@ -23,7 +23,7 @@ public sealed class Renderer : IDisposable
     private string _contentRoot = "Content";
 
     private RenderGraphExecutor? _executor;
-    private RenderGraph? _graph;
+    private RenderPlan? _plan;
 
     /// <summary>Sentinel handle on which the executor binds the swapchain
     /// back-buffer before each frame. Console-friendly constant so callers
@@ -43,7 +43,7 @@ public sealed class Renderer : IDisposable
     {
         _contentRoot = contentRoot;
         _loader = new SceneLoader(contentRoot);
-        Scene scene = _loader.Load(sceneName);
+        SceneGraph scene = _loader.Load(sceneName);
 
         var passes = new List<RenderPass>();
         foreach (var scenePass in scene.Passes)
@@ -53,9 +53,9 @@ public sealed class Renderer : IDisposable
         // is built. If Compile throws, the previous (working) graph remains
         // intact and usable. This avoids a temporary null-state failure
         // where neither old nor new graph is reachable.
-        var previous = _graph;
-        var newGraph = new RenderGraphCompiler().Compile(passes);
-        _graph    = newGraph;
+        var previous = _plan;
+        var newPlan = new RenderGraphCompiler().Compile(passes);
+        _plan     = newPlan;
         _executor = new RenderGraphExecutor(_device);  // unconditional
                                                        // - we MUST drop the
                                                        // old executor's
@@ -66,16 +66,16 @@ public sealed class Renderer : IDisposable
 
     public void RenderFrame(RhiTexture backBuffer, uint width, uint height)
     {
-        if (_graph is null || _executor is null) return;
+        if (_plan is null || _executor is null) return;
         _executor.BindSwapchain(backBuffer, BackBufferHandle,
                                  ResourceState.RenderTarget);
-        _executor.Execute(_graph);
+        _executor.Execute(_plan);
     }
 
     public void Dispose()
     {
-        _graph?.Passes?.DisposeAll();
-        _graph = null;
+        _plan?.Passes?.DisposeAll();
+        _plan = null;
         _executor = null;
         _loader = null;
     }

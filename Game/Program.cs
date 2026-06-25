@@ -4,6 +4,7 @@
 // the Game exe can also be launched standalone with a CLI window pointer).
 
 using System;
+using System.Globalization;
 using Engine.RHI;
 using Engine.RenderGraph;
 using Engine.Scene;
@@ -81,8 +82,8 @@ internal static class Program
         {
             if (args[i] == "--window")
             {
-                if (IntPtr.TryParse(args[i + 1], System.Globalization.NumberStyles.HexNumber,
-                                     System.Globalization.InvariantCulture, out var p))
+                if (IntPtr.TryParse(args[i + 1], NumberStyles.HexNumber,
+                                     CultureInfo.InvariantCulture, out var p))
                     return p;
             }
         }

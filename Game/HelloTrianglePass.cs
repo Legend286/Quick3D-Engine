@@ -8,6 +8,7 @@
 // triangle path alive without crashing.
 
 using System.IO;
+using Engine.CBindings;
 using Engine.RenderGraph;
 using Engine.RHI;
 using Engine.Scene;
@@ -19,7 +20,7 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
     private readonly RhiDevice _device;
     private readonly IEntityStore _world;
     private readonly ScenePass _scenePass;
-    private readonly Scene _scene;
+    private readonly SceneGraph _scene;
     private readonly string _contentRoot;
 
     private readonly RhiShader _vs;
@@ -31,7 +32,7 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
     private bool _resourcesReady;
 
     public HelloTrianglePass(RhiDevice device, IEntityStore world,
-                              Scene scene, ScenePass scenePass, string contentRoot)
+                              SceneGraph scene, ScenePass scenePass, string contentRoot)
     {
         _device      = device;
         _world       = world;

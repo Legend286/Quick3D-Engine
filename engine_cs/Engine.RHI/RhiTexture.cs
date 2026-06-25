@@ -8,7 +8,7 @@ namespace Engine.RHI;
 
 public sealed class RhiTexture : IDisposable
 {
-    public IntPtr Handle { get; }
+    public IntPtr Handle { get; private set; }
     private readonly bool _owns;
 
     internal RhiTexture(IntPtr handle, bool ownsHandle)

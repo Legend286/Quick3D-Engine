@@ -11,14 +11,14 @@ namespace Engine.Scene;
 public sealed class SceneLoader
 {
     private readonly string _contentRoot;
-    private readonly Dictionary<string, Scene> _cache = new();
+    private readonly Dictionary<string, SceneGraph> _cache = new();
 
     public SceneLoader(string contentRoot)
     {
         _contentRoot = contentRoot;
     }
 
-    public Scene Load(string sceneName)
+    public SceneGraph Load(string sceneName)
     {
         if (_cache.TryGetValue(sceneName, out var hit)) return hit;
         string path = Path.Combine(_contentRoot, "scenes", sceneName + ".scene.json");
@@ -31,13 +31,13 @@ public sealed class SceneLoader
             ReadCommentHandling = JsonCommentHandling.Skip,
             AllowTrailingCommas = true,
         };
-        var scene = JsonSerializer.Deserialize<Scene>(json, opts)
+        var scene = JsonSerializer.Deserialize<SceneGraph>(json, opts)
             ?? throw new InvalidDataException($"Empty scene: {path}");
         _cache[sceneName] = scene;
         return scene;
     }
 
-    public string ResolveMeshSource(Scene scene, string meshName)
+    public string ResolveMeshSource(SceneGraph scene, string meshName)
     {
         foreach (var m in scene.Meshes)
         {

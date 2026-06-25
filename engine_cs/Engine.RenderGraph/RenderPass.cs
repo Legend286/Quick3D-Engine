@@ -2,6 +2,7 @@
 // Render pass base class. Subclasses declare resources in Setup() and record
 // commands in Execute().
 
+using Engine.CBindings;
 using Engine.RHI;
 
 namespace Engine.RenderGraph;

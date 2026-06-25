@@ -9,7 +9,7 @@ namespace Engine.RHI;
 
 public sealed class RhiBuffer : IDisposable
 {
-    public IntPtr Handle { get; }
+    public IntPtr Handle { get; private set; }
     public ulong Size { get; }
 
     internal RhiBuffer(IntPtr handle, ulong size)
