@@ -208,7 +208,7 @@ static EngineLogSlot* engine_log_claim_producer_slot(EngineLogSlot** out_slot, u
                     memory_order_relaxed, memory_order_relaxed)) {
                 *out_slot = slot;
                 *out_pos = pos;
-                return NULL;
+                return slot;
             }
         } else if (diff < 0) {
             return NULL;        /* full: caller busy-spins later */
@@ -340,17 +340,6 @@ static void engine_log_sink_ui_ring(const EngineLogRecord* rec, void* userdata) 
     pthread_mutex_lock(&g_state.ui_ring_lock);
     uint32_t idx = g_state.ui_ring_head;
     g_state.ui_ring[idx] = *rec;
-    /* Copy msg/file/module bytes into a stable buffer attached to the UI record.
-     * If msg_len > msg_cap it was already truncated in publish; safe to copy. */
-    if (rec->msg != NULL && rec->msg_len > 0) {
-        char* copy = (char*)malloc(rec->msg_len + 1);
-        if (copy) {
-            memcpy(copy, rec->msg, rec->msg_len);
-            copy[rec->msg_len] = '\0';
-            g_state.ui_ring[idx].msg = copy;
-            g_state.ui_ring[idx].msg_len = rec->msg_len;
-        }
-    }
     g_state.ui_ring_head = (idx + 1) % ENGINE_LOG_DEFAULT_RING_CAP;
     if (g_state.ui_ring_count < ENGINE_LOG_DEFAULT_RING_CAP) ++g_state.ui_ring_count;
     pthread_mutex_unlock(&g_state.ui_ring_lock);
@@ -618,11 +607,6 @@ int32_t engine_log_drain(EngineLogRecord* out_records, int32_t max_records) {
         /* Drain oldest-first. Find oldest = head - count. */
         uint32_t oldest = (g_state.ui_ring_head + ENGINE_LOG_DEFAULT_RING_CAP - g_state.ui_ring_count) % ENGINE_LOG_DEFAULT_RING_CAP;
         out_records[drained] = g_state.ui_ring[oldest];
-        /* Free the malloc'd msg so we don't leak. */
-        if (g_state.ui_ring[oldest].msg) {
-            free((void*)g_state.ui_ring[oldest].msg);
-            g_state.ui_ring[oldest].msg = NULL;
-        }
         --g_state.ui_ring_count;
         ++drained;
     }
