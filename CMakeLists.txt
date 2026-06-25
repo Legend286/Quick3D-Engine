@@ -134,7 +134,9 @@ target_include_directories(EngineC
 target_compile_options(EngineC PRIVATE
     -Wall -Wextra -Wpedantic
     -Wno-unused-parameter
-    $<$<COMPILE_LANGUAGE:C>:-Wno-unused-variable -Wno-unused-function -Wno-implicit-fallthrough>)
+    $<$<COMPILE_LANGUAGE:C>:-Wno-unused-variable -Wno-unused-function -Wno-implicit-fallthrough>
+    $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>
+    $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
 
 # Make dylib install_name portable so .NET Runtime (LibraryImport("EngineC"))
 # can resolve it through @rpath lookup, not a stale absolute build path.
