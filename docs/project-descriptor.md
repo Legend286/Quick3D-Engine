@@ -35,6 +35,31 @@ Each sub-file carries its own `version` field. Subsystem-decoupled migration.
 
 Every editor save goes through tmp+rename. Cook emits a `manifest.json` with SHA-256 of every cooked artefact. Three rollback tiers: git revert, editor snapshot ring (`out/.snapshots/<timestamp>/`), cook re-cook.
 
+## `modules.json#logging` shape
+
+```json
+{
+  "logging": {
+    "log_mode": 2,
+    "module_overrides": {
+      "physics": 3,
+      "audio":   4,
+      "render":  2,
+      "cook":    1
+    },
+    "enable_crash_dump": true,
+    "crash_dump_path":   "out/logs/crash.json",
+    "rolling_file_path": "out/logs/engine.log",
+    "rolling_max_size_mb": 5,
+    "ring_capacity_records": 1024,
+    "max_msg_bytes": 512
+  }
+}
+```
+
+Mode 0..4 maps to ERROR / WARN / INFO / DEBUG / TRACE inside engine_c/engine_log. Default 2 (no key) means INFO. See [`docs/console/logging-config.md`](console/logging-config.md) for the full schema.
+
 ## See also
 
 - [`engine-spec.md` §25](../../engine-spec.md) — full design rationale.
+- [`docs/console/logging-config.md`](console/logging-config.md) — logging schema + mode mapping.
