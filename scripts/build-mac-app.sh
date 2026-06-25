@@ -49,6 +49,10 @@ if ! command -v cmake >/dev/null; then
     exit 2
 fi
 
+# ---- stage 0: clean out directory ------------------------------------------
+log_section "Stage 0/8 - Clean build artifacts"
+rm -rf "${PROJECT_ROOT}/out"
+
 # ---- stage 1: cmake (native dylib) -----------------------------------------
 log_section "Stage 1/8 - CMake native dylib"
 mkdir -p "${CMAKE_BUILD_DIR}"
