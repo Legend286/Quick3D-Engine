@@ -1,0 +1,66 @@
+# --- Build artefacts --------------------------------------------------------
+out/
+build/
+cmake-build-*/
+CMakeUserPresets.json
+
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.opensdf
+
+# dotnet
+bin/
+obj/
+*.user
+.vs/
+
+# CMake / Ninja
+*.cmake.lock
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+rules.ninja
+.ninja_log
+.ninja_deps
+
+# --- IDE noise --------------------------------------------------------------
+.idea/
+.vs/
+.vscode/
+*.swp
+.DS_Store
+._*
+Thumbs.db
+
+# --- Per-project, gitignored state -----------------------------------------
+# .eeproj/editor.local.json (per-workstation editor state)
+*/.eeproj/editor.local.json
+.eeproj/editor.local.json
+
+# Cook caches
+*.cook-cache/
+.cache/
+
+# Test outputs
+*.actual
+*.expected
+
+# Logs (the engine will create log files which we don't want in repo)
+logs/
+*.log
+!AGENTS.md
+!engine-spec.md
+!docs/**/*.md

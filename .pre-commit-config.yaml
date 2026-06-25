@@ -1,0 +1,37 @@
+# Pre-commit hooks for the engine.
+# Per AGENTS.md §6.1: enforced on every feature branch commit.
+# Phase 0 ships the config only; bootstrapping the toolchain is Phase 1.
+
+repos:
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.0.0
+    hooks:
+      - id: conventional-commits
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.41.0
+    hooks:
+      - id: markdownlint
+  - repo: https://github.com/tantivy-search/tantivy-cli
+    rev: ""
+    hooks: []
+  - repo: local
+    hooks:
+      - id: clang-format
+        name: clang-format
+        language: system
+        files: \.(c|h|cc|cpp|hpp)$
+        args: ["-i"]
+      - id: json-validate
+        name: validate-json
+        language: system
+        files: \.json$
+        entry: python -c "import json,sys; json.load(open(sys.argv[1]))"
+        args: ["$(abs_path)"]
