@@ -28,6 +28,7 @@ typedef struct RhiBackend {
     void     (*destroy_swapchain)(RhiSwapchain* sc);
     uint32_t (*acquire_next_image)(RhiSwapchain* sc, RhiTexture** out_image);
     int32_t  (*present)(RhiSwapchain* sc);
+    void     (*swapchain_get_size)(RhiSwapchain* sc, uint32_t* width, uint32_t* height);
 
     int32_t  (*create_buffer)(RhiDevice* device, const RhiBufferDesc* desc,
                                RhiBuffer** out_buf);

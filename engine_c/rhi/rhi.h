@@ -206,6 +206,9 @@ ENGINE_API void     rhi_destroy_swapchain(RhiSwapchain* sc);
 ENGINE_API uint32_t rhi_acquire_next_image(RhiSwapchain* sc,
                                             RhiTexture** out_image);
 ENGINE_API int32_t  rhi_present(RhiSwapchain* sc);
+ENGINE_API void     rhi_swapchain_get_size(RhiSwapchain* sc,
+                                           uint32_t* out_width,
+                                           uint32_t* out_height);
 
 /* ----- Resources ----- */
 

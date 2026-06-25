@@ -30,9 +30,13 @@
 
 #include "rhi.h"
 #include "rhi_backend.h"
-#include "engine_log.h"
+#include "../engine_log.h"
 
 #include <cstring>
+
+@interface RhiMetalView : NSView
+- (void)syncLayerSize;
+@end
 
 namespace {
 
@@ -48,6 +52,7 @@ struct RhiSwapchainImpl {
     __strong CAMetalLayer*        layer;
     __strong id<CAMetalDrawable>  drawable;     /* current image */
     __strong id<MTLTexture>       color_image;  /* = drawable.texture shortcut */
+    __weak NSView*                view;
     uint32_t                      width;
     uint32_t                      height;
 };
@@ -92,6 +97,7 @@ static int32_t  metal_create_swapchain(RhiDevice* d, void* os_win,
 static void     metal_destroy_swapchain(RhiSwapchain* sc);
 static uint32_t metal_acquire_next_image(RhiSwapchain* sc, RhiTexture** out_image);
 static int32_t  metal_present(RhiSwapchain* sc);
+static void     metal_swapchain_get_size(RhiSwapchain* sc, uint32_t* width, uint32_t* height);
 
 static int32_t  metal_create_buffer(RhiDevice* d, const RhiBufferDesc* desc, RhiBuffer** out);
 static int32_t  metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, RhiTexture** out);
@@ -171,38 +177,77 @@ static int32_t metal_create_swapchain(RhiDevice* d, void* os_view_handle,
             ENGINE_LOG_ERROR("rhi_metal", "swapchain needs an NSView*");
             return -1;
         }
-        // Ensure the host NSView has a root CALayer to attach CAMetalLayer to.
-        // Avalonia.Native's EmbeddableControlHost installs a CAHostedLayer on
-        // the NSView (so the framework can composite the hosted content with
-        // its surrounding native widgets). We DO NOT replace that layer -
-        // overriding it would break Avalonia's embed geometry. If the view
-        // has no layer yet (unhosted path), set wantsLayer so AppKit has a
-        // surface ready and the addSublayer below finds a parent to attach
-        // to. The CAMetalLayer sublayer slots into either tree unchanged.
         view.wantsLayer = YES;
-        if (view.layer == nil) {
-            // AppKit is lazy on layer allocation when the view isn't yet in
-            // a window hierarchy; manufacture a vanilla root layer so the
-            // sublayer attach below isn't a no-op on nil.
-            view.layer = [CALayer layer];
+        CAMetalLayer* layer = nil;
+        if ([view isKindOfClass:[RhiMetalView class]]) {
+            layer = (CAMetalLayer*)view.layer;
+            [(RhiMetalView*)view syncLayerSize];
+        } else {
+            // Fallback for generic NSView, e.g. standalone game window
+            if (view.layer == nil) {
+                view.layer = [CALayer layer];
+            }
+            for (CALayer* sub in view.layer.sublayers) {
+                if ([sub isKindOfClass:[CAMetalLayer class]]) {
+                    layer = (CAMetalLayer*)sub;
+                    break;
+                }
+            }
+            if (layer == nil) {
+                layer = [CAMetalLayer layer];
+                layer.frame = view.bounds;
+                layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+                [view.layer addSublayer:layer];
+            }
         }
-        CAMetalLayer* layer = [CAMetalLayer layer];
+        uint32_t final_w = w;
+        uint32_t final_h = h;
+        double scale = 1.0;
+        if (view) {
+            if ([view isKindOfClass:[RhiMetalView class]]) {
+                final_w = (uint32_t)layer.drawableSize.width;
+                final_h = (uint32_t)layer.drawableSize.height;
+                scale = layer.contentsScale;
+                if (final_w < 10 || final_h < 10) {
+                    CGRect backingBounds = [view convertRectToBacking:view.bounds];
+                    final_w = (uint32_t)backingBounds.size.width;
+                    final_h = (uint32_t)backingBounds.size.height;
+                    if (final_w < 10) final_w = w;
+                    if (final_h < 10) final_h = h;
+                    if (view.window) {
+                        scale = view.window.backingScaleFactor;
+                    } else if ([NSScreen mainScreen]) {
+                        scale = [NSScreen mainScreen].backingScaleFactor;
+                    }
+                }
+            } else {
+                CGRect backingBounds = [view convertRectToBacking:view.bounds];
+                final_w = (uint32_t)backingBounds.size.width;
+                final_h = (uint32_t)backingBounds.size.height;
+                if (final_w < 10) final_w = w;
+                if (final_h < 10) final_h = h;
+
+                if (view.window) {
+                    scale = view.window.backingScaleFactor;
+                } else if ([NSScreen mainScreen]) {
+                    scale = [NSScreen mainScreen].backingScaleFactor;
+                }
+            }
+        }
+
         layer.device      = di->device;
-        layer.drawableSize = CGSizeMake((CGFloat)w, (CGFloat)h);
+        layer.drawableSize = CGSizeMake((CGFloat)final_w, (CGFloat)final_h);
+        layer.contentsScale = scale;
         layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         layer.framebufferOnly = YES;  // hi-perf path
-        layer.frame = view.bounds;
-        // autoresizingMask keeps the sublayer locked to view.bounds when the
-        // host is resized; drawableSize is updated explicitly by the C# side
-        // (autoresizing does NOT propagate drawableSize on its own).
-        layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
-        [view.layer addSublayer:layer];
+ 
         RhiSwapchainImpl* sc = new RhiSwapchainImpl();
         sc->layer       = layer;
         sc->drawable    = nil;
         sc->color_image = nil;
-        sc->width       = w;
-        sc->height      = h;
+        sc->view        = view;
+        sc->width       = final_w;
+        sc->height      = final_h;
         *out = reinterpret_cast<RhiSwapchain*>(sc);
         return 0;
     }
@@ -212,12 +257,15 @@ static void metal_destroy_swapchain(RhiSwapchain* p) {
     if (!p) return;
     RhiSwapchainImpl* sc = reinterpret_cast<RhiSwapchainImpl*>(p);
     @autoreleasepool {
-        // Detach CAMetalLayer from its parent view's layer hierarchy so a
-        // resize-driven destroy+create cycle doesn't stack up sublayers on
-        // the host view. ARC drops the NSView reference when our impl goes
-        // out of scope on Linux/Windows where there's no superview remove;
-        // Cocoa honors removeFromSuperlayer as the canonical cleanup.
-        [sc->layer removeFromSuperlayer];
+        id delegate = sc->layer.delegate;
+        if (delegate && [delegate isKindOfClass:[NSView class]]) {
+            NSView* v = (NSView*)delegate;
+            if (sc->layer != v.layer) {
+                [sc->layer removeFromSuperlayer];
+            }
+        } else {
+            [sc->layer removeFromSuperlayer];
+        }
     }
     delete sc;
 }
@@ -225,6 +273,46 @@ static void metal_destroy_swapchain(RhiSwapchain* p) {
 static uint32_t metal_acquire_next_image(RhiSwapchain* p, RhiTexture** out_image) {
     @autoreleasepool {
         RhiSwapchainImpl* sc = reinterpret_cast<RhiSwapchainImpl*>(p);
+        NSView* view = sc->view;
+        if (view) {
+            if ([view isKindOfClass:[RhiMetalView class]]) {
+                [(RhiMetalView*)view syncLayerSize];
+                if (sc->layer.drawableSize.width < 10.0 || sc->layer.drawableSize.height < 10.0) {
+                    CGRect backingBounds = [view convertRectToBacking:view.bounds];
+                    if (backingBounds.size.width >= 10.0 && backingBounds.size.height >= 10.0) {
+                        [(RhiMetalView*)view syncLayerSize];
+                    } else {
+                        return 0;
+                    }
+                }
+                sc->width = (uint32_t)sc->layer.drawableSize.width;
+                sc->height = (uint32_t)sc->layer.drawableSize.height;
+            } else {
+                CGRect backingBounds = [view convertRectToBacking:view.bounds];
+                uint32_t w = (uint32_t)backingBounds.size.width;
+                uint32_t h = (uint32_t)backingBounds.size.height;
+                if (w < 10 || h < 10) {
+                    return 0;
+                }
+
+                double scale = 1.0;
+                if (view.window) {
+                    scale = view.window.backingScaleFactor;
+                } else if ([NSScreen mainScreen]) {
+                    scale = [NSScreen mainScreen].backingScaleFactor;
+                }
+
+                if (sc->layer.contentsScale != scale) {
+                    sc->layer.contentsScale = scale;
+                }
+
+                if (sc->width != w || sc->height != h) {
+                    sc->width = w;
+                    sc->height = h;
+                    sc->layer.drawableSize = CGSizeMake((CGFloat)w, (CGFloat)h);
+                }
+            }
+        }
         id<CAMetalDrawable> drawable = [sc->layer nextDrawable];
         if (!drawable) {
             ENGINE_LOG_ERROR("rhi_metal", "nextDrawable nil (window hidden?)");
@@ -232,8 +320,6 @@ static uint32_t metal_acquire_next_image(RhiSwapchain* p, RhiTexture** out_image
         }
         sc->drawable    = drawable;
         sc->color_image = drawable.texture;
-        // Allocate a fresh texture impl per acquire. Consumer (executor or
-        // readback caller) takes ownership and disposes when done.
         RhiTextureImpl* ti = new RhiTextureImpl();
         ti->tex = drawable.texture;
         ti->drawable = drawable;
@@ -249,6 +335,13 @@ static int32_t metal_present(RhiSwapchain* p) {
     // The drawable is presented when its command buffer (created via
     // rhi_begin_cmdlist with texture) commits. markPresented is implicit.
     return 0;
+}
+
+static void metal_swapchain_get_size(RhiSwapchain* p, uint32_t* width, uint32_t* height) {
+    if (!p) return;
+    RhiSwapchainImpl* sc = reinterpret_cast<RhiSwapchainImpl*>(p);
+    if (width) *width = sc->width;
+    if (height) *height = sc->height;
 }
 
 static int32_t metal_create_buffer(RhiDevice* d, const RhiBufferDesc* desc, RhiBuffer** out) {
@@ -592,6 +685,53 @@ static void metal_cmd_dispatch(RhiEncoder* enc, uint32_t gx, uint32_t gy, uint32
 // resizes it (and the autoresizingMask'd CAMetalLayer sublayer) when the
 // host's Bounds change.
 
+@implementation RhiMetalView
+- (CALayer *)makeBackingLayer {
+    return [CAMetalLayer layer];
+}
+
+- (void)syncLayerSize {
+    CAMetalLayer* metalLayer = (CAMetalLayer*)self.layer;
+    if (metalLayer) {
+        if (self.superview) {
+            CGRect parentBounds = self.superview.bounds;
+            if (parentBounds.size.width >= 10.0 && parentBounds.size.height >= 10.0) {
+                if (!CGRectEqualToRect(self.frame, parentBounds)) {
+                    self.frame = parentBounds;
+                }
+            }
+        }
+        CGRect backingBounds = [self convertRectToBacking:self.bounds];
+        if (backingBounds.size.width < 10.0 || backingBounds.size.height < 10.0) {
+            return;
+        }
+        metalLayer.drawableSize = backingBounds.size;
+        double scale = 1.0;
+        if (self.window) {
+            scale = self.window.backingScaleFactor;
+        } else if ([NSScreen mainScreen]) {
+            scale = [NSScreen mainScreen].backingScaleFactor;
+        }
+        metalLayer.contentsScale = scale;
+    }
+}
+
+- (void)setFrameSize:(NSSize)newSize {
+    [super setFrameSize:newSize];
+    [self syncLayerSize];
+}
+
+- (void)setBoundsSize:(NSSize)newSize {
+    [super setBoundsSize:newSize];
+    [self syncLayerSize];
+}
+
+- (void)viewDidChangeBackingProperties {
+    [super viewDidChangeBackingProperties];
+    [self syncLayerSize];
+}
+@end
+
 extern "C" void* metal_create_macos_metal_view(void* parent_view_handle,
                                                 uint32_t width, uint32_t height) {
     @autoreleasepool {
@@ -600,10 +740,23 @@ extern "C" void* metal_create_macos_metal_view(void* parent_view_handle,
             ENGINE_LOG_ERROR("rhi_metal", "create_macos_metal_view: null parent");
             return nullptr;
         }
-        CGRect r = CGRectMake(0, 0, (CGFloat)width, (CGFloat)height);
-        NSView* metal_view = [[NSView alloc] initWithFrame:r];
+        CGRect r = parent.bounds;
+        if (r.size.width < 10.0 || r.size.height < 10.0) {
+            r = CGRectMake(0, 0, (CGFloat)width, (CGFloat)height);
+        }
+        NSView* metal_view = [[RhiMetalView alloc] initWithFrame:r];
         metal_view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         metal_view.wantsLayer = YES;
+        if (metal_view.layer) {
+            metal_view.layer.masksToBounds = YES;
+        }
+        parent.wantsLayer = YES;
+        if (parent.layer) {
+            parent.layer.masksToBounds = YES;
+        }
+        if ([parent respondsToSelector:@selector(setClipsToBounds:)]) {
+            [parent setValue:@YES forKey:@"clipsToBounds"];
+        }
         [parent addSubview:metal_view];
         return (__bridge_retained void*)metal_view;
     }
@@ -629,6 +782,7 @@ extern "C" void rhi_metal_register(void) {
     b.destroy_swapchain          = metal_destroy_swapchain;
     b.acquire_next_image         = metal_acquire_next_image;
     b.present                    = metal_present;
+    b.swapchain_get_size         = metal_swapchain_get_size;
     b.create_buffer              = metal_create_buffer;
     b.create_texture             = metal_create_texture;
     b.create_shader              = metal_create_shader;

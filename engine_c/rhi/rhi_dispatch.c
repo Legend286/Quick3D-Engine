@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT */
-#include "engine_log.h"
+#include "../engine_log.h"
 #include "rhi.h"
 #include "rhi_backend.h"
 
@@ -69,6 +69,14 @@ uint32_t rhi_acquire_next_image(RhiSwapchain* sc, RhiTexture** out) {
     return g_backends[g_active].acquire_next_image(sc, out);
 }
 int32_t rhi_present(RhiSwapchain* sc) { return g_backends[g_active].present(sc); }
+void rhi_swapchain_get_size(RhiSwapchain* sc, uint32_t* width, uint32_t* height) {
+    if (g_active >= 0 && g_backends[g_active].swapchain_get_size) {
+        g_backends[g_active].swapchain_get_size(sc, width, height);
+    } else {
+        if (width) *width = 0;
+        if (height) *height = 0;
+    }
+}
 
 int32_t rhi_create_buffer(RhiDevice* d, const RhiBufferDesc* desc, RhiBuffer** out) {
     return g_backends[g_active].create_buffer(d, desc, out);
