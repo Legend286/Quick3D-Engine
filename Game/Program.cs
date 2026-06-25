@@ -15,9 +15,9 @@ internal static class Program
     public static int Main(string[] args)
     {
         string contentRoot = ResolveContentRoot(args);
-        IntPtr window      = ResolveNativeWindow(args);
-        uint   width       = 1280;
-        uint   height      = 720;
+        IntPtr window = ResolveNativeWindow(args);
+        uint width = 1280;
+        uint height = 720;
         if (window == IntPtr.Zero)
         {
             Console.Error.WriteLine("Usage: Engine.Game --content <path> --window <hex-ptr> [--width n] [--height n]");
@@ -25,13 +25,13 @@ internal static class Program
         }
         for (int i = 0; i + 1 < args.Length; ++i)
         {
-            if (args[i] == "--width"  && uint.TryParse(args[i + 1], out var w)) width  = w;
+            if (args[i] == "--width" && uint.TryParse(args[i + 1], out var w)) width = w;
             if (args[i] == "--height" && uint.TryParse(args[i + 1], out var h)) height = h;
         }
 
         using var device = new RhiDevice();
-        using var swap   = device.CreateSwapchain(window, width, height);
-        using var world  = new EcsWorld();  // now IDisposable
+        using var swap = device.CreateSwapchain(window, width, height);
+        using var world = new EcsWorld();  // now IDisposable
 
         // Seed: a single triangle entity at the origin. Phase 3 reads the
         // entity table from Content/scenes/hello.scene.json.

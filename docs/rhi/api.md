@@ -42,6 +42,7 @@ int32_t  rhi_create_swapchain(RhiDevice*, void* os_window_handle,
 void     rhi_destroy_swapchain(RhiSwapchain*);
 uint32_t rhi_acquire_next_image(RhiSwapchain*, RhiTexture** out_image);
 int32_t  rhi_present(RhiSwapchain*);
+void     rhi_swapchain_get_size(RhiSwapchain*, uint32_t* width, uint32_t* height);
 ```
 
 `os_window_handle` is an opaque platform surface pointer. On macOS the

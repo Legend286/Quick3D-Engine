@@ -17,8 +17,8 @@ struct TriangleVOut {
 
 vertex TriangleVOut triangle_vs(
         uint vid [[vertex_id]],
-        const device float3* positions [[buffer(0)]],
-        const device float3* colors    [[buffer(1)]])
+        const device packed_float3* positions [[buffer(0)]],
+        const device packed_float3* colors    [[buffer(1)]])
 {
     TriangleVOut o;
     // The CPU side packs [pos; color] interleaved in a single buffer. Decoding

@@ -30,16 +30,17 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
     private RhiBuffer _colBuffer;
     private MeshData _triangle;
     private bool _resourcesReady;
+    private float _lastAspect;
 
     public HelloTrianglePass(RhiDevice device, IEntityStore world,
                               SceneGraph scene, ScenePass scenePass, string contentRoot)
     {
-        _device      = device;
-        _world       = world;
-        _scene       = scene;
-        _scenePass   = scenePass;
+        _device = device;
+        _world = world;
+        _scene = scene;
+        _scenePass = scenePass;
         _contentRoot = contentRoot;
-        Name         = scenePass.Name;
+        Name = scenePass.Name;
 
         string src = LoadShaderSource(_scenePass.ShaderVertex);
         _vs = RhiShader.FromSource(_device, src, "triangle_vs");
@@ -59,7 +60,29 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
     public void RebuildGeometry()
     {
         _triangle = QueryTriangleFromWorld() ?? FallbackMesh();
-        ulong desiredPos = (ulong)(_triangle.Positions.Length * sizeof(float));
+
+        float[] aspectPositions = new float[_triangle.Positions.Length];
+        System.Array.Copy(_triangle.Positions, aspectPositions, _triangle.Positions.Length);
+
+        float scaleX = 1.0f;
+        float scaleY = 1.0f;
+        float aspect = _lastAspect > 0.0f ? _lastAspect : 1.0f;
+        if (aspect >= 1.0f)
+        {
+            scaleX = 1.0f / aspect;
+        }
+        else
+        {
+            scaleY = aspect;
+        }
+
+        for (int i = 0; i < aspectPositions.Length; i += 3)
+        {
+            aspectPositions[i] *= scaleX;
+            aspectPositions[i + 1] *= scaleY;
+        }
+
+        ulong desiredPos = (ulong)(aspectPositions.Length * sizeof(float));
         ulong desiredCol = (ulong)(_triangle.Colors.Length * sizeof(float));
 
         if (_posBuffer is null)
@@ -81,7 +104,7 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
                 _colBuffer = RhiBuffer.Create(_device, desiredCol, RhiNative.BufferUsage.Vertex);
             }
         }
-        _posBuffer.Upload<float>(_triangle.Positions);
+        _posBuffer.Upload<float>(aspectPositions);
         _colBuffer.Upload<float>(_triangle.Colors);
         _resourcesReady = true;
     }
@@ -97,7 +120,7 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
                 return new MeshData
                 {
                     Positions = tri.Positions,
-                    Colors    = tri.Colors ?? tri.Positions,
+                    Colors = tri.Colors ?? tri.Positions,
                 };
             }
         }
@@ -122,18 +145,12 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        // Declare the back-buffer WRITE using the same sentinel handle the
-        // Renderer uses to bind the swapchain. The barrier compiler treats
-        // them as the same logical resource so any pre-pass transition into
-        // RenderTarget lands in the right slot.
         builder.Write(Engine.Game.Renderer.BackBufferHandle,
                       ResourceState.RenderTarget);
 
-        // Internal vertex buffer declaration so multi-pass graphs can reason
-        // about transitions. Phase 3 will plant this with a stable handle.
         var posHandle = builder.CreateBuffer(new BufferDesc
         {
-            Size  = (ulong)(_triangle.Positions.Length * sizeof(float)),
+            Size = (ulong)(_triangle.Positions.Length * sizeof(float)),
             Usage = RhiNative.BufferUsage.Vertex,
         });
         builder.Read(posHandle, ResourceState.ShaderRead);
@@ -141,26 +158,30 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
 
     public override void Execute(ICommandSink sink, RenderGraphContext context)
     {
-        if (!_resourcesReady) RebuildGeometry();
-
         // Bind the swapchain back-buffer explicitly by the sentinel handle
-        // the Renderer uses. Iterating context.Textures is incorrect: the
-        // handle table may be empty for passes that don't read the swapchain,
-        // and Dictionary iteration order is unstable when multiple textures
-        // are declared across passes.
+        // the Renderer uses. 
         if (!context.TryGetTexture(Engine.Game.Renderer.BackBufferHandle,
                                    out RhiTexture colorTarget))
             return;
 
-        uint w = context.Width  > 0 ? context.Width  : 1280;
+        uint w = context.Width > 0 ? context.Width : 1280;
         uint h = context.Height > 0 ? context.Height : 720;
+
+        float aspect = (float)w / h;
+        if (!_resourcesReady || System.Math.Abs(aspect - _lastAspect) > 0.001f)
+        {
+            _lastAspect = aspect;
+            RebuildGeometry();
+        }
 
         sink.BeginRenderPass(colorTarget,
                              RhiNative.LoadOp.Clear,
                              RhiNative.StoreOp.Store,
                              depth: null);
         sink.BindPipeline(_pipeline);
+
         sink.SetViewport(0, 0, w, h);
+
         sink.BindVertexBuffer(0, _posBuffer);
         sink.BindVertexBuffer(1, _colBuffer);
 
@@ -186,10 +207,6 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
 
     public void Dispose()
     {
-        // _vs, _fs, _pipeline are `readonly` (assigned exactly once in the
-        // constructor). Only the mutable _posBuffer / _colBuffer fields can
-        // be nulled here. Nulling them guards the finalizer against
-        // re-disposing a buffer that was already dropped via Dispose().
         _posBuffer?.Dispose();
         _colBuffer?.Dispose();
         _pipeline?.Dispose();

@@ -16,7 +16,7 @@ namespace Engine.Game;
 
 public sealed class Renderer : IDisposable
 {
-    private readonly RhiDevice  _device;
+    private readonly RhiDevice _device;
     private readonly RhiSwapchain _swap;
     private readonly IEntityStore _world;
     private SceneLoader? _loader;
@@ -32,8 +32,8 @@ public sealed class Renderer : IDisposable
     public Renderer(RhiDevice device, RhiSwapchain swap, IEntityStore world)
     {
         _device = device;
-        _swap   = swap;
-        _world  = world;
+        _swap = swap;
+        _world = world;
     }
 
     public IEntityStore World => _world;
