@@ -58,6 +58,7 @@ struct RhiBufferImpl {
 
 struct RhiTextureImpl {
     __strong id<MTLTexture> tex;
+    __strong id<CAMetalDrawable> drawable;
 };
 
 struct RhiShaderImpl {
@@ -72,6 +73,7 @@ struct RhiPipelineImpl {
 
 struct RhiCommandListImpl {
     __strong id<MTLCommandBuffer> buf;
+    __strong id<CAMetalDrawable> drawable_to_present;
 };
 
 struct RhiEncoderImpl {
@@ -234,6 +236,7 @@ static uint32_t metal_acquire_next_image(RhiSwapchain* p, RhiTexture** out_image
         // readback caller) takes ownership and disposes when done.
         RhiTextureImpl* ti = new RhiTextureImpl();
         ti->tex = drawable.texture;
+        ti->drawable = drawable;
         *out_image = reinterpret_cast<RhiTexture*>(ti);
         return 1;
     }
@@ -438,7 +441,11 @@ static RhiCommandList* metal_begin_cmdlist(RhiDevice* d) {
 static int32_t metal_submit(RhiDevice* d, RhiCommandList* cl) {
     @autoreleasepool {
         RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
+        if (cli->drawable_to_present) {
+            [cli->buf presentDrawable:cli->drawable_to_present];
+        }
         [cli->buf commit];
+        delete cli;
         return 0;
     }
 }
@@ -454,6 +461,9 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
         MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor new];
         for (uint32_t i = 0; i < desc->color_count; ++i) {
             RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(desc->color_attachments[i].texture);
+            if (ti->drawable) {
+                cli->drawable_to_present = ti->drawable;
+            }
             pd.colorAttachments[i].texture = ti->tex;
             switch (desc->color_attachments[i].load_op) {
                 case RHI_LOAD_OP_CLEAR:    pd.colorAttachments[i].loadAction = MTLLoadActionClear; break;
