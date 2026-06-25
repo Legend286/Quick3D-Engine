@@ -59,11 +59,7 @@
         </TabItem>
       </TabControl>
 
-      <Border Background="#101216">
-        <TextBlock Text="Viewport (Phase 3 - RHI Surface)"
-                   HorizontalAlignment="Center" VerticalAlignment="Center"
-                   Foreground="#5b5e64" />
-      </Border>
+      <views:ViewportPanelView DataContext="{Binding ViewportVm}" />
     </DockPanel>
 
     <!-- Right rail: asset browser -->

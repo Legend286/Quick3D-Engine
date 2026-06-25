@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 using System;
-using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Runtime.InteropServices;
-using System.Text;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Engine.CBindings;
@@ -44,10 +42,18 @@ public partial class ConsolePanelViewModel : ObservableObject, IDisposable
         }
     }
 
-    public void Dispose()
+    /// <summary>Stops the drain timer. Called by MainWindow.OnClosed to
+    /// release the panel before the engine logger shuts down.</summary>
+    public void DisposeOnClose()
     {
-        _timer.Stop();
+        if (_timer.IsEnabled)
+        {
+            _timer.Tick -= OnTick;
+            _timer.Stop();
+        }
     }
+
+    public void Dispose() => DisposeOnClose();
 }
 
 public partial class ConsoleEntryViewModel : ObservableObject

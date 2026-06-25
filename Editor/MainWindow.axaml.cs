@@ -21,6 +21,12 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(System.EventArgs e)
     {
+        // Release the Metal swapchain + device before tearing down the logger.
+        if (DataContext is MainWindowViewModel vm)
+        {
+            vm.ViewportVm?.DisposeOnClose();
+            vm.ConsoleVm?.DisposeOnClose();
+        }
         EngineLog.EngineLogShutdown();
         base.OnClosed(e);
     }
