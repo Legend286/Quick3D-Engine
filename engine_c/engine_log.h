@@ -206,6 +206,21 @@ ENGINE_API void    engine_log_dump_diagnostics(void);
 #define ENGINE_LOG_WARN(module, fmt, ...)  ENGINE_LOG_IMPL(ENGINE_LOG_WARN,  module, fmt, ##__VA_ARGS__)
 #define ENGINE_LOG_ERROR(module, fmt, ...) ENGINE_LOG_IMPL(ENGINE_LOG_ERROR, module, fmt, ##__VA_ARGS__)
 
+/**
+ * Platform-debugrap dispatch. Defined at file scope so the FATAL macro
+ * below doesn't have to embed preprocessor directives (which C99/C17
+ * forbid inside function-like macro bodies that span lines via backslash).
+ * Tries clang/gcc's __builtin_debugtrap, falls back to MSVC __debugbreak,
+ * falls back to abort().
+ */
+#if defined(__has_builtin) && __has_builtin(__builtin_debugtrap)
+#  define ENGINE_LOG_DEBUGTRAP() __builtin_debugtrap()
+#elif defined(_MSC_VER)
+#  define ENGINE_LOG_DEBUGTRAP() __debugbreak()
+#else
+#  define ENGINE_LOG_DEBUGTRAP() abort()
+#endif
+
 /** FATAL emits, flushes sinks synchronously, dumps diagnostics, then traps the
  *  debugger if attached, otherwise aborts. Never returns. */
 #define ENGINE_LOG_FATAL(module, fmt, ...) do {                                                \
@@ -219,13 +234,7 @@ ENGINE_API void    engine_log_dump_diagnostics(void);
                     (module), _engine_log_fbuf, (uint32_t)_engine_log_fn);                   \
     engine_log_flush_blocking();                                                              \
     engine_log_dump_diagnostics();                                                            \
-#   if defined(__has_builtin) && __has_builtin(__builtin_debugtrap)                           \
-        __builtin_debugtrap();                                                               \
-#   elif defined(_MSC_VER)                                                                    \
-        __debugbreak();                                                                       \
-#   else                                                                                      \
-        abort();                                                                              \
-#   endif                                                                                     \
+    ENGINE_LOG_DEBUGTRAP();                                                                   \
 } while (0)
 
 #ifdef __cplusplus
