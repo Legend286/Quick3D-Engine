@@ -38,6 +38,20 @@ internal static class EngineLogBootstrap
     {
         var projectRoot = ResolveProjectRoot(args);
         App.ProjectRoot = projectRoot;
+        Console.WriteLine($"[AppBootstrap] Resolved ProjectRoot: '{projectRoot}'");
+        Console.WriteLine($"[AppBootstrap] AppDomain BaseDirectory: '{AppDomain.CurrentDomain.BaseDirectory}'");
+
+        try
+        {
+            Directory.SetCurrentDirectory(projectRoot);
+            Console.WriteLine($"[AppBootstrap] Set CurrentDirectory to: '{projectRoot}'");
+            Directory.CreateDirectory(Path.Combine(projectRoot, "out", "logs"));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[AppBootstrap] Failed to set directory or create logs: {ex.Message}");
+        }
+
         var logging = ModulesJsonLoggingReader.Read(projectRoot);
 
         var config = EngineLogConfigBuilder.Build(
@@ -82,8 +96,12 @@ internal static class EngineLogBootstrap
             var dir = baseDir;
             for (int i = 0; i < 8; ++i)
             {
-                if (Directory.Exists(Path.Combine(dir, ".eeproj")))
+                if (Directory.Exists(Path.Combine(dir, ".eeproj")) ||
+                    Directory.Exists(Path.Combine(dir, "Content")) ||
+                    File.Exists(Path.Combine(dir, "CMakeLists.txt")))
+                {
                     return dir;
+                }
                 var parent = Directory.GetParent(dir);
                 if (parent is null) break;
                 dir = parent.FullName;
@@ -95,8 +113,12 @@ internal static class EngineLogBootstrap
             var dir = Directory.GetCurrentDirectory();
             for (int i = 0; i < 6; ++i)
             {
-                if (Directory.Exists(Path.Combine(dir, ".eeproj")))
+                if (Directory.Exists(Path.Combine(dir, ".eeproj")) ||
+                    Directory.Exists(Path.Combine(dir, "Content")) ||
+                    File.Exists(Path.Combine(dir, "CMakeLists.txt")))
+                {
                     return dir;
+                }
                 var parent = Directory.GetParent(dir);
                 if (parent is null) break;
                 dir = parent.FullName;

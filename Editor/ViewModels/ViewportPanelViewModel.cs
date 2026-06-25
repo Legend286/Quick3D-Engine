@@ -115,9 +115,13 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     {
         if (_device is null || _swap is null || _renderer is null) return;
         if (!_swap.TryAcquireNextImage(out RhiTexture? image) || image is null)
+        {
+            Console.WriteLine($"[ViewportPanelViewModel] TryAcquireNextImage returned false. Swap dimensions: {_swap.Width}x{_swap.Height}");
             return;
+        }
         try
         {
+            Console.WriteLine($"[ViewportPanelViewModel] Rendering frame to swapchain size: {_swap.Width}x{_swap.Height}");
             _renderer.RenderFrame(image, _swap.Width, _swap.Height);
         }
         catch (Exception ex)

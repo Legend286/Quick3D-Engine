@@ -22,14 +22,14 @@ internal static class ModulesJsonLoggingReader
     {
         var path = Path.Combine(projectRoot, ".eeproj", "modules.json");
         if (!File.Exists(path))
-            return Default();
+            return Default(projectRoot);
 
         try
         {
             using var stream = File.OpenRead(path);
             using var doc = JsonDocument.Parse(stream);
             if (!doc.RootElement.TryGetProperty("logging", out var logging))
-                return Default();
+                return Default(projectRoot);
 
             int logMode = logging.TryGetProperty("log_mode", out var lm)
                 ? lm.GetInt32()
@@ -84,12 +84,12 @@ internal static class ModulesJsonLoggingReader
         }
         catch
         {
-            return Default();
+            return Default(projectRoot);
         }
     }
 
-    private static Result Default() =>
+    private static Result Default(string projectRoot) =>
         new(4, 1024, 512, true,
-            Path.Combine(Directory.GetCurrentDirectory(), "out", "logs", "crash.json"),
+            Path.Combine(projectRoot, "out", "logs", "crash.json"),
             new List<KeyValuePair<string, int>>());
 }

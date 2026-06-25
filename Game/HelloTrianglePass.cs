@@ -200,9 +200,9 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
 
     private static string DefaultShader() =>
         "using namespace metal;\n" +
-        "vertex float4 default_vs(uint vid [[vertex_id]])\n" +
+        "vertex float4 triangle_vs(uint vid [[vertex_id]])\n" +
         "{ return float4(0,0,0,1); }\n" +
-        "fragment float4 default_fs(float4 p [[position]])\n" +
+        "fragment float4 triangle_fs(float4 p [[position]])\n" +
         "{ return float4(1,0,0,1); }\n";
 
     public void Dispose()
