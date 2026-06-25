@@ -15,8 +15,9 @@ public static class AvaloniaNativeWindowInterop
 {
     /// <summary>Returns the NSWindow* handle backing the Avalonia Window on
     /// macOS. Throws PlatformNotSupportedException on other platforms -
-    /// the Metal RHI path is macOS-only.</summary>
-    public static IntPtr GetMacOsWindowPointer(Window window)
+    /// the Metal RHI path is macOS-only. Returns IntPtr.Zero if window
+    /// is null (TopLevel-not-yet-attached case).</summary>
+    public static IntPtr GetMacOsWindowPointer(Window? window)
     {
         if (!OperatingSystem.IsMacOS())
             throw new PlatformNotSupportedException(
@@ -35,12 +36,17 @@ public static class AvaloniaNativeWindowInterop
     /// <summary>Read the rendered frame size from the Avalonia Window +
     /// DPI scale. Returns (Width, Height) in physical pixels suitable for
     /// CAMetalLayer.drawableSize.</summary>
-    public static (uint Width, uint Height) ReadFrameMetrics(Window window)
+    public static (uint Width, uint Height) ReadFrameMetrics(Window? window)
     {
         if (window is null) return (1, 1);
         double scale = 1.0;
-        if (window.TryGetPlatformHandle() is { } plat && plat.Scaling > 0)
-            scale = plat.Scaling;
+        // Avalonia 11 moved the window-scale factor from IPlatformHandle
+        // (gone in 11.x) onto TopLevel.RenderScaling. Read it from the
+        // resolved TopLevel so the readback bitmap gets filled at the
+        // right pixel density.
+        var top = TopLevel.GetTopLevel(window);
+        if (top is not null && top.RenderScaling > 0)
+            scale = top.RenderScaling;
         double w = window.Width  * scale;
         double h = window.Height * scale;
         if (w < 1) w = 1;

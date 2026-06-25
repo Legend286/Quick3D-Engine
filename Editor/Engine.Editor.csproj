@@ -22,7 +22,26 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Engine.CBindings: P/Invoke surface + AvaloniaNativeWindowInterop
+         (re-included here because the binding surface itself dropped it). -->
     <ProjectReference Include="..\OutOfBand\Engine.CBindings\Engine.CBindings.csproj" />
+    <!-- Phase-2 ViewportPanelViewModel reads RhiDevice / RhiSwapchain,
+         EcsWorld + TriangleComponent (Game), SceneGraph (Scene),
+         ResourceHandle / RenderPlan (RenderGraph). -->
+    <ProjectReference Include="..\engine_cs\Engine.RHI\Engine.RHI.csproj" />
+    <ProjectReference Include="..\engine_cs\Engine.RenderGraph\Engine.RenderGraph.csproj" />
+    <ProjectReference Include="..\engine_cs\Engine.Scene\Engine.Scene.csproj" />
+    <ProjectReference Include="..\Game\Engine.Game.csproj" />
+  </ItemGroup>
+
+  <!-- AvaloniaNativeWindowInterop.cs lives under OutOfBand/Engine.CBindings
+       but pulls Avalonia.Controls references; the public binding surface
+       excludes it (no Avalonia dep on a binding library). The Editor is
+       the actual consumer, so we Compile Include the file directly so the
+       <Compile Remove="AvaloniaNativeWindowInterop.cs" /> on the binding
+       csproj is symmetric with the Editor's expected usage. -->
+  <ItemGroup>
+    <Compile Include="..\OutOfBand\Engine.CBindings\AvaloniaNativeWindowInterop.cs" />
   </ItemGroup>
 
 </Project>

@@ -10,6 +10,7 @@ using System;
 using Avalonia.Controls;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Engine.CBindings;
 using Engine.Game;
 using Engine.RHI;
@@ -18,7 +19,7 @@ using Engine.RenderGraph;
 
 namespace Engine.Editor.ViewModels;
 
-public sealed class ViewportPanelViewModel : ViewModelBase, IDisposable
+public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
 {
     private readonly DispatcherTimer _timer;
     private WriteableBitmap? _bitmap;
@@ -44,7 +45,12 @@ public sealed class ViewportPanelViewModel : ViewModelBase, IDisposable
     public WriteableBitmap? Frame
     {
         get => _frame;
-        private set => SetField(ref _frame, value);
+        private set
+        {
+            if (_frame == value) return;
+            _frame = value;
+            OnPropertyChanged(nameof(Frame));
+        }
     }
 
     public void AttachToVisualTree(Control host)
@@ -71,7 +77,7 @@ public sealed class ViewportPanelViewModel : ViewModelBase, IDisposable
         }
         catch (Exception ex)
         {
-            EngineLog.LogError("viewport", $"init failed: {ex.Message}");
+            Console.Error.WriteLine($"[engine-viewport] init failed: {ex.Message}");
         }
     }
 
@@ -89,7 +95,7 @@ public sealed class ViewportPanelViewModel : ViewModelBase, IDisposable
         }
         catch (Exception ex)
         {
-            EngineLog.LogError("viewport", $"frame failed: {ex.Message}");
+            Console.Error.WriteLine($"[engine-viewport] frame failed: {ex.Message}");
         }
         finally
         {
@@ -146,7 +152,7 @@ public sealed class ViewportPanelViewModel : ViewModelBase, IDisposable
         }
         catch (Exception ex)
         {
-            EngineLog.LogError("viewport", $"resize failed: {ex.Message}");
+            Console.Error.WriteLine($"[engine-viewport] resize failed: {ex.Message}");
         }
     }
 

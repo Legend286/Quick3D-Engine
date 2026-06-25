@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 using System;
 using System.Collections.ObjectModel;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -30,9 +31,15 @@ public partial class ConsolePanelViewModel : ObservableObject, IDisposable
         Span<EngineLog.EngineLogRecord> batch = stackalloc EngineLog.EngineLogRecord[BatchCap];
         unsafe
         {
-            int drained = EngineLog.EngineLogDrain(
-                Unsafe.As<EngineLog.EngineLogRecord, byte>(ref batch[0]),
-                batch.Length);
+            // The P/Invoke ABI wants a managed pointer to the first record.
+            // `Unsafe.AsPointer<T>(ref T)` returns a `void*` that the C#
+            // marshaller can copy across into the ABI call. Equivalent to
+            // `&batch[0]`, but the explicit cast works across Roslyn
+            // versions - some still refuse the address-of bare-index
+            // expression on a Span<T> without a fixed-block scope.
+            var pBatch = (EngineLog.EngineLogRecord*)
+                System.Runtime.CompilerServices.Unsafe.AsPointer(ref batch[0]);
+            int drained = EngineLog.EngineLogDrain(pBatch, batch.Length);
             for (int i = 0; i < drained; ++i)
             {
                 Entries.Add(new ConsoleEntryViewModel(batch[i]));
