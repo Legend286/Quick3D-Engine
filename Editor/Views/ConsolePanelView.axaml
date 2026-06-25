@@ -1,0 +1,28 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Engine.Editor.ViewModels"
+             x:Class="Engine.Editor.Views.ConsolePanelView"
+             x:DataType="vm:ConsolePanelViewModel">
+
+  <DockPanel LastChildFill="True">
+    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4">
+      <Button Content="Clear" Click="OnClearClicked" />
+      <TextBlock Margin="12,0,0,0" VerticalAlignment="Center"
+                 Text="{Binding Entries.Count, StringFormat='{}{0} entries'}" />
+    </StackPanel>
+
+    <ListBox ItemsSource="{Binding Entries}" Background="#0c0e12">
+      <ListBox.ItemTemplate>
+        <DataTemplate DataType="vm:ConsoleEntryViewModel">
+          <Grid ColumnDefinitions="80,140,200,*">
+            <TextBlock Grid.Column="0" Text="{Binding Level}" Margin="4,0" />
+            <TextBlock Grid.Column="1" Text="{Binding Timestamp}" Margin="4,0" Foreground="#8b9099" />
+            <TextBlock Grid.Column="2" Text="{Binding Module}"   Margin="4,0" Foreground="#aab0b6" />
+            <TextBlock Grid.Column="3" Text="{Binding Message}"  Margin="4,0"
+                       TextWrapping="Wrap" FontFamily="Menlo,Consolas,monospace" />
+          </Grid>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+  </DockPanel>
+</UserControl>

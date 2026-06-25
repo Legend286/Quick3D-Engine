@@ -1,0 +1,84 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Engine.Editor.ViewModels"
+        xmlns:views="using:Engine.Editor.Views"
+        x:Class="Engine.Editor.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Width="1280" Height="800"
+        Title="End Engine — Editor">
+
+  <Grid RowDefinitions="Auto,*,Auto" ColumnDefinitions="Auto,*,Auto">
+
+    <!-- Top menu bar -->
+    <Menu Grid.Row="0" Grid.ColumnSpan="3">
+      <MenuItem Header="_File">
+        <MenuItem Header="_Open Project…" />
+        <MenuItem Header="_Save" />
+        <Separator />
+        <MenuItem Header="E_xit" Click="OnExitClicked" />
+      </MenuItem>
+      <MenuItem Header="_Edit">
+        <MenuItem Header="_Undo" />
+        <MenuItem Header="_Redo" />
+      </MenuItem>
+      <MenuItem Header="_Window">
+        <MenuItem Header="_Reset Layout" />
+      </MenuItem>
+      <MenuItem Header="_Tools">
+        <MenuItem Header="_Material Editor" />
+        <MenuItem Header="_Model Viewer" />
+        <MenuItem Header="_Particle Editor" />
+        <MenuItem Header="_Level Editor" />
+      </MenuItem>
+      <MenuItem Header="_Help">
+        <MenuItem Header="_About" />
+      </MenuItem>
+    </Menu>
+
+    <!-- Left rail: hierarchy / inspector -->
+    <TabControl Grid.Row="1" Grid.Column="0" Width="260" Margin="4">
+      <TabItem Header="Hierarchy">
+        <Border Padding="8"><TextBlock Text="(empty - Phase 1)" /></Border>
+      </TabItem>
+      <TabItem Header="Inspector">
+        <Border Padding="8"><TextBlock Text="(empty - Phase 1)" /></Border>
+      </TabItem>
+    </TabControl>
+
+    <!-- Center: viewport + dockable panels below it -->
+    <DockPanel Grid.Row="1" Grid.Column="1" Margin="4" LastChildFill="True">
+      <TabControl DockPanel.Dock="Bottom" Height="200">
+        <TabItem Header="Console">
+          <views:ConsolePanelView DataContext="{Binding ConsoleVm}" />
+        </TabItem>
+        <TabItem Header="Profiler">
+          <Border Padding="8"><TextBlock Text="(empty - Phase 4)" /></Border>
+        </TabItem>
+        <TabItem Header="Localization">
+          <Border Padding="8"><TextBlock Text="(empty - Phase 4)" /></Border>
+        </TabItem>
+      </TabControl>
+
+      <Border Background="#101216">
+        <TextBlock Text="Viewport (Phase 3 - RHI Surface)"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                   Foreground="#5b5e64" />
+      </Border>
+    </DockPanel>
+
+    <!-- Right rail: asset browser -->
+    <TabControl Grid.Row="1" Grid.Column="2" Width="280" Margin="4">
+      <TabItem Header="Assets">
+        <Border Padding="8"><TextBlock Text="(empty - Phase 2)" /></Border>
+      </TabItem>
+      <TabItem Header="Source Control">
+        <Border Padding="8"><TextBlock Text="(empty - Phase 5)" /></Border>
+      </TabItem>
+    </TabControl>
+
+    <!-- Status bar -->
+    <Border Grid.Row="2" Grid.ColumnSpan="3" Background="#1c1f24" Padding="8,4">
+      <TextBlock Text="{Binding StatusText}" Foreground="#aab0b6" />
+    </Border>
+  </Grid>
+</Window>
