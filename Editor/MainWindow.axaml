@@ -22,7 +22,8 @@
     <!-- Top menu bar -->
     <Menu Grid.Row="0" Grid.ColumnSpan="5" FontSize="13">
       <MenuItem Header="_File">
-        <MenuItem Header="_Open Project…" />
+        <MenuItem Header="_New Project…" Click="OnNewProjectClicked" />
+        <MenuItem Header="_Open Project…" Click="OnOpenProjectClicked" />
         <MenuItem Header="_Save" />
         <Separator />
         <MenuItem Header="E_xit" Click="OnExitClicked" />
@@ -40,6 +41,7 @@
         <MenuItem Header="_Particle Editor" />
         <MenuItem Header="_Level Editor" />
       </MenuItem>
+      <MenuItem Header="_Hot Reload" Click="OnHotReloadClicked" FontWeight="Bold" Foreground="#32cd32" />
       <MenuItem Header="_Help">
         <MenuItem Header="_About" />
       </MenuItem>

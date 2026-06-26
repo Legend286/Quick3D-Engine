@@ -11,6 +11,7 @@ namespace Engine.Editor;
 public partial class App : Application
 {
     public static string ProjectRoot { get; internal set; } = "";
+    public static string EngineSourceRoot { get; internal set; } = "";
 
     public override void Initialize()
     {
@@ -38,7 +39,9 @@ internal static class EngineLogBootstrap
     {
         var projectRoot = ResolveProjectRoot(args);
         App.ProjectRoot = projectRoot;
+        App.EngineSourceRoot = projectRoot;
         Console.WriteLine($"[AppBootstrap] Resolved ProjectRoot: '{projectRoot}'");
+        Console.WriteLine($"[AppBootstrap] Resolved EngineSourceRoot: '{projectRoot}'");
         Console.WriteLine($"[AppBootstrap] AppDomain BaseDirectory: '{AppDomain.CurrentDomain.BaseDirectory}'");
 
         try
