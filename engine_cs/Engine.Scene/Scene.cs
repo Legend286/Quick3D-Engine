@@ -44,7 +44,15 @@ public sealed class MeshRef
     [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
     [JsonPropertyName("source")] public string Source { get; set; } = string.Empty;
     [JsonPropertyName("kind")] public string Kind { get; set; } = "triangle";
+    [JsonPropertyName("vertices")] public List<Vertex>? Vertices { get; set; }
 }
+
+public sealed class Vertex
+{
+    [JsonPropertyName("pos")] public float[] Pos { get; set; } = new float[3];
+    [JsonPropertyName("color")] public float[] Color { get; set; } = new float[3];
+}
+
 
 public sealed class DirectionalLight
 {

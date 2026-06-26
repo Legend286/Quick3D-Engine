@@ -46,6 +46,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     private bool _attached;
     private bool _disposed;
     private string _contentRoot;
+    private FileSystemWatcher? _sceneWatcher;
 
     public ViewportPanelViewModel(string contentRoot, string sceneName = "hello")
     {
@@ -72,7 +73,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             _host = LocateHost(host);
             if (_host is null || _host.NativeViewHandle == IntPtr.Zero)
             {
-                Console.Error.WriteLine("[engine-viewport] host NSView handle is zero.");
+                Log.Error("[engine-viewport] host NSView handle is zero.", "Editor");
                 return;
             }
             _nsView = _host.NativeViewHandle;
@@ -83,12 +84,13 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             SeedTriangleEntity(_world);
 
             LoadGameLoop();
+            SetupSceneWatcher(_contentRoot);
 
             _timer.Start();
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[engine-viewport] init failed: {ex.Message}");
+            Log.Error($"[engine-viewport] init failed: {ex.Message}", "Editor");
         }
     }
 
@@ -107,6 +109,8 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             {
                 if (File.Exists(path)) return path;
             }
+            // Return a default path inside the project so File.Exists is false and triggers build
+            return Path.Combine(App.ProjectRoot, "Game", "bin", "Release", "net8.0", "Engine.Game.dll");
         }
         return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Engine.Game.dll");
     }
@@ -118,11 +122,11 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         string dllPath = ResolveGameDllPath();
         if (!File.Exists(dllPath))
         {
-            Console.Error.WriteLine($"[HotReload] Game DLL not found at: {dllPath}");
+            Log.Error($"[HotReload] Game DLL not found at: {dllPath}", "Editor");
             return;
         }
 
-        Console.WriteLine($"[HotReload] Loading Game assembly from: {dllPath}");
+        Log.Info($"[HotReload] Loading Game assembly from: {dllPath}", "Editor");
         _loadContext = new GameAssemblyLoadContext(dllPath);
         var assembly = _loadContext.LoadFromAssemblyName(new AssemblyName("Engine.Game"));
 
@@ -148,7 +152,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
 
     public void ReloadProject(string newProjectRoot)
     {
-        Console.WriteLine($"[Viewport] Switching project root to: {newProjectRoot}");
+        Log.Info($"[Viewport] Switching project root to: {newProjectRoot}", "Editor");
         _timer.Stop();
 
         _gameLoop?.Dispose();
@@ -173,7 +177,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[Viewport] Failed to set directory: {ex.Message}");
+            Log.Error($"[Viewport] Failed to set directory: {ex.Message}", "Editor");
         }
 
         UpdateContentRoot(Path.Combine(newProjectRoot, "Content"));
@@ -187,7 +191,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         {
             try
             {
-                Console.WriteLine("[Viewport] Game DLL not found in new project root. Rebuilding...");
+                Log.Info("[Viewport] Game DLL not found in new project root. Rebuilding...", "Editor");
                 var psi = new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = "dotnet",
@@ -203,18 +207,19 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[Viewport] Initial build failed: {ex.Message}");
+                Log.Error($"[Viewport] Initial build failed: {ex.Message}", "Editor");
             }
         }
 
         try
         {
             LoadGameLoop();
-            Console.WriteLine("[Viewport] Loaded game loop for new project root.");
+            SetupSceneWatcher(_contentRoot);
+            Log.Info("[Viewport] Loaded game loop for new project root.", "Editor");
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[Viewport] Loading failed: {ex.Message}");
+            Log.Error($"[Viewport] Loading failed: {ex.Message}", "Editor");
         }
         finally
         {
@@ -224,7 +229,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
 
     public void HotReload()
     {
-        Console.WriteLine("[HotReload] Initiating hot-reload...");
+        Log.Info("[HotReload] Initiating hot-reload...", "Editor");
         _timer.Stop();
 
         _gameLoop?.Dispose();
@@ -241,7 +246,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
 
         try
         {
-            Console.WriteLine("[HotReload] Rebuilding Game project...");
+            Log.Info("[HotReload] Rebuilding Game project...", "Editor");
             var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "dotnet",
@@ -262,25 +267,25 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             {
                 string err = proc.StandardError.ReadToEnd();
                 string stdout = proc.StandardOutput.ReadToEnd();
-                Console.Error.WriteLine($"[HotReload] Build failed (exit code {proc.ExitCode}):\n{err}\n{stdout}");
+                Log.Error($"[HotReload] Build failed (exit code {proc.ExitCode}):\n{err}\n{stdout}", "Editor");
                 return;
             }
-            Console.WriteLine("[HotReload] Build succeeded.");
+            Log.Info("[HotReload] Build succeeded.", "Editor");
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[HotReload] Build exception: {ex.Message}");
+            Log.Error($"[HotReload] Build exception: {ex.Message}", "Editor");
             return;
         }
 
         try
         {
             LoadGameLoop();
-            Console.WriteLine("[HotReload] Hot-reload complete!");
+            Log.Info("[HotReload] Hot-reload complete!", "Editor");
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[HotReload] Loading failed: {ex.Message}");
+            Log.Error($"[HotReload] Loading failed: {ex.Message}", "Editor");
         }
         finally
         {
@@ -327,7 +332,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[engine-viewport] frame failed: {ex.Message}");
+            Log.Error($"[engine-viewport] frame failed: {ex.Message}", "Editor");
         }
         finally
         {
@@ -350,11 +355,37 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         ));
     }
 
+    private void SetupSceneWatcher(string contentRoot)
+    {
+        _sceneWatcher?.Dispose();
+        _sceneWatcher = null;
+
+        string scenesDir = Path.Combine(contentRoot, "scenes");
+        if (Directory.Exists(scenesDir))
+        {
+            _sceneWatcher = new FileSystemWatcher(scenesDir, "*.scene.json")
+            {
+                EnableRaisingEvents = true,
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName
+            };
+            _sceneWatcher.Changed += (s, e) =>
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    Log.Info($"[Watcher] Scene file changed: {e.FullPath}. Reloading...", "Editor");
+                    _gameLoop?.LoadScene(_contentRoot, "hello");
+                });
+            };
+        }
+    }
+
     public void DisposeOnClose()
     {
         if (_disposed) return;
         _disposed = true;
         _timer.Stop();
+        _sceneWatcher?.Dispose();
+        _sceneWatcher = null;
         _gameLoop?.Dispose();
         _gameLoop = null;
         if (_loadContext is not null)

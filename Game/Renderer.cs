@@ -44,6 +44,40 @@ public sealed class Renderer : IDisposable
         _loader = new SceneLoader(contentRoot);
         SceneGraph scene = _loader.Load(sceneName);
 
+        // Seed or update the TriangleComponent entity in the ECS world using scene graph vertices
+        ulong? existingEnt = null;
+        for (ulong id = 1; id < 1024; ++id)
+        {
+            if (_world.TryGet<TriangleComponent>(id, out _))
+            {
+                existingEnt = id;
+                break;
+            }
+        }
+        ulong ent = existingEnt ?? _world.CreateEntity();
+
+        MeshRef? triMesh = null;
+        foreach (var m in scene.Meshes)
+        {
+            if (m.Kind == "triangle" && m.Vertices != null && m.Vertices.Count > 0)
+            {
+                triMesh = m;
+                break;
+            }
+        }
+
+        if (triMesh != null && triMesh.Vertices != null)
+        {
+            var posList = new List<float>();
+            var colList = new List<float>();
+            foreach (var v in triMesh.Vertices)
+            {
+                posList.AddRange(v.Pos);
+                colList.AddRange(v.Color);
+            }
+            _world.Set(ent, TriangleComponent.Create(posList.ToArray(), colList.ToArray()));
+        }
+
         var passes = new List<RenderPass>();
         foreach (var scenePass in scene.Passes)
             passes.Add(new HelloTrianglePass(_device, _world, scene, scenePass, contentRoot));
