@@ -15,11 +15,20 @@ public sealed class RhiDevice : IDisposable
 
     public bool IsInitialized => Handle != IntPtr.Zero;
 
+    private readonly bool _owns;
+
     public RhiDevice()
     {
         int rc = RhiNative.RhiInit(out IntPtr dev);
         if (rc != 0) throw new InvalidOperationException($"rhi_init failed rc={rc}");
         Handle = dev;
+        _owns = true;
+    }
+
+    public RhiDevice(IntPtr handle, bool ownsHandle)
+    {
+        Handle = handle;
+        _owns = ownsHandle;
     }
 
     public RhiSwapchain CreateSwapchain(IntPtr osWindow, uint width, uint height)
@@ -28,14 +37,17 @@ public sealed class RhiDevice : IDisposable
     public void Dispose()
     {
         if (!IsInitialized) return;
-        RhiNative.RhiShutdown(Handle);
+        if (_owns)
+        {
+            RhiNative.RhiShutdown(Handle);
+        }
         Handle = IntPtr.Zero;
         GC.SuppressFinalize(this);
     }
 
     ~RhiDevice()
     {
-        if (IsInitialized)
+        if (IsInitialized && _owns)
         {
             // last-resort; caller must dispose explicitly.
             RhiNative.RhiShutdown(Handle);

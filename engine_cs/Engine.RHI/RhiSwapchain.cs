@@ -30,12 +30,22 @@ public sealed class RhiSwapchain : IDisposable
         }
     }
 
+    private readonly bool _owns;
+
     internal RhiSwapchain(RhiDevice device, IntPtr osWindow, uint w, uint h)
     {
         _device = device;
         int rc = RhiNative.RhiCreateSwapchain(device.Handle, osWindow, w, h, out IntPtr sc);
         if (rc != 0) throw new InvalidOperationException($"rhi_create_swapchain rc={rc}");
         Handle = sc;
+        _owns = true;
+    }
+
+    public RhiSwapchain(RhiDevice device, IntPtr handle, bool ownsHandle)
+    {
+        _device = device;
+        Handle = handle;
+        _owns = ownsHandle;
     }
 
     /// <summary>Acquire the next drawable as an <see cref="RhiTexture"/>.
@@ -58,7 +68,10 @@ public sealed class RhiSwapchain : IDisposable
         // failed/partial C-side free doesn't get repeated by the finalizer.
         var h = Handle;
         Handle = IntPtr.Zero;
-        RhiNative.RhiDestroySwapchain(h);
+        if (_owns)
+        {
+            RhiNative.RhiDestroySwapchain(h);
+        }
         GC.SuppressFinalize(this);
     }
 
