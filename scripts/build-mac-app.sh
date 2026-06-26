@@ -122,6 +122,16 @@ if [[ -z "${DEVELOPER_ID}" ]]; then
     log_warn "      DEVELOPER_ID=\"Developer ID Application: <Team> (<TEAMID>)\""
     log_warn "      KEYCHAIN_PROFILE=<keychain-notary-profile>"
     log_section "Stage 4/8 - codesign --deep --force --sign - (ad-hoc)"
+
+    # Prevent macOS iCloud Drive syncing from appending syncing metadata attributes
+    # (like FinderInfo / fileprovider) which would invalidate the codesign signature.
+    mkdir -p "${PROJECT_ROOT}/out"
+    touch "${PROJECT_ROOT}/out/.nosync"
+    touch "${PUBLISH_OUT_DIR}/.nosync"
+    
+    # Strip extended attributes (detritus/resource forks) from the app bundle.
+    xattr -cr "${APP_BUNDLE_DIR}"
+
     codesign --deep --force --sign - \
         "${APP_BUNDLE_DIR}"
     SIGNED=2
