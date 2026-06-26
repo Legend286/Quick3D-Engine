@@ -13,6 +13,7 @@ Enables iterative game loop and render pipeline updates without restarting the E
 
 ### Loading Infrastructure (`GameAssemblyLoadContext`)
 - Collectible `AssemblyLoadContext` subclass that loads assembly bytes directly via stream to avoid file locking on disk.
+- Delegates shared contract and bindings assemblies (`Engine.RHI`, `Engine.RenderGraph`, `Engine.Scene`, `Engine.CBindings`) to the default `AssemblyLoadContext` to avoid type isolation/mismatch issues across the host-plugin boundary.
 
 ## Usage Example
 ```csharp
