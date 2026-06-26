@@ -92,9 +92,10 @@ rm -rf "${APP_BUNDLE_DIR}"
 mkdir -p "${APP_BUNDLE_DIR}/Contents/MacOS"
 mkdir -p "${APP_BUNDLE_DIR}/Contents/Resources"
 cp -R "${PUBLISH_FLAT}/." "${APP_BUNDLE_DIR}/Contents/MacOS/"
+cp -f "${DYLIB_OUT}" "${APP_BUNDLE_DIR}/Contents/MacOS/libEngineC.dylib"
 cp "${PROJECT_ROOT}/Editor/Info.plist" "${APP_BUNDLE_DIR}/Contents/Info.plist"
 log_info "Contents/MacOS/Engine.Editor (.NET host)"
-log_info "Contents/MacOS/libEngineC.dylib (from csproj Content Include)"
+log_info "Contents/MacOS/libEngineC.dylib (force-copied from out/)"
 log_info "Contents/Info.plist (bundle metadata)"
 
 # ---- stage 4: code sign (Hardened Runtime + ad-hoc fallback) ---------------
