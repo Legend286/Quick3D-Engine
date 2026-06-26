@@ -103,6 +103,7 @@ add_library(EngineC
             # NativeReferences path was retired when the binding csproj moved
             # to <Content Include> of the dylib. .a would not satisfy P/Invoke.
     engine_c/engine_log.c
+    engine_c/engine_ecs.c
     engine_c/rhi/rhi_dispatch.c
 )
 if(APPLE)
@@ -119,17 +120,11 @@ elseif(ENGINE_FETCHCONTENT)
         engine_c/rhi/rhi_vulkan_stub.c)
 endif()
 
+target_link_libraries(EngineC PRIVATE flecs)
+
 target_include_directories(EngineC
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/engine_c
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine_c/rhi)
-
-# EngineC's actual .c/.mm sources don't #include cglm/flecs/mikktspace/miniaudio -
-# those are reserved for future surface expansion in engine_cs/Game, not the
-# RHI/log C ABI. Linking them in here only forces cmake to materialize the
-# full FetchContent chain, which is expensive and currently breaks the SHARED
-# link ("ld: library 'cglm' not found"). Remove when those deps are wired
-# through engine_cs/* consumers.
-# target_link_libraries(EngineC PRIVATE cglm flecs mikktspace miniaudio)
 
 target_compile_options(EngineC PRIVATE
     -Wall -Wextra -Wpedantic
