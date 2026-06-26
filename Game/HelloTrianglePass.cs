@@ -115,12 +115,12 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
         // IEntityStore.TryGet on every plausible entity id (sparse).
         for (ulong id = 1; id < 1024; ++id)
         {
-            if (_world.TryGet<TriangleComponent>(id, out var tri) && tri.Positions is not null)
+            if (_world.TryGet<TriangleComponent>(id, out var tri))
             {
                 return new MeshData
                 {
-                    Positions = tri.Positions,
-                    Colors = tri.Colors ?? tri.Positions,
+                    Positions = tri.GetPositions(),
+                    Colors = tri.GetColors(),
                 };
             }
         }

@@ -54,19 +54,18 @@ internal static class Program
     private static void SeedTriangleEntity(EcsWorld world)
     {
         ulong ent = world.CreateEntity();
-        world.Set(ent, new TriangleComponent
-        {
-            Positions = new float[]
+        world.Set(ent, TriangleComponent.Create(
+            new float[]
             {
                  0.0f,  0.6f, 0.0f,
                 -0.6f, -0.4f, 0.0f,
                  0.6f, -0.4f, 0.0f,
             },
-            Colors = new float[]
+            new float[]
             {
                 1,0,0, 0,1,0, 0,0,1,
-            },
-        });
+            }
+        ));
     }
 
     private static string ResolveContentRoot(string[] args)

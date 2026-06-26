@@ -86,21 +86,104 @@ public sealed class EcsWorld : IEntityStore, IDisposable
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public struct TriangleComponent
+public unsafe struct TriangleComponent
 {
-    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 9)]
-    public float[] Positions;  // length 3*3
-    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 9)]
-    public float[] Colors;     // length 3*3
+    public fixed float Positions[9];
+    public fixed float Colors[9];
+
+    public static TriangleComponent Create(float[] positions, float[] colors)
+    {
+        TriangleComponent comp = default;
+        if (positions != null && positions.Length >= 9)
+        {
+            fixed (float* pSrc = positions)
+            {
+                System.Buffer.MemoryCopy(pSrc, comp.Positions, 36, 36);
+            }
+        }
+        if (colors != null && colors.Length >= 9)
+        {
+            fixed (float* pSrc = colors)
+            {
+                System.Buffer.MemoryCopy(pSrc, comp.Colors, 36, 36);
+            }
+        }
+        return comp;
+    }
+
+    public float[] GetPositions()
+    {
+        float[] arr = new float[9];
+        fixed (float* p = Positions)
+        {
+            Marshal.Copy((IntPtr)p, arr, 0, 9);
+        }
+        return arr;
+    }
+
+    public float[] GetColors()
+    {
+        float[] arr = new float[9];
+        fixed (float* p = Colors)
+        {
+            Marshal.Copy((IntPtr)p, arr, 0, 9);
+        }
+        return arr;
+    }
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public struct TransformComponent
+public unsafe struct TransformComponent
 {
-    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
-    public float[] Translate;
-    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
-    public float[] Rotate;
-    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
-    public float[] Scale;
+    public fixed float Translate[3];
+    public fixed float Rotate[3];
+    public fixed float Scale[3];
+
+    public static TransformComponent Create(float[] translate, float[] rotate, float[] scale)
+    {
+        TransformComponent comp = default;
+        if (translate != null && translate.Length >= 3)
+        {
+            fixed (float* pSrc = translate)
+            {
+                System.Buffer.MemoryCopy(pSrc, comp.Translate, 12, 12);
+            }
+        }
+        if (rotate != null && rotate.Length >= 3)
+        {
+            fixed (float* pSrc = rotate)
+            {
+                System.Buffer.MemoryCopy(pSrc, comp.Rotate, 12, 12);
+            }
+        }
+        if (scale != null && scale.Length >= 3)
+        {
+            fixed (float* pSrc = scale)
+            {
+                System.Buffer.MemoryCopy(pSrc, comp.Scale, 12, 12);
+            }
+        }
+        return comp;
+    }
+
+    public float[] GetTranslate()
+    {
+        float[] arr = new float[3];
+        fixed (float* p = Translate) Marshal.Copy((IntPtr)p, arr, 0, 3);
+        return arr;
+    }
+
+    public float[] GetRotate()
+    {
+        float[] arr = new float[3];
+        fixed (float* p = Rotate) Marshal.Copy((IntPtr)p, arr, 0, 3);
+        return arr;
+    }
+
+    public float[] GetScale()
+    {
+        float[] arr = new float[3];
+        fixed (float* p = Scale) Marshal.Copy((IntPtr)p, arr, 0, 3);
+        return arr;
+    }
 }
