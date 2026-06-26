@@ -75,6 +75,7 @@ public partial class ConsoleEntryViewModel : ObservableObject
     {
         Level = LevelToString(rec.Level);
         Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(rec.TimestampNs / 1_000_000L)
+                                  .ToLocalTime()
                                   .ToString("HH:mm:ss.fff");
         Module = rec.Module != IntPtr.Zero ? PtrToString(rec.Module) ?? "" : "";
         Source = rec.File != IntPtr.Zero
