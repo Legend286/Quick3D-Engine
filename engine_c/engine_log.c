@@ -339,7 +339,18 @@ static void engine_log_sink_ui_ring(const EngineLogRecord* rec, void* userdata) 
     (void)userdata;
     pthread_mutex_lock(&g_state.ui_ring_lock);
     uint32_t idx = g_state.ui_ring_head;
+    
+    // Free the old message string if we are wrapping around the ring capacity
+    if (g_state.ui_ring_count >= ENGINE_LOG_DEFAULT_RING_CAP) {
+        if (g_state.ui_ring[idx].msg) {
+            free((void*)g_state.ui_ring[idx].msg);
+            g_state.ui_ring[idx].msg = NULL;
+        }
+    }
+    
     g_state.ui_ring[idx] = *rec;
+    g_state.ui_ring[idx].msg = rec->msg ? strdup(rec->msg) : NULL;
+    
     g_state.ui_ring_head = (idx + 1) % ENGINE_LOG_DEFAULT_RING_CAP;
     if (g_state.ui_ring_count < ENGINE_LOG_DEFAULT_RING_CAP) ++g_state.ui_ring_count;
     pthread_mutex_unlock(&g_state.ui_ring_lock);
