@@ -120,8 +120,8 @@ public partial class MainWindow : Window
 
         // 2. Write .eeproj sub-files atomically
         string guid = Guid.NewGuid().ToString();
-        
-        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "project.json"), 
+
+        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "project.json"),
 $@"{{
   ""version"": 1,
   ""guid"": ""{guid}"",
@@ -133,7 +133,7 @@ $@"{{
   ""external_mounts"": []
 }}");
 
-        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "scenes.json"), 
+        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "scenes.json"),
 @"{
   ""version"": 1,
   ""startup_scene"":   ""Content/scenes/hello.scene.json"",
@@ -143,7 +143,7 @@ $@"{{
   ]
 }");
 
-        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "modules.json"), 
+        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "modules.json"),
 @"{
   ""version"": 1,
   ""renderer"": {
@@ -170,13 +170,13 @@ $@"{{
   }
 }");
 
-        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "addons.json"), 
+        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "addons.json"),
 @"{
   ""version"": 1,
   ""enabled"": []
 }");
 
-        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "input.json"), 
+        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "input.json"),
 @"{
   ""version"": 1,
   ""actions"": {
@@ -187,7 +187,7 @@ $@"{{
   }
 }");
 
-        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "locales.json"), 
+        WriteFileAtomic(Path.Combine(newProjectPath, ".eeproj", "locales.json"),
 @"{
   ""version"": 1,
   ""default_locale"":    ""en-US"",
@@ -195,7 +195,7 @@ $@"{{
   ""fallback_chain"":    [""en-US""]
 }");
 
-        WriteFileAtomic(Path.Combine(newProjectPath, ".gitignore"), 
+        WriteFileAtomic(Path.Combine(newProjectPath, ".gitignore"),
 @".eeproj/editor.local.json
 out/
 bin/
@@ -213,7 +213,7 @@ obj/
                 Path.Combine(App.EngineSourceRoot, "Content", "shaders", "triangle.metal"),
                 Path.Combine(newProjectPath, "Content", "shaders", "triangle.metal")
             );
-            
+
             // Copy Game C# code files
             CopyFileAtomic(Path.Combine(App.EngineSourceRoot, "Game", "GameLoop.cs"), Path.Combine(newProjectPath, "Game", "GameLoop.cs"));
             CopyFileAtomic(Path.Combine(App.EngineSourceRoot, "Game", "HelloTrianglePass.cs"), Path.Combine(newProjectPath, "Game", "HelloTrianglePass.cs"));
@@ -226,7 +226,7 @@ obj/
             string graphCsproj = Path.Combine(App.EngineSourceRoot, "engine_cs", "Engine.RenderGraph", "Engine.RenderGraph.csproj");
             string sceneCsproj = Path.Combine(App.EngineSourceRoot, "engine_cs", "Engine.Scene", "Engine.Scene.csproj");
 
-            string csprojContent = 
+            string csprojContent =
 $@"<Project Sdk=""Microsoft.NET.Sdk"">
   <PropertyGroup>
     <OutputType>Exe</OutputType>

@@ -81,7 +81,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             _swap = _device.CreateSwapchain(_nsView, _width, _height);
             _world = new EcsWorld();
             SeedTriangleEntity(_world);
-            
+
             LoadGameLoop();
 
             _timer.Start();
