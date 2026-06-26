@@ -163,6 +163,7 @@ ENGINE_API void    engine_log_emit(int32_t level,
  * managed buffer immediately on drain.
  */
 ENGINE_API int32_t engine_log_drain(EngineLogRecord* out_records, int32_t max_records);
+ENGINE_API void    engine_log_free_record(EngineLogRecord* rec);
 
 /**
  * Register or unregister a sink. Sinks run on the internal sink-pump thread.

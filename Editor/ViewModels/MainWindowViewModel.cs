@@ -21,7 +21,7 @@ public partial class MainWindowViewModel : ObservableObject
         if (OperatingSystem.IsMacOS())
         {
             string contentRoot = System.IO.Path.Combine(App.ProjectRoot, "Content");
-            Console.WriteLine($"[MainWindowViewModel] ContentRoot: '{contentRoot}'");
+            Engine.CBindings.Log.Info($"[MainWindowViewModel] ContentRoot: '{contentRoot}'", "Editor");
             ViewportVm = new ViewportPanelViewModel(contentRoot: contentRoot, sceneName: "hello");
         }
     }

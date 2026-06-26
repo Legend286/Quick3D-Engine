@@ -124,7 +124,7 @@ public sealed class CommandRecorder : IDisposable
             try { Submit(); }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[engine-rhi] auto-submit failed: {ex.Message}");
+                Engine.CBindings.Log.Error($"[engine-rhi] auto-submit failed: {ex.Message}", "rhi");
             }
             _submitted = true;
         }

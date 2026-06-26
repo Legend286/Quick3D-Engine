@@ -625,6 +625,13 @@ int32_t engine_log_drain(EngineLogRecord* out_records, int32_t max_records) {
     return drained;
 }
 
+void engine_log_free_record(EngineLogRecord* rec) {
+    if (rec && rec->msg) {
+        free((void*)rec->msg);
+        rec->msg = NULL;
+    }
+}
+
 int32_t engine_log_sink_register(const EngineLogSink* sink) {
     if (!sink) return -1;
     if (sink->abi != sizeof(EngineLogSink)) return -2;

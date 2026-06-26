@@ -99,7 +99,7 @@ public partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[NewProject] Failed to generate project: {ex.Message}");
+                Log.Error($"[NewProject] Failed to generate project: {ex.Message}", "Editor");
             }
         }
     }

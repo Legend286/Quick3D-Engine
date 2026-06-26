@@ -43,6 +43,7 @@ public partial class ConsolePanelViewModel : ObservableObject, IDisposable
             for (int i = 0; i < drained; ++i)
             {
                 Entries.Add(new ConsoleEntryViewModel(batch[i]));
+                EngineLog.EngineLogFreeRecord(ref batch[i]);
             }
             while (Entries.Count > 4096)
                 Entries.RemoveAt(0);

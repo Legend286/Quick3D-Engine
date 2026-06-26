@@ -75,6 +75,18 @@ public static partial class EngineLog
 
     [LibraryImport("EngineC", EntryPoint = "engine_log_drain")]
     public static unsafe partial int EngineLogDrain(EngineLogRecord* outRecords, int maxRecords);
+
+    [LibraryImport("EngineC", EntryPoint = "engine_log_emit")]
+    public static unsafe partial void EngineLogEmit(
+        int level,
+        IntPtr file,
+        int line,
+        IntPtr module,
+        IntPtr msg,
+        uint msgLen);
+
+    [LibraryImport("EngineC", EntryPoint = "engine_log_free_record")]
+    public static partial void EngineLogFreeRecord(ref EngineLogRecord rec);
 }
 
 /// <summary>
@@ -122,6 +134,45 @@ public static class EngineLogConfigBuilder
             CrashDumpPath = pathPtr,
         };
     }
+}
+
+/// <summary>
+/// Static helper for logging from C# through the native EngineC logger.
+/// </summary>
+public static class Log
+{
+    private static void Emit(int level, string message, string module, string file, int line)
+    {
+        var msgBytes = System.Text.Encoding.UTF8.GetBytes(message);
+        string fileName = System.IO.Path.GetFileName(file);
+        var fileBytes = System.Text.Encoding.UTF8.GetBytes(fileName);
+        var moduleBytes = System.Text.Encoding.UTF8.GetBytes(module);
+
+        unsafe
+        {
+            fixed (byte* pMsg = msgBytes)
+            fixed (byte* pFile = fileBytes)
+            fixed (byte* pModule = moduleBytes)
+            {
+                EngineLog.EngineLogEmit(level, (IntPtr)pFile, line, (IntPtr)pModule, (IntPtr)pMsg, (uint)msgBytes.Length);
+            }
+        }
+    }
+
+    public static void Info(string message, string module = "Editor", [System.Runtime.CompilerServices.CallerFilePath] string file = "", [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
+        => Emit(EngineLog.EngineLogInfo, message, module, file, line);
+
+    public static void Error(string message, string module = "Editor", [System.Runtime.CompilerServices.CallerFilePath] string file = "", [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
+        => Emit(EngineLog.EngineLogError, message, module, file, line);
+
+    public static void Warn(string message, string module = "Editor", [System.Runtime.CompilerServices.CallerFilePath] string file = "", [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
+        => Emit(EngineLog.EngineLogWarn, message, module, file, line);
+
+    public static void Debug(string message, string module = "Editor", [System.Runtime.CompilerServices.CallerFilePath] string file = "", [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
+        => Emit(EngineLog.EngineLogDebug, message, module, file, line);
+
+    public static void Trace(string message, string module = "Editor", [System.Runtime.CompilerServices.CallerFilePath] string file = "", [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
+        => Emit(EngineLog.EngineLogTrace, message, module, file, line);
 }
 
 
