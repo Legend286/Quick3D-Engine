@@ -21,7 +21,7 @@ public sealed class GameAssemblyLoadContext : AssemblyLoadContext
         {
             var bytes = File.ReadAllBytes(_assemblyPath);
             using var stream = new MemoryStream(bytes);
-            
+
             string pdbPath = Path.ChangeExtension(_assemblyPath, ".pdb");
             if (File.Exists(pdbPath))
             {
@@ -31,6 +31,16 @@ public sealed class GameAssemblyLoadContext : AssemblyLoadContext
             }
             return LoadFromStream(stream);
         }
+
+        if (string.Equals(assemblyName.Name, "Engine.RHI", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(assemblyName.Name, "Engine.RenderGraph", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(assemblyName.Name, "Engine.Scene", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(assemblyName.Name, "Engine.CBindings", StringComparison.OrdinalIgnoreCase))
+        {
+            return Default.LoadFromAssemblyName(assemblyName);
+        }
+
         return null;
     }
 }
+
