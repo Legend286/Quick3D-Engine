@@ -3,6 +3,7 @@
 #include <flecs.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 ENGINE_API ecs_world_t* engine_ecs_init(void) {
     return ecs_init();
@@ -39,11 +40,13 @@ ENGINE_API ecs_entity_t engine_ecs_register_component(ecs_world_t* world, const 
 
 ENGINE_API void engine_ecs_set_component(ecs_world_t* world, ecs_entity_t entity, ecs_entity_t component_id, const void* data, size_t size) {
     if (!world || !entity || !component_id || !data) return;
+    if (!ecs_is_valid(world, entity)) return;
     ecs_set_id(world, entity, component_id, size, data);
 }
 
 ENGINE_API int32_t engine_ecs_get_component(ecs_world_t* world, ecs_entity_t entity, ecs_entity_t component_id, void* out_data, size_t size) {
     if (!world || !entity || !component_id || !out_data) return 0;
+    if (!ecs_is_valid(world, entity)) return 0;
     const void* ptr = ecs_get_id(world, entity, component_id);
     if (ptr) {
         memcpy(out_data, ptr, size);
