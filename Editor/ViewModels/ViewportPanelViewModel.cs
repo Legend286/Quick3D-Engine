@@ -18,6 +18,8 @@
 // the visible region and the next-drawable cadence tracks the layout.
 
 using System;
+using System.IO;
+using System.Reflection;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Threading;
@@ -25,9 +27,7 @@ using Avalonia.VisualTree;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Engine.CBindings;
 using Engine.Editor.Views;
-using Engine.Game;
 using Engine.RHI;
-using Engine.RenderGraph;
 
 namespace Engine.Editor.ViewModels;
 
@@ -36,20 +36,27 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     private readonly DispatcherTimer _timer;
     private RhiDevice? _device;
     private RhiSwapchain? _swap;
-    private Renderer? _renderer;
+    private IGameLoop? _gameLoop;
+    private GameAssemblyLoadContext? _loadContext;
+    private EcsWorld? _world;
     private IntPtr _nsView;
     private ViewportMetalLayerHost? _host;
     private uint _width = ViewportMetalLayerHost.DefaultInitialWidth;
     private uint _height = ViewportMetalLayerHost.DefaultInitialHeight;
     private bool _attached;
     private bool _disposed;
-    private readonly string _contentRoot;
+    private string _contentRoot;
 
     public ViewportPanelViewModel(string contentRoot, string sceneName = "hello")
     {
         _contentRoot = contentRoot;
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
         _timer.Tick += OnTick;
+    }
+
+    public void UpdateContentRoot(string contentRoot)
+    {
+        _contentRoot = contentRoot;
     }
 
     /// <summary>Called from <c>MainWindow.Opened</c> AFTER Avalonia has laid
@@ -72,16 +79,212 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             SyncDimensionsFromHost();
             _device = new RhiDevice();
             _swap = _device.CreateSwapchain(_nsView, _width, _height);
-            var world = new EcsWorld();
-            SeedTriangleEntity(world);
-            _renderer = new Renderer(_device, _swap, world);
-            _renderer.LoadScene(_contentRoot, "hello");
+            _world = new EcsWorld();
+            SeedTriangleEntity(_world);
+            
+            LoadGameLoop();
 
             _timer.Start();
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[engine-viewport] init failed: {ex.Message}");
+        }
+    }
+
+    private string ResolveGameDllPath()
+    {
+        if (!string.IsNullOrEmpty(App.ProjectRoot))
+        {
+            var searchPaths = new[]
+            {
+                Path.Combine(App.ProjectRoot, "Game", "bin", "Release", "net8.0", "osx-arm64", "Engine.Game.dll"),
+                Path.Combine(App.ProjectRoot, "Game", "bin", "Debug", "net8.0", "osx-arm64", "Engine.Game.dll"),
+                Path.Combine(App.ProjectRoot, "Game", "bin", "Release", "net8.0", "Engine.Game.dll"),
+                Path.Combine(App.ProjectRoot, "Game", "bin", "Debug", "net8.0", "Engine.Game.dll"),
+            };
+            foreach (var path in searchPaths)
+            {
+                if (File.Exists(path)) return path;
+            }
+        }
+        return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Engine.Game.dll");
+    }
+
+    public void LoadGameLoop()
+    {
+        if (_device is null || _swap is null || _world is null) return;
+
+        string dllPath = ResolveGameDllPath();
+        if (!File.Exists(dllPath))
+        {
+            Console.Error.WriteLine($"[HotReload] Game DLL not found at: {dllPath}");
+            return;
+        }
+
+        Console.WriteLine($"[HotReload] Loading Game assembly from: {dllPath}");
+        _loadContext = new GameAssemblyLoadContext(dllPath);
+        var assembly = _loadContext.LoadFromAssemblyName(new AssemblyName("Engine.Game"));
+
+        Type? loopType = null;
+        foreach (var type in assembly.GetTypes())
+        {
+            if (typeof(IGameLoop).IsAssignableFrom(type) && !type.IsInterface && !type.IsAbstract)
+            {
+                loopType = type;
+                break;
+            }
+        }
+
+        if (loopType is null)
+        {
+            throw new InvalidOperationException("Could not find a class implementing IGameLoop in the loaded assembly.");
+        }
+
+        _gameLoop = (IGameLoop)Activator.CreateInstance(loopType)!;
+        _gameLoop.Init(_device.Handle, _swap.Handle, _world);
+        _gameLoop.LoadScene(_contentRoot, "hello");
+    }
+
+    public void ReloadProject(string newProjectRoot)
+    {
+        Console.WriteLine($"[Viewport] Switching project root to: {newProjectRoot}");
+        _timer.Stop();
+
+        _gameLoop?.Dispose();
+        _gameLoop = null;
+
+        if (_loadContext is not null)
+        {
+            _loadContext.Unload();
+            _loadContext = null;
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+
+        _world?.Dispose();
+        _world = null;
+
+        App.ProjectRoot = newProjectRoot;
+        try
+        {
+            Directory.SetCurrentDirectory(newProjectRoot);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Viewport] Failed to set directory: {ex.Message}");
+        }
+
+        UpdateContentRoot(Path.Combine(newProjectRoot, "Content"));
+
+        _world = new EcsWorld();
+        SeedTriangleEntity(_world);
+
+        // Ensure the Game DLL exists; if not, build it.
+        string dllPath = ResolveGameDllPath();
+        if (!File.Exists(dllPath))
+        {
+            try
+            {
+                Console.WriteLine("[Viewport] Game DLL not found in new project root. Rebuilding...");
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "dotnet",
+                    Arguments = "build Game/Engine.Game.csproj -c Release",
+                    WorkingDirectory = App.ProjectRoot,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var proc = System.Diagnostics.Process.Start(psi);
+                proc?.WaitForExit();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[Viewport] Initial build failed: {ex.Message}");
+            }
+        }
+
+        try
+        {
+            LoadGameLoop();
+            Console.WriteLine("[Viewport] Loaded game loop for new project root.");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Viewport] Loading failed: {ex.Message}");
+        }
+        finally
+        {
+            _timer.Start();
+        }
+    }
+
+    public void HotReload()
+    {
+        Console.WriteLine("[HotReload] Initiating hot-reload...");
+        _timer.Stop();
+
+        _gameLoop?.Dispose();
+        _gameLoop = null;
+
+        if (_loadContext is not null)
+        {
+            _loadContext.Unload();
+            _loadContext = null;
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+
+        try
+        {
+            Console.WriteLine("[HotReload] Rebuilding Game project...");
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "dotnet",
+                Arguments = "build Game/Engine.Game.csproj -c Release",
+                WorkingDirectory = App.ProjectRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null)
+            {
+                throw new InvalidOperationException("Failed to start dotnet build process.");
+            }
+            proc.WaitForExit();
+            if (proc.ExitCode != 0)
+            {
+                string err = proc.StandardError.ReadToEnd();
+                string stdout = proc.StandardOutput.ReadToEnd();
+                Console.Error.WriteLine($"[HotReload] Build failed (exit code {proc.ExitCode}):\n{err}\n{stdout}");
+                return;
+            }
+            Console.WriteLine("[HotReload] Build succeeded.");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HotReload] Build exception: {ex.Message}");
+            return;
+        }
+
+        try
+        {
+            LoadGameLoop();
+            Console.WriteLine("[HotReload] Hot-reload complete!");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[HotReload] Loading failed: {ex.Message}");
+        }
+        finally
+        {
+            _timer.Start();
         }
     }
 
@@ -113,16 +316,14 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
 
     private void OnTick(object? sender, EventArgs e)
     {
-        if (_device is null || _swap is null || _renderer is null) return;
+        if (_device is null || _swap is null || _gameLoop is null) return;
         if (!_swap.TryAcquireNextImage(out RhiTexture? image) || image is null)
         {
-            Console.WriteLine($"[ViewportPanelViewModel] TryAcquireNextImage returned false. Swap dimensions: {_swap.Width}x{_swap.Height}");
             return;
         }
         try
         {
-            Console.WriteLine($"[ViewportPanelViewModel] Rendering frame to swapchain size: {_swap.Width}x{_swap.Height}");
-            _renderer.RenderFrame(image, _swap.Width, _swap.Height);
+            _gameLoop.RenderFrame(image, _swap.Width, _swap.Height);
         }
         catch (Exception ex)
         {
@@ -137,7 +338,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
 
     private static void SeedTriangleEntity(IEntityStore world)
     {
-        uint ent = world.CreateEntity();
+        ulong ent = world.CreateEntity();
         world.Set(ent, new TriangleComponent
         {
             Positions = new float[]
@@ -155,9 +356,19 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         if (_disposed) return;
         _disposed = true;
         _timer.Stop();
-        _renderer?.Dispose();
+        _gameLoop?.Dispose();
+        _gameLoop = null;
+        if (_loadContext is not null)
+        {
+            _loadContext.Unload();
+            _loadContext = null;
+        }
+        _world?.Dispose();
+        _world = null;
         _swap?.Dispose();
+        _swap = null;
         _device?.Dispose();
+        _device = null;
         GC.SuppressFinalize(this);
     }
 

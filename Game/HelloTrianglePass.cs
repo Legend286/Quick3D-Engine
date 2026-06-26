@@ -113,7 +113,7 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
     {
         // EcsWorld.Query<T>() is a Phase-3 API; for MVP1 we walk the world via
         // IEntityStore.TryGet on every plausible entity id (sparse).
-        for (uint id = 1; id < 1024; ++id)
+        for (ulong id = 1; id < 1024; ++id)
         {
             if (_world.TryGet<TriangleComponent>(id, out var tri) && tri.Positions is not null)
             {

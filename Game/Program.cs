@@ -53,7 +53,7 @@ internal static class Program
 
     private static void SeedTriangleEntity(EcsWorld world)
     {
-        uint ent = world.CreateEntity();
+        ulong ent = world.CreateEntity();
         world.Set(ent, new TriangleComponent
         {
             Positions = new float[]

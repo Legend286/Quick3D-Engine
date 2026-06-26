@@ -32,7 +32,6 @@
     <ProjectReference Include="..\engine_cs\Engine.RHI\Engine.RHI.csproj" />
     <ProjectReference Include="..\engine_cs\Engine.RenderGraph\Engine.RenderGraph.csproj" />
     <ProjectReference Include="..\engine_cs\Engine.Scene\Engine.Scene.csproj" />
-    <ProjectReference Include="..\Game\Engine.Game.csproj" />
   </ItemGroup>
 
   <!-- AvaloniaNativeWindowInterop.cs lives under OutOfBand/Engine.CBindings
