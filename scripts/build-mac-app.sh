@@ -124,14 +124,24 @@ if [[ -z "${DEVELOPER_ID}" ]]; then
     log_warn "      KEYCHAIN_PROFILE=<keychain-notary-profile>"
     log_section "Stage 4/8 - codesign --deep --force --sign - (ad-hoc)"
 
-    # Prevent macOS iCloud Drive syncing from appending syncing metadata attributes
-    # (like FinderInfo / fileprovider) which would invalidate the codesign signature.
+    # Prevent macOS iCloud Drive syncing from re-attaching metadata between our
+    # xattr sweep and codesign; .nosync tells cloudphotod / bird to leave it alone.
     mkdir -p "${PROJECT_ROOT}/out"
     touch "${PROJECT_ROOT}/out/.nosync"
     touch "${PUBLISH_OUT_DIR}/.nosync"
-    
-    # Strip extended attributes (detritus/resource forks) from the app bundle.
-    xattr -cr "${APP_BUNDLE_DIR}"
+
+    # Use ditto to produce a clean clone of the bundle with zero resource forks
+    # or extended attributes (iCloud, Finder, quarantine). This is the canonical
+    # Apple approach: ditto(1) filters out Apple Double headers and xattrs when
+    # the destination is a new path, so the result is always signature-ready.
+    APP_BUNDLE_CLEAN="${APP_BUNDLE_DIR}_clean"
+    rm -rf "${APP_BUNDLE_CLEAN}"
+    ditto "${APP_BUNDLE_DIR}" "${APP_BUNDLE_CLEAN}"
+    rm -rf "${APP_BUNDLE_DIR}"
+    mv "${APP_BUNDLE_CLEAN}" "${APP_BUNDLE_DIR}"
+
+    # Belt-and-suspenders: sweep every file + dir for any residual xattrs.
+    find "${APP_BUNDLE_DIR}" -exec xattr -c {} \; 2>/dev/null || true
 
     codesign --deep --force --sign - \
         "${APP_BUNDLE_DIR}"
