@@ -115,6 +115,82 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Engine.Game.dll");
     }
 
+    private string ResolveStartupScene()
+    {
+        try
+        {
+            string scenesJson = Path.Combine(App.ProjectRoot, ".eeproj", "scenes.json");
+            if (File.Exists(scenesJson))
+            {
+                string text = File.ReadAllText(scenesJson);
+                var match = System.Text.RegularExpressions.Regex.Match(
+                    text, "\"startup_scene\"\\s*:\\s*\"([^\"]+)\"");
+                if (match.Success)
+                {
+                    string scenePath = match.Groups[1].Value;
+                    string name = Path.GetFileNameWithoutExtension(
+                        Path.GetFileNameWithoutExtension(scenePath));
+                    return name;
+                }
+            }
+        }
+        catch { }
+        return "hello";
+    }
+
+    private static string ResolveDotnetExe()
+    {
+        // App bundles launched from Finder/Dock don't inherit the shell PATH.
+        // Probe the known macOS install locations in priority order.
+        string[] candidates =
+        {
+            "/usr/local/share/dotnet/dotnet",
+            "/usr/local/bin/dotnet",
+            "/opt/homebrew/bin/dotnet",
+            "/opt/homebrew/share/dotnet/dotnet",
+        };
+        foreach (var c in candidates)
+            if (File.Exists(c)) return c;
+        return "dotnet"; // last-resort: maybe the PATH is set
+    }
+
+    private static (string stdout, string stderr) RunDotnetBuild(string args, string workDir)
+    {
+        string dotnetExe = ResolveDotnetExe();
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = dotnetExe,
+            Arguments = args,
+            WorkingDirectory = workDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        // Inject the dotnet directory into PATH so MSBuild child processes
+        // can also locate the dotnet host without inheriting the shell PATH.
+        string dotnetDir = Path.GetDirectoryName(dotnetExe) ?? "";
+        if (!string.IsNullOrEmpty(dotnetDir))
+        {
+            string existingPath = psi.Environment.TryGetValue("PATH", out var p) ? p ?? "" : "";
+            psi.Environment["PATH"] = string.IsNullOrEmpty(existingPath)
+                ? dotnetDir
+                : $"{dotnetDir}:{existingPath}";
+        }
+
+        using var proc = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException($"Failed to start process: {dotnetExe}");
+        // Read both streams asynchronously to prevent pipe-buffer deadlock.
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        proc.WaitForExit();
+        string stdout = stdoutTask.GetAwaiter().GetResult();
+        string stderr = stderrTask.GetAwaiter().GetResult();
+        if (proc.ExitCode != 0)
+            throw new Exception($"dotnet {args} exited {proc.ExitCode}\n{stderr}\n{stdout}");
+        return (stdout, stderr);
+    }
+
     public void LoadGameLoop()
     {
         if (_device is null || _swap is null || _world is null) return;
@@ -141,17 +217,24 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         }
 
         if (loopType is null)
-        {
-            throw new InvalidOperationException("Could not find a class implementing IGameLoop in the loaded assembly.");
-        }
+            throw new InvalidOperationException("No IGameLoop implementation found in Engine.Game.");
 
         _gameLoop = (IGameLoop)Activator.CreateInstance(loopType)!;
         _gameLoop.Init(_device.Handle, _swap.Handle, _world);
-        _gameLoop.LoadScene(_contentRoot, "hello");
+        _gameLoop.LoadScene(_contentRoot, ResolveStartupScene());
     }
 
-    public void ReloadProject(string newProjectRoot)
+    /// <summary>
+    /// Initiates a project reload. The method first tears down the current
+    /// game loop on the calling (UI) thread, then dispatches the blocking
+    /// dotnet-build step to a thread-pool thread, and finally marshals the
+    /// game loop re-initialisation back to the UI thread via
+    /// Dispatcher.UIThread.Post so Metal objects are never touched from a
+    /// worker thread.
+    /// </summary>
+    public void BeginReloadProject(string newProjectRoot)
     {
+        // ---- UI-thread teardown ----
         Log.Info($"[Viewport] Switching project root to: {newProjectRoot}", "Editor");
         _timer.Stop();
 
@@ -162,7 +245,6 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         {
             _loadContext.Unload();
             _loadContext = null;
-
             GC.Collect();
             GC.WaitForPendingFinalizers();
         }
@@ -171,64 +253,55 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         _world = null;
 
         App.ProjectRoot = newProjectRoot;
-        try
-        {
-            Directory.SetCurrentDirectory(newProjectRoot);
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"[Viewport] Failed to set directory: {ex.Message}", "Editor");
-        }
+        try { Directory.SetCurrentDirectory(newProjectRoot); }
+        catch (Exception ex) { Log.Error($"[Viewport] chdir failed: {ex.Message}", "Editor"); }
 
         UpdateContentRoot(Path.Combine(newProjectRoot, "Content"));
 
-        _world = new EcsWorld();
-        SeedTriangleEntity(_world);
-
-        // Ensure the Game DLL exists; if not, build it.
-        string dllPath = ResolveGameDllPath();
-        if (!File.Exists(dllPath))
+        // ---- background build (doesn't touch any RHI/UI objects) ----
+        System.Threading.Tasks.Task.Run(() =>
         {
-            try
+            string dllPath = ResolveGameDllPath();
+            if (!File.Exists(dllPath))
             {
-                Log.Info("[Viewport] Game DLL not found in new project root. Rebuilding...", "Editor");
-                var psi = new System.Diagnostics.ProcessStartInfo
+                try
                 {
-                    FileName = "dotnet",
-                    Arguments = "build Game/Engine.Game.csproj -c Release",
-                    WorkingDirectory = App.ProjectRoot,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                using var proc = System.Diagnostics.Process.Start(psi);
-                proc?.WaitForExit();
+                    Log.Info("[Viewport] Game DLL not found. Building...", "Editor");
+                    var (stdout, _) = RunDotnetBuild("build Game/Engine.Game.csproj -c Release", newProjectRoot);
+                    Log.Info($"[Viewport] Build succeeded: {stdout.Trim()}", "Editor");
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"[Viewport] Build failed: {ex.Message}", "Editor");
+                }
             }
-            catch (Exception ex)
-            {
-                Log.Error($"[Viewport] Initial build failed: {ex.Message}", "Editor");
-            }
-        }
 
-        try
-        {
-            LoadGameLoop();
-            SetupSceneWatcher(_contentRoot);
-            Log.Info("[Viewport] Loaded game loop for new project root.", "Editor");
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"[Viewport] Loading failed: {ex.Message}", "Editor");
-        }
-        finally
-        {
-            _timer.Start();
-        }
+            // ---- UI-thread reload ----
+            Dispatcher.UIThread.Post(() =>
+            {
+                _world = new EcsWorld();
+                SeedTriangleEntity(_world);
+                try
+                {
+                    LoadGameLoop();
+                    SetupSceneWatcher(_contentRoot);
+                    Log.Info($"[Viewport] Project loaded: {newProjectRoot}", "Editor");
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"[Viewport] LoadGameLoop failed: {ex.Message}", "Editor");
+                }
+                finally
+                {
+                    _timer.Start();
+                }
+            });
+        });
     }
 
     public void HotReload()
     {
+        // ---- UI-thread teardown ----
         Log.Info("[HotReload] Initiating hot-reload...", "Editor");
         _timer.Stop();
 
@@ -239,58 +312,50 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         {
             _loadContext.Unload();
             _loadContext = null;
-
             GC.Collect();
             GC.WaitForPendingFinalizers();
         }
 
-        try
+        // ---- background build ----
+        string projectRoot = App.ProjectRoot;
+        System.Threading.Tasks.Task.Run(() =>
         {
-            Log.Info("[HotReload] Rebuilding Game project...", "Editor");
-            var psi = new System.Diagnostics.ProcessStartInfo
+            bool built = false;
+            try
             {
-                FileName = "dotnet",
-                Arguments = "build Game/Engine.Game.csproj -c Release",
-                WorkingDirectory = App.ProjectRoot,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var proc = System.Diagnostics.Process.Start(psi);
-            if (proc is null)
-            {
-                throw new InvalidOperationException("Failed to start dotnet build process.");
+                Log.Info("[HotReload] Rebuilding Game project...", "Editor");
+                var (stdout, _) = RunDotnetBuild("build Game/Engine.Game.csproj -c Release", projectRoot);
+                Log.Info($"[HotReload] Build succeeded: {stdout.Trim()}", "Editor");
+                built = true;
             }
-            proc.WaitForExit();
-            if (proc.ExitCode != 0)
+            catch (Exception ex)
             {
-                string err = proc.StandardError.ReadToEnd();
-                string stdout = proc.StandardOutput.ReadToEnd();
-                Log.Error($"[HotReload] Build failed (exit code {proc.ExitCode}):\n{err}\n{stdout}", "Editor");
-                return;
+                Log.Error($"[HotReload] Build failed: {ex.Message}", "Editor");
             }
-            Log.Info("[HotReload] Build succeeded.", "Editor");
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"[HotReload] Build exception: {ex.Message}", "Editor");
-            return;
-        }
 
-        try
-        {
-            LoadGameLoop();
-            Log.Info("[HotReload] Hot-reload complete!", "Editor");
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"[HotReload] Loading failed: {ex.Message}", "Editor");
-        }
-        finally
-        {
-            _timer.Start();
-        }
+            // ---- UI-thread reload ----
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (!built)
+                {
+                    _timer.Start();
+                    return;
+                }
+                try
+                {
+                    LoadGameLoop();
+                    Log.Info("[HotReload] Hot-reload complete!", "Editor");
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"[HotReload] Loading failed: {ex.Message}", "Editor");
+                }
+                finally
+                {
+                    _timer.Start();
+                }
+            });
+        });
     }
 
     private ViewportMetalLayerHost? LocateHost(Visual root)
@@ -345,13 +410,10 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     {
         ulong ent = world.CreateEntity();
         world.Set(ent, TriangleComponent.Create(
-            new float[]
-            {
-                 0.0f,  0.6f, 0.0f,
-                -0.6f, -0.4f, 0.0f,
-                 0.6f, -0.4f, 0.0f,
-            },
-            new float[] { 1, 0, 0, 0, 1, 0, 0, 0, 1 }
+            new float[] {  0.0f,  0.6f, 0.0f,
+                          -0.6f, -0.4f, 0.0f,
+                           0.6f, -0.4f, 0.0f },
+            new float[] { 1, 0, 0,  0, 1, 0,  0, 0, 1 }
         ));
     }
 
@@ -373,7 +435,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
                 Dispatcher.UIThread.Post(() =>
                 {
                     Log.Info($"[Watcher] Scene file changed: {e.FullPath}. Reloading...", "Editor");
-                    _gameLoop?.LoadScene(_contentRoot, "hello");
+                    _gameLoop?.LoadScene(_contentRoot, ResolveStartupScene());
                 });
             };
         }

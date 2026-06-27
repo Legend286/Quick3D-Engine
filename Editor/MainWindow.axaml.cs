@@ -70,7 +70,10 @@ public partial class MainWindow : Window
             var path = folders[0].Path.LocalPath;
             if (DataContext is MainWindowViewModel vm && vm.ViewportVm is not null)
             {
-                vm.ViewportVm.ReloadProject(path);
+                var viewport = vm.ViewportVm;
+                EnsureLoggingBlock(path);
+                Log.Info($"[Editor] Opening project: {path}", "Editor");
+                viewport.BeginReloadProject(path);
             }
         }
     }
@@ -94,7 +97,10 @@ public partial class MainWindow : Window
                 GenerateNewProject(path);
                 if (DataContext is MainWindowViewModel vm && vm.ViewportVm is not null)
                 {
-                    vm.ViewportVm.ReloadProject(path);
+                    var viewport = vm.ViewportVm;
+                    Log.Info($"[Editor] Loading new project: {path}", "Editor");
+                    // dotnet build runs in the background inside BeginReloadProject
+                    viewport.BeginReloadProject(path);
                 }
             }
             catch (Exception ex)
@@ -167,6 +173,13 @@ $@"{{
     ""hrtf"":     true,
     ""buses"":    [""Master"", ""Music"", ""SFX"", ""Voice"", ""Ambience""],
     ""default_master_volume"": 0.85
+  },
+  ""logging"": {
+    ""log_mode"":              2,
+    ""ring_capacity_records"": 1024,
+    ""max_msg_bytes"":         512,
+    ""enable_crash_dump"":     true,
+    ""module_overrides"":      {}
   }
 }");
 
@@ -274,11 +287,41 @@ $@"<Project Sdk=""Microsoft.NET.Sdk"">
 
     private static void CopyFileAtomic(string sourcePath, string destPath)
     {
-        if (File.Exists(sourcePath))
-        {
-            string content = File.ReadAllText(sourcePath);
-            WriteFileAtomic(destPath, content);
-        }
+        if (!File.Exists(sourcePath)) return;
+        string tmpPath = destPath + ".tmp";
+        File.Copy(sourcePath, tmpPath, overwrite: true);
+        if (File.Exists(destPath)) File.Delete(destPath);
+        File.Move(tmpPath, destPath);
+    }
+
+    /// <summary>
+    /// If the project's modules.json exists but is missing the "logging" block,
+    /// inject it so the console panel receives verbose log output.
+    /// Uses a regex-replace so the JSON stays valid without a full parse+serialize round-trip.
+    /// </summary>
+    private static void EnsureLoggingBlock(string projectPath)
+    {
+        string modulesPath = Path.Combine(projectPath, ".eeproj", "modules.json");
+        if (!File.Exists(modulesPath)) return;
+
+        string text = File.ReadAllText(modulesPath);
+        if (text.Contains("\"logging\"")) return;
+
+        const string loggingBlock =
+            ",\n  \"logging\": {\n" +
+            "    \"log_mode\":              2,\n" +
+            "    \"ring_capacity_records\": 1024,\n" +
+            "    \"max_msg_bytes\":         512,\n" +
+            "    \"enable_crash_dump\":     true,\n" +
+            "    \"module_overrides\":      {}\n" +
+            "  }";
+
+        int lastBrace = text.LastIndexOf('}');
+        if (lastBrace < 0) return;
+
+        string patched = text.Insert(lastBrace, loggingBlock + "\n");
+        WriteFileAtomic(modulesPath, patched);
+        Log.Info($"[Editor] Migrated modules.json to add logging block: {modulesPath}", "Editor");
     }
 
     protected override void OnClosed(System.EventArgs e)
