@@ -126,6 +126,11 @@ typedef struct EngineLogState {
 
 static EngineLogState g_state;
 
+static EngineLogSlot* engine_log_get_slot(uint32_t index) {
+    size_t slot_bytes = sizeof(EngineLogSlot) + (size_t)g_state.msg_cap;
+    return (EngineLogSlot*)(g_state.ring_mem + (size_t)index * slot_bytes);
+}
+
 static int64_t engine_log_now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -199,7 +204,7 @@ static int engine_log_slot_publish(EngineLogSlot* slot, const EngineLogRecord* r
 static EngineLogSlot* engine_log_claim_producer_slot(EngineLogSlot** out_slot, uint64_t* out_pos) {
     uint64_t pos = atomic_load_explicit(&g_state.producer_idx, memory_order_relaxed);
     for (;;) {
-        EngineLogSlot* slot = &g_state.ring_slots[pos & g_state.ring_mask];
+        EngineLogSlot* slot = engine_log_get_slot((uint32_t)(pos & g_state.ring_mask));
         int32_t seq = atomic_load_explicit(&slot->sequence, memory_order_acquire);
         int64_t diff = (int64_t)seq - (int64_t)pos;
         if (diff == 0) {
@@ -230,7 +235,7 @@ static int engine_log_consume_next(EngineLogSlot** out_slot, uint64_t* out_pos) 
     uint64_t cons = atomic_load_explicit(&g_state.consumed_idx, memory_order_relaxed);
     if (prod == cons) return 0;
 
-    EngineLogSlot* slot = &g_state.ring_slots[cons & g_state.ring_mask];
+    EngineLogSlot* slot = engine_log_get_slot((uint32_t)(cons & g_state.ring_mask));
     int32_t seq = atomic_load_explicit(&slot->sequence, memory_order_acquire);
     if ((uint64_t)seq != cons + 1) return 0;
 
@@ -241,7 +246,7 @@ static int engine_log_consume_next(EngineLogSlot** out_slot, uint64_t* out_pos) 
 }
 
 static void engine_log_release_slot(uint64_t pos) {
-    EngineLogSlot* slot = &g_state.ring_slots[pos & g_state.ring_mask];
+    EngineLogSlot* slot = engine_log_get_slot((uint32_t)(pos & g_state.ring_mask));
     atomic_store_explicit(&slot->sequence, (int32_t)(pos + g_state.ring_cap), memory_order_release);
 }
 
@@ -439,7 +444,8 @@ int32_t engine_log_init(const EngineLogConfig* config) {
     if (!g_state.ring_mem) return ENGINE_LOG_ERR_NOMEM;
     g_state.ring_slots = (EngineLogSlot*)g_state.ring_mem;
     for (uint32_t i = 0; i < g_state.ring_cap; ++i) {
-        atomic_init(&g_state.ring_slots[i].sequence, (int32_t)i);
+        EngineLogSlot* slot = engine_log_get_slot(i);
+        atomic_init(&slot->sequence, (int32_t)i);
     }
 
     atomic_init(&g_state.global_level, cfg.global_level);
