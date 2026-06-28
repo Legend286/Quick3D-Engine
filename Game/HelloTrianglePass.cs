@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // HelloTrianglePass: a single RenderPass that owns its shader + pipeline +
 // buffers (created at construction, disposed on Dispose) and reads the
-// triangle geometry from the scene's EcsWorld instead of a hardcoded fallback.
+// mesh geometry from the scene's EcsWorld instead of a hardcoded fallback.
 //
 // The EcsWorld is consulted once for the first entity that carries a
-// TriangleComponent; if none exists, a hardcoded triangle keeps the hello-
+// MeshComponent; if none exists, a hardcoded triangle keeps the hello-
 // triangle path alive without crashing.
 
 using System.IO;
@@ -12,6 +12,7 @@ using Engine.CBindings;
 using Engine.RenderGraph;
 using Engine.RHI;
 using Engine.Scene;
+using static Engine.CBindings.Log;
 
 namespace Engine.Game;
 
@@ -43,23 +44,25 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
         Name = scenePass.Name;
 
         string src = LoadShaderSource(_scenePass.ShaderVertex);
+        Debug($"[HelloTrianglePass] Compiling shaders from: {_scenePass.ShaderVertex}", "Renderer");
         _vs = RhiShader.FromSource(_device, src, "triangle_vs");
         _fs = RhiShader.FromSource(_device, src, "triangle_fs");
+        Debug("[HelloTrianglePass] Shaders compiled successfully", "Renderer");
 
         _pipeline = RhiPipeline.CreateGraphics(
             _device, _vs, _fs,
             RhiNative.TextureFormat.Bgra8Unorm,
             enableDepth: false);
+        Debug("[HelloTrianglePass] Pipeline created", "Renderer");
 
         RebuildGeometry();
-    }
-
-    /// <summary>Pull the latest triangle-component data from the world and
-    /// re-upload the vertex + color buffers. Re-creates the buffers if the
-    /// new entity carries more (or fewer) vertices than the prior one.</summary>
+    }        /// <summary>Pull the latest mesh-component data from the world and
+             /// re-upload the vertex + color buffers. Re-creates the buffers if the
+             /// new entity carries more (or fewer) vertices than the prior one.</summary>
     public void RebuildGeometry()
     {
-        _triangle = QueryTriangleFromWorld() ?? FallbackMesh();
+        _triangle = QueryMeshFromWorld() ?? FallbackMesh();
+        Debug($"[HelloTrianglePass] RebuildGeometry: {_triangle.Positions.Length / 3} vertices, aspect={_lastAspect:F3}", "Renderer");
 
         float[] aspectPositions = new float[_triangle.Positions.Length];
         System.Array.Copy(_triangle.Positions, aspectPositions, _triangle.Positions.Length);
@@ -87,6 +90,7 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
 
         if (_posBuffer is null)
         {
+            Trace($"[HelloTrianglePass] Creating vertex buffers: pos={desiredPos}B col={desiredCol}B", "Renderer");
             _posBuffer = RhiBuffer.Create(_device, desiredPos, RhiNative.BufferUsage.Vertex);
             _colBuffer = RhiBuffer.Create(_device, desiredCol, RhiNative.BufferUsage.Vertex);
         }
@@ -95,11 +99,13 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
             // If the entity grew beyond the original buffer we re-create.
             if (_posBuffer.Size < desiredPos)
             {
+                Debug($"[HelloTrianglePass] Resizing pos buffer: {_posBuffer.Size}B -> {desiredPos}B", "Renderer");
                 _posBuffer.Dispose();
                 _posBuffer = RhiBuffer.Create(_device, desiredPos, RhiNative.BufferUsage.Vertex);
             }
             if (_colBuffer.Size < desiredCol)
             {
+                Debug($"[HelloTrianglePass] Resizing col buffer: {_colBuffer.Size}B -> {desiredCol}B", "Renderer");
                 _colBuffer.Dispose();
                 _colBuffer = RhiBuffer.Create(_device, desiredCol, RhiNative.BufferUsage.Vertex);
             }
@@ -109,21 +115,23 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
         _resourcesReady = true;
     }
 
-    private MeshData? QueryTriangleFromWorld()
+    private MeshData? QueryMeshFromWorld()
     {
         // EcsWorld.Query<T>() is a Phase-3 API; for MVP1 we walk the world via
         // IEntityStore.TryGet on every plausible entity id (sparse).
         for (ulong id = 1; id < 1024; ++id)
         {
-            if (_world.TryGet<TriangleComponent>(id, out var tri))
+            if (_world.TryGet<MeshComponent>(id, out var mesh))
             {
+                Debug($"[HelloTrianglePass] Found MeshComponent on entity {id}: {mesh.VertexCount} vertices", "Renderer");
                 return new MeshData
                 {
-                    Positions = tri.GetPositions(),
-                    Colors = tri.GetColors(),
+                    Positions = mesh.GetPositions(),
+                    Colors = mesh.GetColors(),
                 };
             }
         }
+        Debug("[HelloTrianglePass] No MeshComponent found in world, using fallback", "Renderer");
         return null;
     }
 
@@ -168,11 +176,12 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
         uint h = context.Height > 0 ? context.Height : 720;
 
         float aspect = (float)w / h;
-        if (!_resourcesReady || System.Math.Abs(aspect - _lastAspect) > 0.001f)
-        {
-            _lastAspect = aspect;
-            RebuildGeometry();
-        }
+        // Always rebuild geometry each frame so hot-reload ECS mesh changes
+        // (vertex positions, colors, count) are picked up immediately.
+        // RebuildGeometry is cheap for small meshes and re-uploads only
+        // when the vertex data actually changed.
+        _lastAspect = aspect;
+        RebuildGeometry();
 
         sink.BeginRenderPass(colorTarget,
                              RhiNative.LoadOp.Clear,
@@ -185,8 +194,10 @@ public sealed class HelloTrianglePass : RenderPass, IDisposable
         sink.BindVertexBuffer(0, _posBuffer);
         sink.BindVertexBuffer(1, _colBuffer);
 
-        uint total = 0;
-        foreach (var d in _scenePass.Draws) total += (uint)d.VertexCount;
+        // Use the actual vertex count from the mesh component rather than
+        // the hardcoded value in the scene descriptor so hot-reloading
+        // vertices beyond the original count works immediately.
+        uint total = (uint)(_triangle.Positions.Length / 3);
         sink.Draw(total);
         sink.EndPass();
     }

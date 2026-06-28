@@ -33,12 +33,11 @@ internal static class Program
         using var swap = device.CreateSwapchain(window, width, height);
         using var world = new EcsWorld();  // now IDisposable
 
-        // Seed: a single triangle entity at the origin. Phase 3 reads the
-        // entity table from Content/scenes/hello.scene.json.
-        SeedTriangleEntity(world);
-
         var renderer = new Renderer(device, swap, world);
-        renderer.LoadScene(contentRoot, "hello");
+        // renderer.LoadScene(contentRoot, "hello");
+
+        // Seed AFTER LoadScene so game-code vertex data overrides scene defaults.
+        //  SeedTriangleEntity(world);
 
         if (swap.TryAcquireNextImage(out RhiTexture? image))
         {
@@ -49,23 +48,6 @@ internal static class Program
             }
         }
         return 0;
-    }
-
-    private static void SeedTriangleEntity(EcsWorld world)
-    {
-        ulong ent = world.CreateEntity();
-        world.Set(ent, TriangleComponent.Create(
-            new float[]
-            {
-                 0.0f,  0.6f, 0.0f,
-                -0.6f, -0.4f, 0.0f,
-                 0.6f, -0.4f, 0.0f,
-            },
-            new float[]
-            {
-                1,0,0, 0,1,0, 0,0,1,
-            }
-        ));
     }
 
     private static string ResolveContentRoot(string[] args)

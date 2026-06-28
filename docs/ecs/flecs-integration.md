@@ -15,6 +15,7 @@ Exposes a C ABI bridge in `EngineC` to integrate FLECS component and entity mana
 - `engine_ecs_get_component` - Retrieves a copy of the component data from an entity.
 
 ### C# Wrapper (`EcsWorld`)
+- `Clear()` - Disposes the underlying native world and allocates a fresh one, clearing all cached component registrations.
 - `CreateEntity()` - Creates a new entity.
 - `Set<T>(ulong entity, in T component)` - Associates a component struct with an entity (auto-registering the type dynamically on the first call).
 - `TryGet<T>(ulong entity, out T component)` - Gets a component struct associated with an entity.

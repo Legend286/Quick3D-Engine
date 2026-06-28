@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using Engine.RHI;
 using Engine.RenderGraph;
 using Engine.Scene;
+using static Engine.CBindings.Log;
 
 namespace Engine.Game;
 
@@ -44,11 +45,11 @@ public sealed class Renderer : IDisposable
         _loader = new SceneLoader(contentRoot);
         SceneGraph scene = _loader.Load(sceneName);
 
-        // Seed or update the TriangleComponent entity in the ECS world using scene graph vertices
+        // Seed or update the MeshComponent entity in the ECS world using scene graph vertices
         ulong? existingEnt = null;
         for (ulong id = 1; id < 1024; ++id)
         {
-            if (_world.TryGet<TriangleComponent>(id, out _))
+            if (_world.TryGet<MeshComponent>(id, out _))
             {
                 existingEnt = id;
                 break;
@@ -56,28 +57,30 @@ public sealed class Renderer : IDisposable
         }
         ulong ent = existingEnt ?? _world.CreateEntity();
 
-        MeshRef? triMesh = null;
+        MeshRef? meshRef = null;
         foreach (var m in scene.Meshes)
         {
-            if (m.Kind == "triangle" && m.Vertices != null && m.Vertices.Count > 0)
+            if (m.Vertices != null && m.Vertices.Count > 0)
             {
-                triMesh = m;
+                meshRef = m;
                 break;
             }
         }
 
-        if (triMesh != null && triMesh.Vertices != null)
+        if (meshRef != null && meshRef.Vertices != null)
         {
             var posList = new List<float>();
             var colList = new List<float>();
-            foreach (var v in triMesh.Vertices)
+            foreach (var v in meshRef.Vertices)
             {
                 posList.AddRange(v.Pos);
                 colList.AddRange(v.Color);
             }
-            _world.Set(ent, TriangleComponent.Create(posList.ToArray(), colList.ToArray()));
+            Debug($"[Renderer] Seeding MeshComponent on entity {ent}: {meshRef.Vertices.Count} vertices", "Renderer");
+            _world.Set(ent, MeshComponent.Create(posList.ToArray(), colList.ToArray()));
         }
 
+        Info($"[Renderer] Compiling render graph with {scene.Passes.Count} pass(es)...", "Renderer");
         var passes = new List<RenderPass>();
         foreach (var scenePass in scene.Passes)
             passes.Add(new HelloTrianglePass(_device, _world, scene, scenePass, contentRoot));
@@ -90,6 +93,7 @@ public sealed class Renderer : IDisposable
         var newPlan = new RenderGraphCompiler().Compile(passes);
         _plan = newPlan;
         previous?.Passes?.DisposeAll();
+        Info("[Renderer] Render graph compiled successfully", "Renderer");
     }
 
     public void RenderFrame(RhiTexture backBuffer, uint width, uint height)

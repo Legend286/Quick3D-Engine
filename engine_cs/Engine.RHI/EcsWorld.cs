@@ -8,7 +8,7 @@ namespace Engine.RHI;
 
 public sealed class EcsWorld : IEntityStore, IDisposable
 {
-    private readonly IntPtr _world;
+    private IntPtr _world;
     private readonly ConcurrentDictionary<Type, ulong> _components = new();
     private bool _disposed;
 
@@ -21,6 +21,14 @@ public sealed class EcsWorld : IEntityStore, IDisposable
         {
             throw new InvalidOperationException("Failed to initialize FLECS world");
         }
+    }
+
+    public void Clear()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        EcsNative.EngineEcsShutdown(_world);
+        _world = EcsNative.EngineEcsInit();
+        _components.Clear();
     }
 
     public ulong CreateEntity()
@@ -85,27 +93,46 @@ public sealed class EcsWorld : IEntityStore, IDisposable
     ~EcsWorld() => Dispose();
 }
 
+/// <summary>
+/// Generic mesh component holding vertex positions and colors for up to
+/// <see cref="MaxVertices"/> vertices. Replaces the hard-coded
+/// TriangleComponent with a flexible container that supports arbitrary
+/// polygon counts (1..MaxVertices).
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct TriangleComponent
+public unsafe struct MeshComponent
 {
-    public fixed float Positions[9];
-    public fixed float Colors[9];
+    public const int MaxVertices = 256;
+    private const int MaxFloats = MaxVertices * 3;
+    private const int PosBytes = MaxFloats * sizeof(float);
+    private const int ColBytes = MaxFloats * sizeof(float);
 
-    public static TriangleComponent Create(float[] positions, float[] colors)
+    public int VertexCount;
+    public fixed float Positions[MaxFloats];
+    public fixed float Colors[MaxFloats];
+
+    public static MeshComponent Create(float[] positions, float[] colors)
     {
-        TriangleComponent comp = default;
-        if (positions != null && positions.Length >= 9)
+        MeshComponent comp = default;
+        int posLen = positions?.Length ?? 0;
+        int colLen = colors?.Length ?? 0;
+        int vertexCount = System.Math.Min(posLen / 3, MaxVertices);
+        int colorCount = System.Math.Min(colLen / 3, MaxVertices);
+        comp.VertexCount = System.Math.Min(vertexCount, colorCount);
+
+        if (comp.VertexCount > 0)
         {
+            int copyPosFloats = comp.VertexCount * 3;
+            int copyPosBytes = copyPosFloats * sizeof(float);
             fixed (float* pSrc = positions)
             {
-                System.Buffer.MemoryCopy(pSrc, comp.Positions, 36, 36);
+                System.Buffer.MemoryCopy(pSrc, comp.Positions, PosBytes, (ulong)copyPosBytes);
             }
-        }
-        if (colors != null && colors.Length >= 9)
-        {
+            int copyColFloats = comp.VertexCount * 3;
+            int copyColBytes = copyColFloats * sizeof(float);
             fixed (float* pSrc = colors)
             {
-                System.Buffer.MemoryCopy(pSrc, comp.Colors, 36, 36);
+                System.Buffer.MemoryCopy(pSrc, comp.Colors, ColBytes, (ulong)copyColBytes);
             }
         }
         return comp;
@@ -113,20 +140,28 @@ public unsafe struct TriangleComponent
 
     public float[] GetPositions()
     {
-        float[] arr = new float[9];
-        fixed (float* p = Positions)
+        int count = System.Math.Max(VertexCount * 3, 0);
+        float[] arr = new float[count];
+        if (count > 0)
         {
-            Marshal.Copy((IntPtr)p, arr, 0, 9);
+            fixed (float* p = Positions)
+            {
+                Marshal.Copy((IntPtr)p, arr, 0, count);
+            }
         }
         return arr;
     }
 
     public float[] GetColors()
     {
-        float[] arr = new float[9];
-        fixed (float* p = Colors)
+        int count = System.Math.Max(VertexCount * 3, 0);
+        float[] arr = new float[count];
+        if (count > 0)
         {
-            Marshal.Copy((IntPtr)p, arr, 0, 9);
+            fixed (float* p = Colors)
+            {
+                Marshal.Copy((IntPtr)p, arr, 0, count);
+            }
         }
         return arr;
     }
