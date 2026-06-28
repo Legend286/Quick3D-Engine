@@ -60,6 +60,8 @@ build; CI injects credentials via standard secret env vars.
 
 ```sh
 ./scripts/build-mac-app.sh
+# To fully clean the out/ directory and force a fresh build:
+./scripts/build-mac-app.sh --clean
 open "out/publish/osx-arm64/EndEngine Editor.app"
 ```
 

@@ -12,6 +12,20 @@
 
 set -euo pipefail
 
+CLEAN_MODE=0
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --clean)
+      CLEAN_MODE=1
+      shift
+      ;;
+    *)
+      printf "ERROR: Unknown parameter %s\n" "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
 # ---- locate project root (script lives at scripts/build-mac-app.sh) --------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -50,8 +64,12 @@ if ! command -v cmake >/dev/null; then
 fi
 
 # ---- stage 0: clean out directory ------------------------------------------
-log_section "Stage 0/8 - Clean build artifacts"
-rm -rf "${PROJECT_ROOT}/out"
+if [[ "${CLEAN_MODE}" -eq 1 ]]; then
+    log_section "Stage 0/8 - Clean build artifacts"
+    rm -rf "${PROJECT_ROOT}/out"
+else
+    log_section "Stage 0/8 - Incremental build (use --clean to wipe out/)"
+fi
 
 # ---- stage 1: cmake (native dylib) -----------------------------------------
 log_section "Stage 1/8 - CMake native dylib"
@@ -137,14 +155,15 @@ if [[ -z "${DEVELOPER_ID}" ]]; then
     APP_BUNDLE_CLEAN="${APP_BUNDLE_DIR}_clean"
     rm -rf "${APP_BUNDLE_CLEAN}"
     ditto "${APP_BUNDLE_DIR}" "${APP_BUNDLE_CLEAN}"
-    rm -rf "${APP_BUNDLE_DIR}"
-    mv "${APP_BUNDLE_CLEAN}" "${APP_BUNDLE_DIR}"
 
     # Belt-and-suspenders: sweep every file + dir for any residual xattrs.
-    find "${APP_BUNDLE_DIR}" -exec xattr -c {} \; 2>/dev/null || true
+    find "${APP_BUNDLE_CLEAN}" -exec xattr -c {} \; 2>/dev/null || true
 
     codesign --deep --force --sign - \
-        "${APP_BUNDLE_DIR}"
+        "${APP_BUNDLE_CLEAN}"
+
+    rm -rf "${APP_BUNDLE_DIR}"
+    mv "${APP_BUNDLE_CLEAN}" "${APP_BUNDLE_DIR}"
     SIGNED=2
 else
     log_section "Stage 4/8 - codesign --deep --force --options runtime"
