@@ -47,6 +47,22 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     private bool _disposed;
     private string _contentRoot;
     private FileSystemWatcher? _sceneWatcher;
+    private FileSystemWatcher? _scriptWatcher;
+    private System.Threading.Timer? _debounceTimer;
+    private const int DebounceMs = 500;
+    private bool _autoHotReloadEnabled = true;
+    private int _debounceGeneration;
+    private readonly object _hotReloadLock = new();
+
+    /// <summary>
+    /// Enable/disable automatic hot-reload when Game/*.cs scripts change.
+    /// Disabled during a reload to prevent re-entrancy.
+    /// </summary>
+    public bool AutoHotReloadEnabled
+    {
+        get => _autoHotReloadEnabled;
+        set => _autoHotReloadEnabled = value;
+    }
 
     public ViewportPanelViewModel(string contentRoot, string sceneName = "hello")
     {
@@ -85,6 +101,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
 
             LoadGameLoop();
             SetupSceneWatcher(_contentRoot);
+            SetupScriptWatcher();
 
             _timer.Start();
         }
@@ -267,12 +284,14 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
                 try
                 {
                     Log.Info("[Viewport] Game DLL not found. Building...", "Editor");
-                    var (stdout, _) = RunDotnetBuild("build Game/Engine.Game.csproj -c Release", newProjectRoot);
+                    var (stdout, stderr) = RunDotnetBuild("build Game/Engine.Game.csproj -c Release", newProjectRoot);
                     Log.Info($"[Viewport] Build succeeded: {stdout.Trim()}", "Editor");
+                    EmitBuildErrors(stderr);
                 }
                 catch (Exception ex)
                 {
                     Log.Error($"[Viewport] Build failed: {ex.Message}", "Editor");
+                    EmitBuildErrors(ex.ToString());
                 }
             }
 
@@ -285,6 +304,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
                 {
                     LoadGameLoop();
                     SetupSceneWatcher(_contentRoot);
+                    SetupScriptWatcher();
                     Log.Info($"[Viewport] Project loaded: {newProjectRoot}", "Editor");
                 }
                 catch (Exception ex)
@@ -301,6 +321,9 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
 
     public void HotReload()
     {
+        // Prevent re-entrant auto-reload during an active reload cycle.
+        _autoHotReloadEnabled = false;
+
         // ---- UI-thread teardown ----
         Log.Info("[HotReload] Initiating hot-reload...", "Editor");
         _timer.Stop();
@@ -324,13 +347,16 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             try
             {
                 Log.Info("[HotReload] Rebuilding Game project...", "Editor");
-                var (stdout, _) = RunDotnetBuild("build Game/Engine.Game.csproj -c Release", projectRoot);
+                var (stdout, stderr) = RunDotnetBuild("build Game/Engine.Game.csproj -c Release", projectRoot);
                 Log.Info($"[HotReload] Build succeeded: {stdout.Trim()}", "Editor");
+                if (!string.IsNullOrWhiteSpace(stderr))
+                    EmitBuildErrors(stderr);
                 built = true;
             }
             catch (Exception ex)
             {
                 Log.Error($"[HotReload] Build failed: {ex.Message}", "Editor");
+                EmitBuildErrors(ex.ToString());
             }
 
             // ---- UI-thread reload ----
@@ -352,6 +378,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
                 }
                 finally
                 {
+                    _autoHotReloadEnabled = true;
                     _timer.Start();
                 }
             });
@@ -409,11 +436,12 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     private static void SeedTriangleEntity(IEntityStore world)
     {
         ulong ent = world.CreateEntity();
-        world.Set(ent, TriangleComponent.Create(
+        Log.Debug($"[Viewport] Seeding default mesh entity {ent}", "Editor");
+        world.Set(ent, MeshComponent.Create(
             new float[] {  0.0f,  0.6f, 0.0f,
                           -0.6f, -0.4f, 0.0f,
                            0.6f, -0.4f, 0.0f },
-            new float[] { 1, 0, 0,  0, 1, 0,  0, 0, 1 }
+            new float[] { 1, 0, 0, 0, 1, 0, 0, 0, 1 }
         ));
     }
 
@@ -441,6 +469,84 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>
+    /// Watch Game/*.cs files for changes and trigger hot-reload after a
+    /// debounce period. Prevents rapid-fire rebuilds when saving multiple
+    /// files in quick succession.
+    /// </summary>
+    private void SetupScriptWatcher()
+    {
+        _scriptWatcher?.Dispose();
+        _debounceTimer?.Dispose();
+
+        string projectRoot = App.ProjectRoot;
+        if (string.IsNullOrEmpty(projectRoot)) return;
+
+        string gameDir = Path.Combine(projectRoot, "Game");
+        if (!Directory.Exists(gameDir)) return;
+
+        Log.Info($"[Watcher] Watching scripts in: {gameDir}", "Editor");
+        _scriptWatcher = new FileSystemWatcher(gameDir, "*.cs")
+        {
+            EnableRaisingEvents = true,
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
+            IncludeSubdirectories = true,
+        };
+
+        _scriptWatcher.Changed += OnScriptChanged;
+        _scriptWatcher.Created += OnScriptChanged;
+        _scriptWatcher.Renamed += OnScriptChanged;
+    }
+
+    private void OnScriptChanged(object sender, FileSystemEventArgs e)
+    {
+        if (!_autoHotReloadEnabled) return;
+
+        lock (_hotReloadLock)
+        {
+            int gen = Interlocked.Increment(ref _debounceGeneration);
+            Log.Debug($"[Watcher] Script change detected: {Path.GetFileName(e.FullPath)} (debounce {DebounceMs}ms, gen={gen})", "Editor");
+            _debounceTimer?.Dispose();
+            _debounceTimer = new System.Threading.Timer(_ =>
+            {
+                if (Interlocked.CompareExchange(ref _debounceGeneration, gen, gen) != gen)
+                {
+                    Log.Debug("[HotReload] Stale debounce callback skipped", "Editor");
+                    return;
+                }
+                Dispatcher.UIThread.Post(() =>
+                {
+                    Log.Info("[HotReload] Auto-reload triggered by script change", "Editor");
+                    HotReload();
+                });
+            }, null, DebounceMs, System.Threading.Timeout.Infinite);
+        }
+    }
+
+    /// <summary>
+    /// Forward build errors into the engine log with source-file context so
+    /// the console panel can render them as clickable file:line links.
+    /// </summary>
+    private static void EmitBuildErrors(string stderr)
+    {
+        if (string.IsNullOrWhiteSpace(stderr)) return;
+
+        var lines = stderr.Replace("\r\n", "\n").Split('\n');
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0) continue;
+
+            // Categorize: error CS####, warning CS####, or generic
+            if (trimmed.Contains("error CS") || trimmed.Contains("error :"))
+                Log.Error($"[Build] {trimmed}", "Build");
+            else if (trimmed.Contains("warning CS") || trimmed.Contains("warning :"))
+                Log.Warn($"[Build] {trimmed}", "Build");
+            else
+                Log.Info($"[Build] {trimmed}", "Build");
+        }
+    }
+
     public void DisposeOnClose()
     {
         if (_disposed) return;
@@ -448,6 +554,10 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         _timer.Stop();
         _sceneWatcher?.Dispose();
         _sceneWatcher = null;
+        _scriptWatcher?.Dispose();
+        _scriptWatcher = null;
+        _debounceTimer?.Dispose();
+        _debounceTimer = null;
         _gameLoop?.Dispose();
         _gameLoop = null;
         if (_loadContext is not null)
