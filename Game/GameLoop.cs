@@ -47,7 +47,7 @@ public sealed class GameLoop : IGameLoop
                 -0.6f, -0.4f, 0.0f,
                  0.0f, -1.4f, 0.0f
             },
-            new float[] {
+            new float[] {  
                 1, 0, 0,   // R
                 0, 1, 0,   // G
                 0, 0, 1,   // B
