@@ -39,13 +39,17 @@ public sealed class GameLoop : IGameLoop
         world.Set(ent, MeshComponent.Create(
             new float[] {  
                 // Top Triangle
-                 0.0f,  0.6f, 0.0f,
-                -0.6f, -0.4f, 0.0f,
-                 0.6f, -0.4f, 0.0f,
+                 0.0f,  1.0f, 0.0f,
+                -0.7f, -0.0f, 0.0f,
+                 0.7f, -0.0f, 0.0f,
                 // Bottom Triangle
-                 0.6f, -0.4f, 0.0f,
-                -0.6f, -0.4f, 0.0f,
-                 0.0f, -1.4f, 0.0f
+                 0.7f, -0.0f, 0.0f,
+                -0.7f, -0.0f, 0.0f,
+                 0.0f, -1.0f, 0.0f,
+
+                 0, 1, 0,
+                -1, 0, 0,
+                -1, -1, 0
             },
             new float[] {
                 1, 0, 0,   // R
@@ -54,7 +58,11 @@ public sealed class GameLoop : IGameLoop
                 
                 0, 0, 1,   // B
                 0, 1, 0,   // G
-                1, 1, 1    // White
+                1, 1, 1,    // White
+
+                1, 1, 1,    // White
+                0, 0, 0,    // Black
+                1, 1, 1     // White
             }
         ));
     }
