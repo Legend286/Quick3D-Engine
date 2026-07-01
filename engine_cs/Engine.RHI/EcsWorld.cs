@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using System.Numerics;
 using Engine.CBindings;
 
 namespace Engine.RHI;
@@ -37,7 +38,7 @@ public sealed class EcsWorld : IEntityStore, IDisposable
         return EcsNative.EngineEcsCreateEntity(_world);
     }
 
-    private ulong GetOrRegisterComponent<T>() where T : struct
+    private ulong GetOrRegisterComponent<T>() where T : unmanaged
     {
         return _components.GetOrAdd(typeof(T), type =>
         {
@@ -53,12 +54,12 @@ public sealed class EcsWorld : IEntityStore, IDisposable
         });
     }
 
-    private static int GetAlignment<T>() where T : struct
+    private static int GetAlignment<T>() where T : unmanaged
     {
         return 8;
     }
 
-    public unsafe void Set<T>(ulong entity, in T component) where T : struct
+    public unsafe void Set<T>(ulong entity, in T component) where T : unmanaged
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ulong cid = GetOrRegisterComponent<T>();
@@ -69,7 +70,7 @@ public sealed class EcsWorld : IEntityStore, IDisposable
         }
     }
 
-    public unsafe bool TryGet<T>(ulong entity, out T component) where T : struct
+    public unsafe bool TryGet<T>(ulong entity, out T component) where T : unmanaged
     {
         component = default;
         if (_disposed) return false;
@@ -96,129 +97,30 @@ public sealed class EcsWorld : IEntityStore, IDisposable
 /// <summary>
 /// Generic mesh component holding vertex positions and colors for up to
 /// <see cref="MaxVertices"/> vertices. Replaces the hard-coded
-/// TriangleComponent with a flexible container that supports arbitrary
-/// polygon counts (1..MaxVertices).
-/// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct MeshComponent
+public struct ModelComponent
 {
-    public const int MaxVertices = 256;
-    private const int MaxFloats = MaxVertices * 3;
-    private const int PosBytes = MaxFloats * sizeof(float);
-    private const int ColBytes = MaxFloats * sizeof(float);
+    public ulong ModelId;
 
-    public int VertexCount;
-    public fixed float Positions[MaxFloats];
-    public fixed float Colors[MaxFloats];
-
-    public static MeshComponent Create(float[] positions, float[] colors)
+    public static ModelComponent Create(ulong modelId)
     {
-        MeshComponent comp = default;
-        int posLen = positions?.Length ?? 0;
-        int colLen = colors?.Length ?? 0;
-        int vertexCount = System.Math.Min(posLen / 3, MaxVertices);
-        int colorCount = System.Math.Min(colLen / 3, MaxVertices);
-        comp.VertexCount = System.Math.Min(vertexCount, colorCount);
-
-        if (comp.VertexCount > 0)
-        {
-            int copyPosFloats = comp.VertexCount * 3;
-            int copyPosBytes = copyPosFloats * sizeof(float);
-            fixed (float* pSrc = positions)
-            {
-                System.Buffer.MemoryCopy(pSrc, comp.Positions, PosBytes, (ulong)copyPosBytes);
-            }
-            int copyColFloats = comp.VertexCount * 3;
-            int copyColBytes = copyColFloats * sizeof(float);
-            fixed (float* pSrc = colors)
-            {
-                System.Buffer.MemoryCopy(pSrc, comp.Colors, ColBytes, (ulong)copyColBytes);
-            }
-        }
-        return comp;
-    }
-
-    public float[] GetPositions()
-    {
-        int count = System.Math.Max(VertexCount * 3, 0);
-        float[] arr = new float[count];
-        if (count > 0)
-        {
-            fixed (float* p = Positions)
-            {
-                Marshal.Copy((IntPtr)p, arr, 0, count);
-            }
-        }
-        return arr;
-    }
-
-    public float[] GetColors()
-    {
-        int count = System.Math.Max(VertexCount * 3, 0);
-        float[] arr = new float[count];
-        if (count > 0)
-        {
-            fixed (float* p = Colors)
-            {
-                Marshal.Copy((IntPtr)p, arr, 0, count);
-            }
-        }
-        return arr;
+        return new ModelComponent { ModelId = modelId };
     }
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct TransformComponent
+public struct MaterialComponent
 {
-    public fixed float Translate[3];
-    public fixed float Rotate[3];
-    public fixed float Scale[3];
-
-    public static TransformComponent Create(float[] translate, float[] rotate, float[] scale)
-    {
-        TransformComponent comp = default;
-        if (translate != null && translate.Length >= 3)
-        {
-            fixed (float* pSrc = translate)
-            {
-                System.Buffer.MemoryCopy(pSrc, comp.Translate, 12, 12);
-            }
-        }
-        if (rotate != null && rotate.Length >= 3)
-        {
-            fixed (float* pSrc = rotate)
-            {
-                System.Buffer.MemoryCopy(pSrc, comp.Rotate, 12, 12);
-            }
-        }
-        if (scale != null && scale.Length >= 3)
-        {
-            fixed (float* pSrc = scale)
-            {
-                System.Buffer.MemoryCopy(pSrc, comp.Scale, 12, 12);
-            }
-        }
-        return comp;
-    }
-
-    public float[] GetTranslate()
-    {
-        float[] arr = new float[3];
-        fixed (float* p = Translate) Marshal.Copy((IntPtr)p, arr, 0, 3);
-        return arr;
-    }
-
-    public float[] GetRotate()
-    {
-        float[] arr = new float[3];
-        fixed (float* p = Rotate) Marshal.Copy((IntPtr)p, arr, 0, 3);
-        return arr;
-    }
-
-    public float[] GetScale()
-    {
-        float[] arr = new float[3];
-        fixed (float* p = Scale) Marshal.Copy((IntPtr)p, arr, 0, 3);
-        return arr;
-    }
+    public ulong MaterialId;
 }
+
+[StructLayout(LayoutKind.Sequential)]
+public struct DirectionalLightComponent
+{
+    public Vector3 Color;
+    public float Intensity;
+    public Vector3 Direction;
+    public bool CastShadows;
+}
+
+

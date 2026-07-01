@@ -7,6 +7,6 @@ public interface IEntityStore
 {
     void Clear();
     ulong CreateEntity();
-    void Set<T>(ulong entity, in T component) where T : struct;
-    bool TryGet<T>(ulong entity, out T component) where T : struct;
+    void Set<T>(ulong entity, in T component) where T : unmanaged;
+    bool TryGet<T>(ulong entity, out T component) where T : unmanaged;
 }

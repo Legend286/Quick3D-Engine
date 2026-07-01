@@ -32,6 +32,9 @@
 #include "rhi_backend.h"
 #include "../engine_log.h"
 
+#include <slang.h>
+#include <slang-com-ptr.h>
+
 #include <cstring>
 
 @interface RhiMetalView : NSView
@@ -45,7 +48,8 @@ namespace {
 
 struct RhiDeviceImpl {
     __strong id<MTLDevice>        device;
-    __strong id<MTLCommandQueue>  queue;
+    __strong id<MTLCommandQueue>  queue_graphics;
+    __strong id<MTLCommandQueue>  queue_compute;
 };
 
 struct RhiSwapchainImpl {
@@ -61,9 +65,18 @@ struct RhiBufferImpl {
     __strong id<MTLBuffer> buf;
 };
 
+struct RhiHeapImpl {
+    __strong id<MTLHeap> heap;
+};
+
+struct RhiFenceImpl {
+    __strong id<MTLSharedEvent> event;
+};
+
 struct RhiTextureImpl {
     __strong id<MTLTexture> tex;
     __strong id<CAMetalDrawable> drawable;
+    __strong id<MTLCommandQueue> queue;
 };
 
 struct RhiShaderImpl {
@@ -74,6 +87,7 @@ struct RhiShaderImpl {
 struct RhiPipelineImpl {
     __strong id<MTLRenderPipelineState> g;
     __strong id<MTLComputePipelineState> c;
+    MTLPrimitiveType primitive_type;
 };
 
 struct RhiCommandListImpl {
@@ -85,6 +99,12 @@ struct RhiEncoderImpl {
     __strong id<MTLRenderCommandEncoder>  render;
     __strong id<MTLComputeCommandEncoder> compute;
     bool is_compute;
+    MTLPrimitiveType current_primitive_type;
+    
+    // Index buffer state for indexed draws
+    __strong id<MTLBuffer> active_index_buffer;
+    uint64_t active_index_buffer_offset;
+    bool active_index_buffer_is_32bit;
 };
 
 // ----- trampolines (no overloads; all explicit argument lists) -----
@@ -108,18 +128,28 @@ static int32_t  metal_create_graphics_pipeline(RhiDevice* d,
 static int32_t  metal_create_compute_pipeline(RhiDevice* d,
                                                const RhiComputePipelineDesc* desc,
                                                RhiPipeline** out);
+static int32_t  metal_create_heap(RhiDevice* d, const RhiHeapDesc* desc, RhiHeap** out);
+static int32_t  metal_create_texture_from_heap(RhiDevice* d, RhiHeap* h, const RhiTextureDesc* desc, uint64_t offset, RhiTexture** out);
+static int32_t  metal_create_buffer_from_heap(RhiDevice* d, RhiHeap* h, const RhiBufferDesc* desc, uint64_t offset, RhiBuffer** out);
+static int32_t  metal_create_fence(RhiDevice* d, RhiFence** out);
+
 static void  metal_destroy_buffer(RhiBuffer* b);
 static void  metal_destroy_texture(RhiTexture* t);
 static void  metal_destroy_shader(RhiShader* s);
 static void  metal_destroy_pipeline(RhiPipeline* p);
+static void  metal_destroy_heap(RhiHeap* h);
+static void  metal_destroy_fence(RhiFence* f);
 static int32_t  metal_buffer_upload(RhiBuffer* b, const void* data, uint64_t size);
 static int32_t  metal_texture_readback(RhiTexture* t, void* out, uint64_t out_size, uint32_t stride);
+static int32_t  metal_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride);
 
-static RhiCommandList* metal_begin_cmdlist(RhiDevice* d);
+static RhiCommandList* metal_begin_cmdlist(RhiDevice* d, RhiQueueType queue);
 static int32_t         metal_submit(RhiDevice* d, RhiCommandList* cl);
 static void            metal_cmd_pipeline_barrier(RhiCommandList* cl,
                                                    uint32_t count,
                                                    const RhiBarrier* barriers);
+static void            metal_cmd_signal_fence(RhiCommandList* cl, RhiFence* f, uint64_t value);
+static void            metal_cmd_wait_fence(RhiCommandList* cl, RhiFence* f, uint64_t value);
 static RhiEncoder*     metal_begin_render_pass(RhiCommandList* cl,
                                                 const RhiPassDesc* desc);
 static RhiEncoder*     metal_begin_compute_pass(RhiCommandList* cl,
@@ -136,10 +166,14 @@ static void metal_cmd_set_viewport(RhiEncoder* e, float x, float y,
                                     float min_depth, float max_depth);
 static void metal_cmd_set_scissor(RhiEncoder* e, uint32_t x, uint32_t y,
                                    uint32_t w, uint32_t h);
-static void metal_cmd_set_clear_color(RhiEncoder* e, float r, float g,
-                                       float b, float a);
+static void metal_cmd_set_clear_color(RhiEncoder* e, float r, float g, float b, float a);
+static void metal_cmd_push_constants(RhiEncoder* e, uint32_t sz, const void* d);
 static void metal_cmd_draw(RhiEncoder* e, const RhiDrawArgs* a);
-static void metal_cmd_dispatch(RhiEncoder* e, uint32_t gx, uint32_t gy, uint32_t gz);
+static void metal_cmd_draw_indexed(RhiEncoder* e, const RhiDrawIndexedArgs* a);
+static void metal_cmd_bind_index_buffer(RhiEncoder* e, RhiBuffer* buf, int32_t is_32bit, uint64_t offset);
+static void metal_cmd_bind_texture(RhiEncoder* e, uint32_t slot, RhiTexture* tex);
+static void metal_cmd_bind_texture_array(RhiEncoder* e, uint32_t slot, RhiTexture** texs, uint32_t count);
+static void metal_cmd_dispatch(RhiEncoder* e, uint32_t x, uint32_t y, uint32_t z);
 
 // ----- impl -----
 
@@ -150,11 +184,13 @@ static int32_t metal_init(RhiDevice** out_device) {
             ENGINE_LOG_ERROR("rhi_metal", "MTLCreateSystemDefaultDevice returned nil");
             return -1;
         }
-        id<MTLCommandQueue> queue = [dev newCommandQueue];
-        if (!queue) return -2;
+        id<MTLCommandQueue> qg = [dev newCommandQueue];
+        id<MTLCommandQueue> qc = [dev newCommandQueue];
+        if (!qg || !qc) return -2;
         RhiDeviceImpl* di = new RhiDeviceImpl();
         di->device = dev;
-        di->queue  = queue;
+        di->queue_graphics = qg;
+        di->queue_compute  = qc;
         *out_device = reinterpret_cast<RhiDevice*>(di);
         ENGINE_LOG_INFO("rhi_metal", "device=%s queue ready",
                         [[dev name] UTF8String]);
@@ -357,6 +393,14 @@ static int32_t metal_create_buffer(RhiDevice* d, const RhiBufferDesc* desc, RhiB
     }
 }
 
+static uint64_t metal_get_buffer_device_address(RhiBuffer* buf) {
+    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
+    if (@available(macOS 13.0, iOS 16.0, *)) {
+        return bi->buf.gpuAddress;
+    }
+    return 0;
+}
+
 static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, RhiTexture** out) {
     @autoreleasepool {
         RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
@@ -377,12 +421,24 @@ static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, Rh
                                                              height:desc->height
                                                           mipmapped:(mip_count > 1)];
         td.mipmapLevelCount = mip_count;
-        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-        td.storageMode = MTLStorageModePrivate;
+        td.usage = 0;
+        if (desc->usage_flags & RHI_TEXTURE_RENDER_TARGET) td.usage |= MTLTextureUsageRenderTarget;
+        if (desc->usage_flags & RHI_TEXTURE_SHADER_READ) td.usage |= MTLTextureUsageShaderRead;
+        
+        if (desc->usage_flags & RHI_TEXTURE_RENDER_TARGET) {
+            td.storageMode = MTLStorageModePrivate;
+        } else {
+#if TARGET_OS_OSX
+            td.storageMode = MTLStorageModeManaged;
+#else
+            td.storageMode = MTLStorageModeShared;
+#endif
+        }
         id<MTLTexture> tex = [di->device newTextureWithDescriptor:td];
         if (!tex) return -1;
         RhiTextureImpl* ti = new RhiTextureImpl();
         ti->tex = tex;
+        ti->queue = di->queue_graphics;
         *out = reinterpret_cast<RhiTexture*>(ti);
         return 0;
     }
@@ -391,27 +447,99 @@ static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, Rh
 static int32_t metal_create_shader(RhiDevice* d, const RhiShaderDesc* desc, RhiShader** out) {
     @autoreleasepool {
         RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        NSString* src = [[NSString alloc] initWithBytesNoCopy:(void*)desc->source
-                                                       length:desc->source_len
-                                                     encoding:NSUTF8StringEncoding
-                                                 freeWhenDone:NO];
-        NSError* err = nil;
-        id<MTLLibrary> lib = [di->device newLibraryWithSource:src options:nil error:&err];
-        if (!lib) {
-            ENGINE_LOG_ERROR("rhi_metal", "shader compile: %s",
-                              [[err localizedDescription] UTF8String]);
+        NSString* src = nil;
+
+        slang::IGlobalSession* globalSession = nullptr;
+        slang::createGlobalSession(&globalSession);
+        if (!globalSession) {
+            ENGINE_LOG_ERROR("rhi_metal", "Slang: Failed to create global session");
             return -1;
         }
+
+        slang::ICompileRequest* request = nullptr;
+        globalSession->createCompileRequest(&request);
+        if (!request) {
+            ENGINE_LOG_ERROR("rhi_metal", "Slang: Failed to create compile request");
+            globalSession->Release();
+            return -1;
+        }
+
+        const char* stage_str = "none";
+        if (desc->stage_flags & RHI_STAGE_VERTEX) stage_str = "vertex";
+        if (desc->stage_flags & RHI_STAGE_FRAGMENT) stage_str = "fragment";
+        if (desc->stage_flags & RHI_STAGE_COMPUTE) stage_str = "compute";
+
+        FILE* fp = fopen("/tmp/temp.slang", "w");
+        fwrite(desc->source, 1, strlen(desc->source), fp);
+        fclose(fp);
+
+        const char* args[] = {
+            "/tmp/temp.slang",
+            "-target", "metal",
+            "-entry", desc->entry_point,
+            "-stage", stage_str,
+            "-matrix-layout-column-major"
+        };
+        
+        SlangResult argsRes = spProcessCommandLineArguments(request, args, 8);
+        if (SLANG_FAILED(argsRes)) {
+            ENGINE_LOG_ERROR("rhi_metal", "Slang: Failed to process command line arguments: %s", spGetDiagnosticOutput(request));
+            request->Release();
+            globalSession->Release();
+            return -1;
+        }
+
+        SlangResult res = spCompile(request);
+        if (SLANG_FAILED(res)) {
+            ENGINE_LOG_ERROR("rhi_metal", "Slang compile/link failed for entry point %s:\n%s", desc->entry_point, spGetDiagnosticOutput(request));
+            request->Release();
+            globalSession->Release();
+            return -1;
+        }
+
+        size_t codeSize = 0;
+        const void* codePtr = spGetCompileRequestCode(request, &codeSize);
+        if (!codePtr) {
+            printf("SLANG DIAGNOSTICS: %s\n", spGetDiagnosticOutput(request));
+            ENGINE_LOG_ERROR("rhi_metal", "Slang: Failed to get code for entry point %s", desc->entry_point);
+            request->Release();
+            globalSession->Release();
+            return -1;
+        }
+
+        NSString* mslSrc = [[NSString alloc] initWithBytes:codePtr length:codeSize encoding:NSUTF8StringEncoding];
+
+        NSError* error = nil;
+        MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+        id<MTLLibrary> lib = [di->device newLibraryWithSource:mslSrc options:opts error:&error];
+        if (!lib) {
+            ENGINE_LOG_ERROR("rhi_metal", "MSL compile failed: %s", [[error localizedDescription] UTF8String]);
+            request->Release();
+            globalSession->Release();
+            return -1;
+        }
+
         NSString* entry = [NSString stringWithUTF8String:desc->entry_point];
         id<MTLFunction> fn = [lib newFunctionWithName:entry];
         if (!fn) {
-            ENGINE_LOG_ERROR("rhi_metal", "entry point '%s' not found", desc->entry_point);
-            return -2;
+            NSString* entry_mangled = [entry stringByAppendingString:@"_"];
+            fn = [lib newFunctionWithName:entry_mangled];
+            if (!fn) {
+                ENGINE_LOG_ERROR("rhi_metal", "entry point '%s' (or mangled) not found in generated library", desc->entry_point);
+                request->Release();
+                globalSession->Release();
+                return -2;
+            }
         }
+        
         RhiShaderImpl* si = new RhiShaderImpl();
         si->lib = lib;
         si->fn  = fn;
         *out = reinterpret_cast<RhiShader*>(si);
+
+        request->Release();
+        globalSession->Release();
+
         return 0;
     }
 }
@@ -434,6 +562,15 @@ static int32_t metal_create_graphics_pipeline(RhiDevice* d,
             default: break;
         }
         pd.colorAttachments[0].pixelFormat      = color;
+        if (desc->enable_blend) {
+            pd.colorAttachments[0].blendingEnabled = YES;
+            pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+            pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+            pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+            pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+            pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+            pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        }
         pd.depthAttachmentPixelFormat = desc->enable_depth
             ? MTLPixelFormatDepth32Float
             : MTLPixelFormatInvalid;
@@ -448,6 +585,11 @@ static int32_t metal_create_graphics_pipeline(RhiDevice* d,
         RhiPipelineImpl* pi = new RhiPipelineImpl();
         pi->g = state;
         pi->c = nil;
+        if (desc->primitive_topology == 1 /* RHI_TOPOLOGY_LINE_LIST */) {
+            pi->primitive_type = MTLPrimitiveTypeLine;
+        } else {
+            pi->primitive_type = MTLPrimitiveTypeTriangle;
+        }
         *out = reinterpret_cast<RhiPipeline*>(pi);
         return 0;
     }
@@ -475,14 +617,129 @@ static int32_t metal_create_compute_pipeline(RhiDevice* d,
     }
 }
 
-static void metal_destroy_buffer(RhiBuffer* p) {
-    if (!p) return;
-    delete reinterpret_cast<RhiBufferImpl*>(p);
+static int32_t metal_create_heap(RhiDevice* d, const RhiHeapDesc* desc, RhiHeap** out) {
+    @autoreleasepool {
+        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
+        MTLHeapDescriptor* hd = [MTLHeapDescriptor new];
+        hd.size = desc->size;
+        hd.storageMode = MTLStorageModePrivate; // Default for GPU sub-allocations
+        if (@available(macOS 10.15, iOS 13.0, *)) {
+            hd.type = MTLHeapTypePlacement;
+        }
+        if (desc->usage_flags & RHI_HEAP_USAGE_RENDER_TARGET) {
+            // No strict flags needed in Metal for this aside from sizing, but we can set properties if required
+        }
+        id<MTLHeap> heap = [di->device newHeapWithDescriptor:hd];
+        if (!heap) return -1;
+        RhiHeapImpl* hi = new RhiHeapImpl();
+        hi->heap = heap;
+        *out = reinterpret_cast<RhiHeap*>(hi);
+        return 0;
+    }
 }
-static void metal_destroy_texture(RhiTexture* p) {
-    if (!p) return;
-    delete reinterpret_cast<RhiTextureImpl*>(p);
+
+static int32_t metal_create_texture_from_heap(RhiDevice* d, RhiHeap* h, const RhiTextureDesc* desc, uint64_t offset, RhiTexture** out) {
+    @autoreleasepool {
+        RhiHeapImpl* hi = reinterpret_cast<RhiHeapImpl*>(h);
+        MTLPixelFormat fmt = MTLPixelFormatBGRA8Unorm;
+        switch (desc->format) {
+            case RHI_FORMAT_RGBA8_UNORM:        fmt = MTLPixelFormatRGBA8Unorm; break;
+            case RHI_FORMAT_RGBA8_SRGB:         fmt = MTLPixelFormatRGBA8Unorm_sRGB; break;
+            case RHI_FORMAT_RGBA16_FLOAT:       fmt = MTLPixelFormatRGBA16Float; break;
+            case RHI_FORMAT_BGRA8_UNORM:        fmt = MTLPixelFormatBGRA8Unorm; break;
+            case RHI_FORMAT_DEPTH32_FLOAT:      fmt = MTLPixelFormatDepth32Float; break;
+            case RHI_FORMAT_DEPTH24_STENCIL8:   fmt = MTLPixelFormatDepth24Unorm_Stencil8; break;
+            default: break;
+        }
+        NSUInteger mip_count = desc->mip_levels > 0 ? desc->mip_levels : 1;
+        MTLTextureDescriptor* td =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt
+                                                               width:desc->width
+                                                              height:desc->height
+                                                           mipmapped:(mip_count > 1)];
+        td.mipmapLevelCount = mip_count;
+        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        td.storageMode = MTLStorageModePrivate; // Must match heap
+        id<MTLTexture> tex = [hi->heap newTextureWithDescriptor:td offset:offset];
+        if (!tex) return -1;
+        RhiTextureImpl* ti = new RhiTextureImpl();
+        ti->tex = tex;
+        *out = reinterpret_cast<RhiTexture*>(ti);
+        return 0;
+    }
 }
+
+static int32_t metal_create_buffer_from_heap(RhiDevice* d, RhiHeap* h, const RhiBufferDesc* desc, uint64_t offset, RhiBuffer** out) {
+    @autoreleasepool {
+        RhiHeapImpl* hi = reinterpret_cast<RhiHeapImpl*>(h);
+        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
+        MTLSizeAndAlign sa = [di->device heapBufferSizeAndAlignWithLength:desc->size options:MTLResourceStorageModePrivate];
+        NSUInteger alignedSize = (sa.size + sa.align - 1) & ~(sa.align - 1);
+        id<MTLBuffer> buf = [hi->heap newBufferWithLength:alignedSize options:MTLResourceStorageModePrivate offset:offset];
+        if (!buf) {
+            ENGINE_LOG_ERROR("rhi_metal", "metal_create_buffer_from_heap failed: desc->size=%llu, offset=%llu, sa.size=%llu, sa.align=%llu, alignedSize=%llu, heap.size=%llu", (unsigned long long)desc->size, (unsigned long long)offset, (unsigned long long)sa.size, (unsigned long long)sa.align, (unsigned long long)alignedSize, (unsigned long long)[hi->heap size]);
+            return -1;
+        }
+        RhiBufferImpl* bi = new RhiBufferImpl();
+        bi->buf = buf;
+        *out = reinterpret_cast<RhiBuffer*>(bi);
+        return 0;
+    }
+}
+
+static int32_t metal_create_fence(RhiDevice* device, RhiFence** out) {
+    @autoreleasepool {
+        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(device);
+        id<MTLSharedEvent> event = [di->device newSharedEvent];
+        if (!event) return -1;
+        RhiFenceImpl* fi = new RhiFenceImpl();
+        fi->event = event;
+        *out = reinterpret_cast<RhiFence*>(fi);
+        return 0;
+    }
+}
+
+struct RhiSamplerImpl {
+    id<MTLSamplerState> samp;
+};
+
+static void metal_destroy_buffer(RhiBuffer* b) {
+    if (!b) return;
+    delete reinterpret_cast<RhiBufferImpl*>(b);
+}
+static void metal_destroy_texture(RhiTexture* tex) {
+    if (!tex) return;
+    RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(tex);
+    ti->tex = nil;
+    delete ti;
+}
+
+static RhiSampler* metal_create_sampler(RhiDevice* d) {
+    RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
+    MTLSamplerDescriptor* desc = [[MTLSamplerDescriptor alloc] init];
+    desc.minFilter = MTLSamplerMinMagFilterLinear;
+    desc.magFilter = MTLSamplerMinMagFilterLinear;
+    desc.mipFilter = MTLSamplerMipFilterLinear;
+    desc.sAddressMode = MTLSamplerAddressModeRepeat;
+    desc.tAddressMode = MTLSamplerAddressModeRepeat;
+    desc.rAddressMode = MTLSamplerAddressModeRepeat;
+    desc.maxAnisotropy = 16;
+    
+    id<MTLSamplerState> s = [di->device newSamplerStateWithDescriptor:desc];
+    if (!s) return nullptr;
+    
+    RhiSamplerImpl* si = new RhiSamplerImpl();
+    si->samp = s;
+    return reinterpret_cast<RhiSampler*>(si);
+}
+
+static void metal_destroy_sampler(RhiSampler* samp) {
+    if (!samp) return;
+    RhiSamplerImpl* si = reinterpret_cast<RhiSamplerImpl*>(samp);
+    si->samp = nil;
+    delete si;
+}
+
 static void metal_destroy_shader(RhiShader* p) {
     if (!p) return;
     delete reinterpret_cast<RhiShaderImpl*>(p);
@@ -491,9 +748,18 @@ static void metal_destroy_pipeline(RhiPipeline* p) {
     if (!p) return;
     delete reinterpret_cast<RhiPipelineImpl*>(p);
 }
+static void metal_destroy_heap(RhiHeap* h) {
+    if (!h) return;
+    delete reinterpret_cast<RhiHeapImpl*>(h);
+}
 
-static int32_t metal_buffer_upload(RhiBuffer* b, const void* data, uint64_t size) {
-    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(b);
+static void metal_destroy_fence(RhiFence* f) {
+    if (!f) return;
+    delete reinterpret_cast<RhiFenceImpl*>(f);
+}
+
+static int32_t metal_buffer_upload(RhiBuffer* buf, const void* data, uint64_t size) {
+    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
     if (size > (uint64_t)[bi->buf length]) {
         ENGINE_LOG_ERROR("rhi_metal", "upload exceeds buffer size (%llu > %llu)",
                          (unsigned long long)size,
@@ -520,14 +786,35 @@ static int32_t metal_texture_readback(RhiTexture* t, void* out,
     }
 }
 
-static RhiCommandList* metal_begin_cmdlist(RhiDevice* d) {
+static int32_t metal_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride) {
     @autoreleasepool {
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        id<MTLCommandBuffer> cb = [di->queue commandBuffer];
+        RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(t);
+        if (!ti->tex) return -1;
+        MTLRegion r = MTLRegionMake2D(0, 0, [ti->tex width], [ti->tex height]);
+        [ti->tex replaceRegion:r mipmapLevel:0 withBytes:data bytesPerRow:stride];
+#if TARGET_OS_OSX
+        if (ti->tex.storageMode == MTLStorageModeManaged && ti->queue) {
+            id<MTLCommandBuffer> cb = [ti->queue commandBuffer];
+            id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+            [blit synchronizeTexture:ti->tex slice:0 level:0];
+            [blit endEncoding];
+            [cb commit];
+            [cb waitUntilCompleted];
+        }
+#endif
+        return 0;
+    }
+}
+
+static RhiCommandList* metal_begin_cmdlist(RhiDevice* device, RhiQueueType queue) {
+    @autoreleasepool {
+        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(device);
+        id<MTLCommandQueue> q = (queue == RHI_QUEUE_COMPUTE) ? di->queue_compute : di->queue_graphics;
+        id<MTLCommandBuffer> cb = [q commandBuffer];
         if (!cb) return nullptr;
-        RhiCommandListImpl* cl = new RhiCommandListImpl();
-        cl->buf = cb;
-        return reinterpret_cast<RhiCommandList*>(cl);
+        RhiCommandListImpl* cli = new RhiCommandListImpl();
+        cli->buf = cb;
+        return reinterpret_cast<RhiCommandList*>(cli);
     }
 }
 
@@ -543,9 +830,26 @@ static int32_t metal_submit(RhiDevice* d, RhiCommandList* cl) {
     }
 }
 
-static void metal_cmd_pipeline_barrier(RhiCommandList*, uint32_t, const RhiBarrier*) {
-    /* Metal tracks dependencies implicitly via encoder ordering. The ABI
-       signature is preserved for forward Vulkan compatibility. */
+static void metal_cmd_pipeline_barrier(RhiCommandList* cl, uint32_t count,
+                                        const RhiBarrier* barriers) {
+    // Metal handles pipeline barriers natively except on specific explicit memory
+    // hazards inside a single encoder. Between passes, it's a no-op on Metal.
+}
+
+static void metal_cmd_signal_fence(RhiCommandList* cl, RhiFence* f, uint64_t value) {
+    @autoreleasepool {
+        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
+        RhiFenceImpl* fi = reinterpret_cast<RhiFenceImpl*>(f);
+        [cli->buf encodeSignalEvent:fi->event value:value];
+    }
+}
+
+static void metal_cmd_wait_fence(RhiCommandList* cl, RhiFence* f, uint64_t value) {
+    @autoreleasepool {
+        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
+        RhiFenceImpl* fi = reinterpret_cast<RhiFenceImpl*>(f);
+        [cli->buf encodeWaitForEvent:fi->event value:value];
+    }
 }
 
 static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc* desc) {
@@ -610,7 +914,10 @@ static void metal_end_pass(RhiEncoder* enc) {
 static void metal_cmd_bind_pipeline(RhiEncoder* enc, RhiPipeline* p) {
     RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
     RhiPipelineImpl* pi = reinterpret_cast<RhiPipelineImpl*>(p);
-    if (ri->render && pi->g)  [ri->render  setRenderPipelineState:pi->g];
+    if (ri->render && pi->g)  {
+        [ri->render  setRenderPipelineState:pi->g];
+        ri->current_primitive_type = pi->primitive_type;
+    }
     if (ri->compute && pi->c) [ri->compute setComputePipelineState:pi->c];
 }
 
@@ -625,9 +932,27 @@ static void metal_cmd_bind_vertex_buffer(RhiEncoder* enc, uint32_t slot,
 static void metal_cmd_bind_uniform_buffer(RhiEncoder* enc, uint32_t slot, RhiBuffer* b) {
     RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
     RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(b);
-    if (ri->render)  [ri->render  setVertexBuffer:bi->buf offset:0 atIndex:slot];
+    if (ri->render)  {
+        [ri->render  setVertexBuffer:bi->buf offset:0 atIndex:slot];
+        [ri->render  setFragmentBuffer:bi->buf offset:0 atIndex:slot];
+    }
     if (ri->compute) [ri->compute setBuffer:bi->buf offset:0 atIndex:slot];
 }
+
+static void metal_cmd_push_constants(RhiEncoder* enc, uint32_t size, const void* data) {
+    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
+    if (ri->render) {
+        // We use slot 0 for push constants by convention in Slang for push blocks,
+        // or we can let Slang pick the slot, but typically Metal uses `[[buffer(0)]]` or similar for push constants.
+        // Actually, we should bind it to a reserved slot. Slang usually puts PushConstants in a dedicated slot,
+        // often the last slot or slot 0. Let's bind to slot 0 for now as Slang defaults.
+        [ri->render setVertexBytes:data length:size atIndex:0];
+        [ri->render setFragmentBytes:data length:size atIndex:0];
+    } else if (ri->compute) {
+        [ri->compute setBytes:data length:size atIndex:0];
+    }
+}
+
 
 static void metal_cmd_set_viewport(RhiEncoder* enc, float x, float y, float w, float h,
                                     float min_depth, float max_depth) {
@@ -655,13 +980,110 @@ static void metal_cmd_set_clear_color(RhiEncoder*, float, float, float, float) {
 static void metal_cmd_draw(RhiEncoder* enc, const RhiDrawArgs* a) {
     RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
     if (!ri->render) return;
-    [ri->render drawPrimitives:MTLPrimitiveTypeTriangle
+    [ri->render drawPrimitives:ri->current_primitive_type
                     vertexStart:a->first_vertex
                     vertexCount:a->vertex_count
                   instanceCount:a->instance_count
                   baseInstance:a->first_instance];
 }
 
+static void metal_cmd_draw_indexed(RhiEncoder* enc, const RhiDrawIndexedArgs* a) {
+    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
+    if (!ri->render) return;
+    
+    MTLIndexType type = (ri->active_index_buffer && ri->active_index_buffer_is_32bit) ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
+    
+    [ri->render drawIndexedPrimitives:ri->current_primitive_type
+                            indexCount:a->index_count
+                             indexType:type
+                           indexBuffer:ri->active_index_buffer
+                     indexBufferOffset:ri->active_index_buffer_offset + (a->first_index * (type == MTLIndexTypeUInt32 ? 4 : 2))
+                         instanceCount:a->instance_count
+                            baseVertex:a->vertex_offset
+                          baseInstance:a->first_instance];
+}
+
+static void metal_cmd_draw_indirect(RhiEncoder* enc, const RhiDrawIndirectArgs* a) {
+    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
+    if (!ri->render) return;
+    
+    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(a->indirect_buffer);
+    
+    for (uint32_t i = 0; i < a->draw_count; ++i) {
+        [ri->render drawPrimitives:ri->current_primitive_type
+                     indirectBuffer:bi->buf
+               indirectBufferOffset:a->indirect_buffer_offset + (i * a->stride)];
+    }
+}
+
+static void metal_cmd_draw_indexed_indirect(RhiEncoder* enc, const RhiDrawIndexedIndirectArgs* a) {
+    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
+    if (!ri->render) return;
+    
+    MTLIndexType type = (ri->active_index_buffer && ri->active_index_buffer_is_32bit) ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
+    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(a->indirect_buffer);
+    
+    for (uint32_t i = 0; i < a->draw_count; ++i) {
+        [ri->render drawIndexedPrimitives:ri->current_primitive_type
+                                indexType:type
+                              indexBuffer:ri->active_index_buffer
+                        indexBufferOffset:ri->active_index_buffer_offset
+                           indirectBuffer:bi->buf
+                     indirectBufferOffset:a->indirect_buffer_offset + (i * a->stride)];
+    }
+}
+
+static void metal_cmd_bind_index_buffer(RhiEncoder* enc, RhiBuffer* buf, int32_t is_32bit, uint64_t offset) {
+    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
+    if (!ri->render) return;
+    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
+    ri->active_index_buffer = bi->buf;
+    ri->active_index_buffer_offset = offset;
+    ri->active_index_buffer_is_32bit = is_32bit != 0;
+}
+
+static void metal_cmd_bind_texture(RhiEncoder* enc, uint32_t slot, RhiTexture* tex) {
+    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
+    if (!ri->render) return;
+    RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(tex);
+    [ri->render setFragmentTexture:ti->tex atIndex:slot];
+}
+static void metal_cmd_bind_texture_array(RhiEncoder* enc, uint32_t slot, RhiTexture** texs, uint32_t count) {
+    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
+    if (!ri->render || count == 0) return;
+
+    __unsafe_unretained id<MTLResource>* resources = (__unsafe_unretained id<MTLResource>*)alloca(count * sizeof(id<MTLResource>));
+    uint64_t* ids = (uint64_t*)alloca(count * sizeof(uint64_t));
+    for (uint32_t i = 0; i < count; i++) {
+        if (texs[i]) {
+            RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(texs[i]);
+            resources[i] = ti->tex;
+            ids[i] = [ti->tex gpuResourceID]._impl;
+        } else {
+            resources[i] = nil;
+            ids[i] = 0;
+        }
+    }
+    
+    // We must pass an array without nils to useResources
+    __unsafe_unretained id<MTLResource>* validResources = (__unsafe_unretained id<MTLResource>*)alloca(count * sizeof(id<MTLResource>));
+    NSUInteger validCount = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        if (resources[i]) {
+            validResources[validCount++] = resources[i];
+        }
+    }
+    if (validCount > 0) {
+        [ri->render useResources:validResources count:validCount usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+    }
+    [ri->render setFragmentBytes:ids length:count * sizeof(uint64_t) atIndex:slot];
+}
+static void metal_cmd_bind_sampler(RhiEncoder* enc, uint32_t slot, RhiSampler* samp) {
+    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
+    if (!ri->render) return;
+    RhiSamplerImpl* si = reinterpret_cast<RhiSamplerImpl*>(samp);
+    [ri->render setFragmentSamplerState:si->samp atIndex:slot];
+}
 static void metal_cmd_dispatch(RhiEncoder* enc, uint32_t gx, uint32_t gy, uint32_t gz) {
     RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
     if (!ri->compute) return;
@@ -788,15 +1210,28 @@ extern "C" void rhi_metal_register(void) {
     b.create_shader              = metal_create_shader;
     b.create_graphics_pipeline   = metal_create_graphics_pipeline;
     b.create_compute_pipeline    = metal_create_compute_pipeline;
+    b.create_heap                = metal_create_heap;
+    b.create_texture_from_heap   = metal_create_texture_from_heap;
+    b.create_sampler             = metal_create_sampler;
+    b.destroy_sampler            = metal_destroy_sampler;
+    b.create_buffer_from_heap    = metal_create_buffer_from_heap;
+    b.create_fence               = metal_create_fence;
     b.destroy_buffer             = metal_destroy_buffer;
     b.destroy_texture            = metal_destroy_texture;
     b.destroy_shader             = metal_destroy_shader;
     b.destroy_pipeline           = metal_destroy_pipeline;
+    b.destroy_heap               = metal_destroy_heap;
+    b.destroy_fence              = metal_destroy_fence;
     b.buffer_upload              = metal_buffer_upload;
     b.texture_readback           = metal_texture_readback;
+    b.texture_upload             = metal_texture_upload;
+    b.get_buffer_device_address  = metal_get_buffer_device_address;
+
     b.begin_cmdlist              = metal_begin_cmdlist;
     b.submit                     = metal_submit;
     b.cmd_pipeline_barrier       = metal_cmd_pipeline_barrier;
+    b.cmd_signal_fence           = metal_cmd_signal_fence;
+    b.cmd_wait_fence             = metal_cmd_wait_fence;
     b.begin_render_pass          = metal_begin_render_pass;
     b.begin_compute_pass         = metal_begin_compute_pass;
     b.end_pass                   = metal_end_pass;
@@ -806,7 +1241,15 @@ extern "C" void rhi_metal_register(void) {
     b.cmd_set_viewport           = metal_cmd_set_viewport;
     b.cmd_set_scissor            = metal_cmd_set_scissor;
     b.cmd_set_clear_color        = metal_cmd_set_clear_color;
+    b.cmd_push_constants         = metal_cmd_push_constants;
     b.cmd_draw                   = metal_cmd_draw;
+    b.cmd_draw_indirect          = metal_cmd_draw_indirect;
+    b.cmd_draw_indexed           = metal_cmd_draw_indexed;
+    b.cmd_draw_indexed_indirect  = metal_cmd_draw_indexed_indirect;
+    b.cmd_bind_index_buffer      = metal_cmd_bind_index_buffer;
+    b.cmd_bind_texture           = metal_cmd_bind_texture;
+    b.cmd_bind_texture_array     = metal_cmd_bind_texture_array;
+    b.cmd_bind_sampler           = metal_cmd_bind_sampler;
     b.cmd_dispatch               = metal_cmd_dispatch;
     rhi_backend_register(&b);
 }

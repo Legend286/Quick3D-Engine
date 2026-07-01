@@ -23,7 +23,7 @@ public sealed class RhiShader : IDisposable
         _entryPin = entry;
     }
 
-    public static RhiShader FromSource(RhiDevice device, string source, string entry)
+    public static RhiShader FromSource(RhiDevice device, string source, string entry, RhiNative.ShaderStage stage)
     {
         if (string.IsNullOrEmpty(source))
             throw new ArgumentNullException(nameof(source));
@@ -46,7 +46,7 @@ public sealed class RhiShader : IDisposable
             var desc = new RhiNative.ShaderDesc
             {
                 Abi = 1,
-                Stages = RhiNative.ShaderStage.Vertex | RhiNative.ShaderStage.Fragment,
+                Stages = stage,
                 Source = sourceHandle.AddrOfPinnedObject(),
                 SourceLen = (uint)srcBytes.Length,
                 EntryPoint = entryHandle.AddrOfPinnedObject(),

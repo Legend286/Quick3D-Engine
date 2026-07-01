@@ -34,6 +34,29 @@ public sealed class RhiTexture : IDisposable
         return new RhiTexture(tex, ownsHandle: true);
     }
 
+    public static RhiTexture Create2D(RhiDevice device, uint w, uint h,
+                                      RhiNative.TextureFormat format)
+    {
+        var desc = new RhiNative.TextureDesc
+        {
+            Abi = 1,
+            Width = w,
+            Height = h,
+            MipLevels = 1,
+            Format = format,
+            UsageFlags = RhiNative.TextureShaderRead,
+        };
+        int rc = RhiNative.RhiCreateTexture(device.Handle, in desc, out IntPtr tex);
+        if (rc != 0) throw new InvalidOperationException($"rhi_create_texture rc={rc}");
+        return new RhiTexture(tex, ownsHandle: true);
+    }
+
+    public void Upload(IntPtr bytes, ulong size, uint stride)
+    {
+        int rc = RhiNative.RhiTextureUpload(Handle, bytes, size, stride);
+        if (rc != 0) throw new InvalidOperationException($"rhi_texture_upload rc={rc}");
+    }
+
     public static RhiTexture CreateDepth(RhiDevice device, uint w, uint h)
     {
         var desc = new RhiNative.TextureDesc

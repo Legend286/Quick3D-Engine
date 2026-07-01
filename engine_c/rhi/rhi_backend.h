@@ -42,19 +42,31 @@ typedef struct RhiBackend {
     int32_t  (*create_compute_pipeline)(RhiDevice* device,
                                          const RhiComputePipelineDesc* desc,
                                          RhiPipeline** out_pipe);
+    int32_t  (*create_heap)(RhiDevice* d, const RhiHeapDesc* desc, RhiHeap** out);
+    int32_t  (*create_texture_from_heap)(RhiDevice* d, RhiHeap* h, const RhiTextureDesc* desc, uint64_t offset, RhiTexture** out);
+    RhiSampler* (*create_sampler)(RhiDevice* d);
+    void (*destroy_sampler)(RhiSampler* s);
+    int32_t  (*create_buffer_from_heap)(RhiDevice* d, RhiHeap* h, const RhiBufferDesc* desc, uint64_t offset, RhiBuffer** out);
+    int32_t  (*create_fence)(RhiDevice* d, RhiFence** out);
     void     (*destroy_buffer)(RhiBuffer* buf);
     void     (*destroy_texture)(RhiTexture* tex);
     void     (*destroy_shader)(RhiShader* sh);
     void     (*destroy_pipeline)(RhiPipeline* p);
+    void     (*destroy_heap)(RhiHeap* h);
+    void     (*destroy_fence)(RhiFence* f);
     int32_t  (*buffer_upload)(RhiBuffer* buf, const void* data, uint64_t size);
     int32_t  (*texture_readback)(RhiTexture* tex, void* out, uint64_t out_size,
                                   uint32_t stride);
+    int32_t  (*texture_upload)(RhiTexture* tex, const void* data, uint64_t size, uint32_t stride);
+    uint64_t (*get_buffer_device_address)(RhiBuffer* buf);
 
-    RhiCommandList* (*begin_cmdlist)(RhiDevice* device);
+    RhiCommandList* (*begin_cmdlist)(RhiDevice* device, RhiQueueType queue);
     int32_t         (*submit)(RhiDevice* device, RhiCommandList* cmdl);
     void            (*cmd_pipeline_barrier)(RhiCommandList* cl,
                                             uint32_t count,
                                             const RhiBarrier* barriers);
+    void            (*cmd_signal_fence)(RhiCommandList* cl, RhiFence* f, uint64_t value);
+    void            (*cmd_wait_fence)(RhiCommandList* cl, RhiFence* f, uint64_t value);
     RhiEncoder*     (*begin_render_pass)(RhiCommandList* cl, const RhiPassDesc* desc);
     RhiEncoder*     (*begin_compute_pass)(RhiCommandList* cl, const char* debug_name);
     void            (*end_pass)(RhiEncoder* enc);
@@ -69,7 +81,15 @@ typedef struct RhiBackend {
     void (*cmd_set_scissor)(RhiEncoder* enc, uint32_t x, uint32_t y,
                              uint32_t w, uint32_t h);
     void (*cmd_set_clear_color)(RhiEncoder* enc, float r, float g, float b, float a);
+    void (*cmd_push_constants)(RhiEncoder* enc, uint32_t size, const void* data);
     void (*cmd_draw)(RhiEncoder* enc, const RhiDrawArgs* args);
+    void (*cmd_draw_indirect)(RhiEncoder* enc, const RhiDrawIndirectArgs* args);
+    void (*cmd_draw_indexed)(RhiEncoder* enc, const RhiDrawIndexedArgs* args);
+    void (*cmd_draw_indexed_indirect)(RhiEncoder* enc, const RhiDrawIndexedIndirectArgs* args);
+    void (*cmd_bind_index_buffer)(RhiEncoder* enc, RhiBuffer* buf, int32_t is_32bit, uint64_t offset);
+    void (*cmd_bind_texture)(RhiEncoder* enc, uint32_t slot, RhiTexture* tex);
+    void (*cmd_bind_texture_array)(RhiEncoder* enc, uint32_t slot, RhiTexture** texs, uint32_t count);
+    void (*cmd_bind_sampler)(RhiEncoder* enc, uint32_t slot, RhiSampler* samp);
     void (*cmd_dispatch)(RhiEncoder* enc, uint32_t gx, uint32_t gy, uint32_t gz);
 } RhiBackend;
 

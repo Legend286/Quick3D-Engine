@@ -91,13 +91,37 @@ int32_t rhi_create_graphics_pipeline(RhiDevice* d, const RhiGraphicsPipelineDesc
     return g_backends[g_active].create_graphics_pipeline(d, desc, out);
 }
 int32_t rhi_create_compute_pipeline(RhiDevice* d, const RhiComputePipelineDesc* desc, RhiPipeline** out) {
+    if (g_active < 0) return -1;
     return g_backends[g_active].create_compute_pipeline(d, desc, out);
+}
+int32_t rhi_create_fence(RhiDevice* d, RhiFence** out) {
+    if (g_active < 0) return -1;
+    return g_backends[g_active].create_fence(d, out);
+}
+
+int32_t rhi_create_heap(RhiDevice* d, const RhiHeapDesc* desc, RhiHeap** out) {
+    return g_backends[g_active].create_heap(d, desc, out);
+}
+int32_t rhi_create_texture_from_heap(RhiDevice* d, RhiHeap* h, const RhiTextureDesc* desc, uint64_t offset, RhiTexture** out) {
+    return g_backends[g_active].create_texture_from_heap(d, h, desc, offset, out);
+}
+int32_t rhi_create_buffer_from_heap(RhiDevice* d, RhiHeap* h, const RhiBufferDesc* desc, uint64_t offset, RhiBuffer** out) {
+    return g_backends[g_active].create_buffer_from_heap(d, h, desc, offset, out);
 }
 
 void rhi_destroy_buffer(RhiBuffer* b) { g_backends[g_active].destroy_buffer(b); }
 void rhi_destroy_texture(RhiTexture* t) { g_backends[g_active].destroy_texture(t); }
 void rhi_destroy_shader(RhiShader* s) { g_backends[g_active].destroy_shader(s); }
-void rhi_destroy_pipeline(RhiPipeline* p) { g_backends[g_active].destroy_pipeline(p); }
+void rhi_destroy_pipeline(RhiPipeline* p) { if (g_active >= 0) g_backends[g_active].destroy_pipeline(p); }
+void rhi_destroy_heap(RhiHeap* h) { if (g_active >= 0) g_backends[g_active].destroy_heap(h); }
+void rhi_destroy_fence(RhiFence* f) { if (g_active >= 0) g_backends[g_active].destroy_fence(f); }
+
+uint64_t rhi_get_buffer_device_address(RhiBuffer* buf) {
+    if (g_active >= 0 && g_backends[g_active].get_buffer_device_address) {
+        return g_backends[g_active].get_buffer_device_address(buf);
+    }
+    return 0;
+}
 
 int32_t rhi_buffer_upload(RhiBuffer* b, const void* data, uint64_t size) {
     return g_backends[g_active].buffer_upload(b, data, size);
@@ -105,11 +129,23 @@ int32_t rhi_buffer_upload(RhiBuffer* b, const void* data, uint64_t size) {
 int32_t rhi_texture_readback(RhiTexture* t, void* out, uint64_t out_size, uint32_t stride) {
     return g_backends[g_active].texture_readback(t, out, out_size, stride);
 }
+int32_t rhi_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride) {
+    return g_backends[g_active].texture_upload(t, data, size, stride);
+}
 
-RhiCommandList* rhi_begin_cmdlist(RhiDevice* d) { return g_backends[g_active].begin_cmdlist(d); }
+RhiCommandList* rhi_begin_cmdlist(RhiDevice* device, RhiQueueType queue) {
+    if (g_active < 0) return NULL;
+    return g_backends[g_active].begin_cmdlist(device, queue);
+}
 int32_t rhi_submit(RhiDevice* d, RhiCommandList* cl) { return g_backends[g_active].submit(d, cl); }
 void rhi_cmd_pipeline_barrier(RhiCommandList* cl, uint32_t n, const RhiBarrier* b) {
     g_backends[g_active].cmd_pipeline_barrier(cl, n, b);
+}
+void rhi_cmd_signal_fence(RhiCommandList* cl, RhiFence* f, uint64_t value) {
+    g_backends[g_active].cmd_signal_fence(cl, f, value);
+}
+void rhi_cmd_wait_fence(RhiCommandList* cl, RhiFence* f, uint64_t value) {
+    g_backends[g_active].cmd_wait_fence(cl, f, value);
 }
 
 RhiEncoder* rhi_begin_render_pass(RhiCommandList* cl, const RhiPassDesc* desc) {
@@ -137,7 +173,36 @@ void rhi_cmd_set_scissor(RhiEncoder* e, uint32_t x, uint32_t y, uint32_t w, uint
 void rhi_cmd_set_clear_color(RhiEncoder* e, float r, float g, float b, float a) {
     g_backends[g_active].cmd_set_clear_color(e, r, g, b, a);
 }
-void rhi_cmd_draw(RhiEncoder* e, const RhiDrawArgs* a) { g_backends[g_active].cmd_draw(e, a); }
+void rhi_cmd_push_constants(RhiEncoder* e, uint32_t size, const void* data) {
+    g_backends[g_active].cmd_push_constants(e, size, data);
+}
+void rhi_cmd_draw(RhiEncoder* e, const RhiDrawArgs* a) {
+    g_backends[g_active].cmd_draw(e, a);
+}
+void rhi_cmd_draw_indirect(RhiEncoder* e, const RhiDrawIndirectArgs* a) {
+    if (g_active >= 0 && g_backends[g_active].cmd_draw_indirect) {
+        g_backends[g_active].cmd_draw_indirect(e, a);
+    }
+}
+void rhi_cmd_draw_indexed(RhiEncoder* e, const RhiDrawIndexedArgs* a) {
+    g_backends[g_active].cmd_draw_indexed(e, a);
+}
+void rhi_cmd_draw_indexed_indirect(RhiEncoder* e, const RhiDrawIndexedIndirectArgs* a) {
+    if (g_active >= 0 && g_backends[g_active].cmd_draw_indexed_indirect) {
+        g_backends[g_active].cmd_draw_indexed_indirect(e, a);
+    }
+}
+void rhi_cmd_bind_index_buffer(RhiEncoder* e, RhiBuffer* buf, int32_t is_32bit, uint64_t offset) {
+    g_backends[g_active].cmd_bind_index_buffer(e, buf, is_32bit, offset);
+}
+void rhi_cmd_bind_texture(RhiEncoder* e, uint32_t slot, RhiTexture* tex) {
+    g_backends[g_active].cmd_bind_texture(e, slot, tex);
+}
+void rhi_cmd_bind_texture_array(RhiEncoder* e, uint32_t slot, RhiTexture** texs, uint32_t count) {
+    if (g_backends[g_active].cmd_bind_texture_array) {
+        g_backends[g_active].cmd_bind_texture_array(e, slot, texs, count);
+    }
+}
 void rhi_cmd_dispatch(RhiEncoder* e, uint32_t gx, uint32_t gy, uint32_t gz) {
     g_backends[g_active].cmd_dispatch(e, gx, gy, gz);
 }
@@ -185,4 +250,11 @@ static void rhi_ensure_default_backends(void) {
 #ifdef __APPLE__
     rhi_metal_register();
 #endif
+}
+
+ENGINE_API RhiSampler* rhi_create_sampler(RhiDevice* dev) {
+    return g_backends[g_active].create_sampler(dev);
+}
+ENGINE_API void rhi_destroy_sampler(RhiSampler* samp) {
+    g_backends[g_active].destroy_sampler(samp);
 }

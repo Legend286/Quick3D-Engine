@@ -12,23 +12,35 @@ public sealed class RhiPipeline : IDisposable
 
     internal RhiPipeline(IntPtr handle) { Handle = handle; }
 
-    public static RhiPipeline CreateGraphics(RhiDevice device,
-                                              RhiShader vertex,
-                                              RhiShader fragment,
-                                              RhiNative.TextureFormat colorFormat,
-                                              bool enableDepth)
+    public static RhiPipeline CreateGraphics(RhiDevice device, RhiShader vertexShader, RhiShader fragmentShader,
+        RhiNative.TextureFormat colorFormat, bool enableDepth = true, bool enableBlend = false, RhiNative.PrimitiveTopology topology = RhiNative.PrimitiveTopology.TriangleList)
     {
         var desc = new RhiNative.GraphicsPipelineDesc
         {
-            Abi = 1,
-            VertexShader = vertex.Handle,
-            FragmentShader = fragment.Handle,
+            Abi = 3, // Bumped ABI version
+            VertexShader = vertexShader.Handle,
+            FragmentShader = fragmentShader.Handle,
             ColorFormat = colorFormat,
             EnableDepth = enableDepth ? 1 : 0,
+            EnableBlend = enableBlend ? 1 : 0,
             SampleCount = 1,
+            PrimitiveTopology = (uint)topology
         };
-        int rc = RhiNative.RhiCreateGraphicsPipeline(device.Handle, in desc, out IntPtr p);
-        if (rc != 0) throw new InvalidOperationException($"rhi_create_graphics_pipeline rc={rc}");
+        int res = RhiNative.RhiCreateGraphicsPipeline(device.Handle, in desc, out IntPtr handle);
+        if (res != 0 || handle == IntPtr.Zero)
+            throw new Exception("Failed to create graphics pipeline.");
+        return new RhiPipeline(handle);
+    }
+
+    public static RhiPipeline CreateCompute(RhiDevice device, RhiShader computeShader)
+    {
+        var desc = new RhiNative.ComputePipelineDesc
+        {
+            Abi = 2,
+            ComputeShader = computeShader.Handle
+        };
+        int rc = RhiNative.RhiCreateComputePipeline(device.Handle, in desc, out IntPtr p);
+        if (rc != 0) throw new InvalidOperationException($"rhi_create_compute_pipeline rc={rc}");
         return new RhiPipeline(p);
     }
 

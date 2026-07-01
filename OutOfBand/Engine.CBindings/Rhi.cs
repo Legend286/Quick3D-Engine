@@ -32,6 +32,7 @@ public static partial class RhiNative
         Index = 1u << 1,
         Uniform = 1u << 2,
         Storage = 1u << 3,
+        Indirect = 1u << 4,
     }
 
     [Flags]
@@ -46,16 +47,23 @@ public static partial class RhiNative
     public enum LoadOp { Load = 0, Clear = 1, Discard = 2 }
     public enum StoreOp { Store = 0, Discard = 1 }
 
-    public enum ResourceState
+    public enum ResourceState : uint
     {
         Undefined = 0,
         RenderTarget = 1,
-        DepthStencil = 2,
-        ShaderRead = 3,
-        UnorderedAccess = 4,
-        CopySrc = 5,
-        CopyDst = 6,
-        Present = 7,
+        DepthWrite = 2,
+        DepthRead = 3,
+        ShaderRead = 4,
+        UnorderedAccess = 5,
+        CopySource = 6,
+        CopyDest = 7,
+        Present = 8
+    }
+
+    public enum QueueType : uint
+    {
+        Graphics = 0,
+        Compute = 1,
     }
 
     public const uint TextureRenderTarget = 1u << 0;
@@ -95,6 +103,12 @@ public static partial class RhiNative
         public IntPtr EntryPoint;   // char*; "main0" or similar.
     }
 
+    public enum PrimitiveTopology : uint
+    {
+        TriangleList = 0,
+        LineList = 1,
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct GraphicsPipelineDesc
     {
@@ -103,7 +117,9 @@ public static partial class RhiNative
         public IntPtr FragmentShader;
         public TextureFormat ColorFormat;
         public int EnableDepth;
+        public int EnableBlend;
         public int SampleCount;
+        public uint PrimitiveTopology;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -112,6 +128,18 @@ public static partial class RhiNative
         public uint Abi;
         public IntPtr ComputeShader;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct HeapDesc
+    {
+        public uint Abi;
+        public ulong Size;
+        public uint UsageFlags;
+    }
+
+    public const uint HeapUsageRenderTarget = 1u << 0;
+    public const uint HeapUsageShaderRead    = 1u << 1;
+    public const uint HeapUsageStorage       = 1u << 2;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct PassAttachment
@@ -148,6 +176,37 @@ public static partial class RhiNative
         public uint InstanceCount;
         public uint FirstVertex;
         public uint FirstInstance;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DrawIndexedArgs
+    {
+        public uint Abi;
+        public uint IndexCount;
+        public uint InstanceCount;
+        public uint FirstIndex;
+        public int VertexOffset;
+        public uint FirstInstance;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DrawIndirectArgs
+    {
+        public uint Abi;
+        public IntPtr IndirectBuffer;
+        public ulong IndirectBufferOffset;
+        public uint DrawCount;
+        public uint Stride;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DrawIndexedIndirectArgs
+    {
+        public uint Abi;
+        public IntPtr IndirectBuffer;
+        public ulong IndirectBufferOffset;
+        public uint DrawCount;
+        public uint Stride;
     }
 
     // ---- device / swapchain / resources ----
@@ -210,11 +269,44 @@ public static partial class RhiNative
     [LibraryImport(Library, EntryPoint = "rhi_destroy_texture")]
     public static partial void RhiDestroyTexture(IntPtr tex);
 
+    [LibraryImport(Library, EntryPoint = "rhi_create_sampler")]
+    public static partial IntPtr RhiCreateSampler(IntPtr dev);
+
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_sampler")]
+    public static partial void RhiDestroySampler(IntPtr samp);
+
     [LibraryImport(Library, EntryPoint = "rhi_destroy_shader")]
     public static partial void RhiDestroyShader(IntPtr sh);
 
     [LibraryImport(Library, EntryPoint = "rhi_destroy_pipeline")]
     public static partial void RhiDestroyPipeline(IntPtr p);
+
+    [LibraryImport(Library, EntryPoint = "rhi_create_heap")]
+    public static partial int RhiCreateHeap(IntPtr device, in HeapDesc desc, out IntPtr outHeap);
+
+    [LibraryImport(Library, EntryPoint = "rhi_create_texture_from_heap")]
+    public static partial int RhiCreateTextureFromHeap(IntPtr device, IntPtr heap, in TextureDesc desc, ulong offset, out IntPtr outTex);
+
+    [LibraryImport(Library, EntryPoint = "rhi_create_buffer_from_heap")]
+    public static partial int RhiCreateBufferFromHeap(IntPtr device, IntPtr heap, in BufferDesc desc, ulong offset, out IntPtr outBuf);
+
+    [LibraryImport(Library, EntryPoint = "rhi_create_fence")]
+    public static partial int RhiCreateFence(IntPtr device, out IntPtr outFence);
+
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_heap")]
+    public static partial void RhiDestroyHeap(IntPtr h);
+    
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_fence")]
+    public static partial void RhiDestroyFence(IntPtr f);
+
+    [LibraryImport(Library, EntryPoint = "rhi_get_buffer_device_address")]
+    public static partial ulong RhiGetBufferDeviceAddress(IntPtr buf);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_signal_fence")]
+    public static partial void RhiCmdSignalFence(IntPtr cmdlist, IntPtr fence, ulong value);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_wait_fence")]
+    public static partial void RhiCmdWaitFence(IntPtr cmdlist, IntPtr fence, ulong value);
 
     // ---- macOS embed helpers ----
     //
@@ -241,10 +333,16 @@ public static partial class RhiNative
                                                  ulong outSize,
                                                  uint outStride);
 
+    [LibraryImport(Library, EntryPoint = "rhi_texture_upload")]
+    public static partial int RhiTextureUpload(IntPtr tex,
+                                               IntPtr bytes,
+                                               ulong size,
+                                               uint stride);
+
     // ---- command-list / encoders ----
 
     [LibraryImport(Library, EntryPoint = "rhi_begin_cmdlist")]
-    public static partial IntPtr RhiBeginCmdlist(IntPtr device);
+    public static partial IntPtr RhiBeginCmdlist(IntPtr device, QueueType queue);
 
     [LibraryImport(Library, EntryPoint = "rhi_submit")]
     public static partial int RhiSubmit(IntPtr device, IntPtr cmdlist);
@@ -293,8 +391,33 @@ public static partial class RhiNative
                                                     float r, float g,
                                                     float b, float a);
 
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_push_constants")]
+    public static partial void RhiCmdPushConstants(IntPtr encoder,
+                                                   uint size, IntPtr data);
+
     [LibraryImport(Library, EntryPoint = "rhi_cmd_draw")]
     public static partial void RhiCmdDraw(IntPtr encoder, in DrawArgs args);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_draw_indirect")]
+    public static partial void RhiCmdDrawIndirect(IntPtr encoder, in DrawIndirectArgs args);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_draw_indexed")]
+    public static partial void RhiCmdDrawIndexed(IntPtr encoder, in DrawIndexedArgs args);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_draw_indexed_indirect")]
+    public static partial void RhiCmdDrawIndexedIndirect(IntPtr encoder, in DrawIndexedIndirectArgs args);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_bind_index_buffer")]
+    public static partial void RhiCmdBindIndexBuffer(IntPtr encoder, IntPtr buf, int is32Bit, ulong offset);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_bind_texture")]
+    public static partial void RhiCmdBindTexture(IntPtr encoder, uint slot, IntPtr tex);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_bind_texture_array")]
+    public static partial void RhiCmdBindTextureArray(IntPtr encoder, uint slot, ref IntPtr texs, uint count);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_bind_sampler")]
+    public static partial void RhiCmdBindSampler(IntPtr encoder, uint slot, IntPtr samp);
 
     [LibraryImport(Library, EntryPoint = "rhi_cmd_dispatch")]
     public static partial void RhiCmdDispatch(IntPtr encoder,

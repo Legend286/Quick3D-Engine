@@ -149,3 +149,27 @@ The Avalonia viewport panel calls:
    back-buffer acquired in (4).
 6. `swap.Present()` -> `rhi_present` (commits the command buffer
    and CoreAnimation flips the drawable at the next vsync).
+
+### Advanced Pipeline Features (Phase 3+)
+
+```c
+// Push constants (inlined buffer updates)
+void rhi_push_constants(RhiEncoder* encoder, uint32_t size, const void* data);
+
+// Compute and Indirect Drawing
+void rhi_cmd_dispatch_indirect(RhiEncoder* encoder, RhiBuffer* indirect_buffer, uint64_t offset);
+void rhi_cmd_draw_indirect(RhiEncoder* encoder, RhiBuffer* indirect_buffer, uint64_t offset, uint32_t draw_count, uint32_t stride);
+
+// Samplers and Bindless Heaps
+int32_t rhi_create_sampler(RhiDevice* device, const RhiSamplerDesc* desc, RhiSampler** out_sampler);
+void    rhi_destroy_sampler(RhiSampler* sampler);
+
+int32_t rhi_create_heap(RhiDevice* device, const RhiHeapDesc* desc, RhiHeap** out_heap);
+void    rhi_destroy_heap(RhiHeap* heap);
+
+// Fences for GPU/CPU sync
+int32_t rhi_create_fence(RhiDevice* device, RhiFence** out_fence);
+void    rhi_destroy_fence(RhiFence* fence);
+void    rhi_fence_wait(RhiFence* fence, uint64_t timeout_ns);
+void    rhi_cmd_signal_fence(RhiCommandList* cmd, RhiFence* fence);
+```

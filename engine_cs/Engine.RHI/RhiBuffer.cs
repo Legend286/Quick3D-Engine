@@ -11,11 +11,14 @@ public sealed class RhiBuffer : IDisposable
 {
     public IntPtr Handle { get; private set; }
     public ulong Size { get; }
+    public ulong DeviceAddress => RhiNative.RhiGetBufferDeviceAddress(Handle);
+    private readonly bool _owns;
 
-    internal RhiBuffer(IntPtr handle, ulong size)
+    internal RhiBuffer(IntPtr handle, ulong size, bool ownsHandle = true)
     {
         Handle = handle;
         Size = size;
+        _owns = ownsHandle;
     }
 
     public static RhiBuffer Create(RhiDevice device, ulong size, RhiNative.BufferUsage usage)
@@ -45,9 +48,16 @@ public sealed class RhiBuffer : IDisposable
         }
     }
 
+    public void Upload(IntPtr data, ulong sizeBytes)
+    {
+        if (sizeBytes == 0) return;
+        int rc = RhiNative.RhiBufferUpload(Handle, data, sizeBytes);
+        if (rc != 0) throw new InvalidOperationException($"rhi_buffer_upload rc={rc}");
+    }
+
     public void Dispose()
     {
-        if (Handle == IntPtr.Zero) return;
+        if (Handle == IntPtr.Zero || !_owns) return;
         // Zero the Handle field BEFORE invoking the native destroy so a
         // failed/partial C-side free doesn't get repeated by the finalizer.
         var h = Handle;
