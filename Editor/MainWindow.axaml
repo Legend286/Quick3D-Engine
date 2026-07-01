@@ -26,6 +26,8 @@
         <MenuItem Header="_Open Project…" Click="OnOpenProjectClicked" />
         <MenuItem Header="_Save" />
         <Separator />
+        <MenuItem Header="_Import Asset…" Click="OnImportAssetClicked" />
+        <Separator />
         <MenuItem Header="E_xit" Click="OnExitClicked" />
       </MenuItem>
       <MenuItem Header="_Edit">
@@ -99,8 +101,8 @@
       </Border>
 
       <TabControl x:Name="ConsolesTabControl" Grid.Row="2"
-                  MinHeight="80" MaxHeight="480"
-                  Height="200" IsVisible="True">
+                  MinHeight="80" MaxHeight="800"
+                  Height="450" IsVisible="True">
         <TabItem Header="Console">
           <views:ConsolePanelView DataContext="{Binding ConsoleVm}" />
         </TabItem>

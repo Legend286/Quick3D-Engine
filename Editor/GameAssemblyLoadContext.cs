@@ -35,6 +35,7 @@ public sealed class GameAssemblyLoadContext : AssemblyLoadContext
         if (string.Equals(assemblyName.Name, "Engine.RHI", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(assemblyName.Name, "Engine.RenderGraph", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(assemblyName.Name, "Engine.Scene", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(assemblyName.Name, "Engine.Assets", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(assemblyName.Name, "Engine.CBindings", StringComparison.OrdinalIgnoreCase))
         {
             return Default.LoadFromAssemblyName(assemblyName);

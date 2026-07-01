@@ -8,27 +8,27 @@
     <!-- Toolbar: filter buttons + search + auto-scroll -->
     <Border Grid.Row="0" Background="#12151c" Padding="8,5" BorderBrush="#1e2128" BorderThickness="0,0,0,1">
       <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,*,Auto,Auto,Auto">
-        <Button Grid.Column="0" Content="ALL" Width="36" Height="24" Margin="0,0,3,0"
+        <Button Grid.Column="0" Content="ALL" Width="44" Height="24" Margin="0,0,3,0"
                 FontSize="10" FontWeight="SemiBold" CornerRadius="3"
                 Background="{Binding AllBg}" Foreground="{Binding AllFg}"
                 Click="OnFilterAllClicked" />
-        <Button Grid.Column="1" Content="ERR" Width="36" Height="24" Margin="0,0,3,0"
+        <Button Grid.Column="1" Content="ERR" Width="44" Height="24" Margin="0,0,3,0"
                 FontSize="10" FontWeight="SemiBold" CornerRadius="3"
                 Background="{Binding ErrorBg}" Foreground="{Binding ErrorFg}"
                 Click="OnFilterErrorClicked" />
-        <Button Grid.Column="2" Content="WRN" Width="36" Height="24" Margin="0,0,3,0"
+        <Button Grid.Column="2" Content="WRN" Width="44" Height="24" Margin="0,0,3,0"
                 FontSize="10" FontWeight="SemiBold" CornerRadius="3"
                 Background="{Binding WarnBg}" Foreground="{Binding WarnFg}"
                 Click="OnFilterWarnClicked" />
-        <Button Grid.Column="3" Content="INF" Width="36" Height="24" Margin="0,0,3,0"
+        <Button Grid.Column="3" Content="INF" Width="44" Height="24" Margin="0,0,3,0"
                 FontSize="10" FontWeight="SemiBold" CornerRadius="3"
                 Background="{Binding InfoBg}" Foreground="{Binding InfoFg}"
                 Click="OnFilterInfoClicked" />
-        <Button Grid.Column="4" Content="DBG" Width="36" Height="24" Margin="0,0,3,0"
+        <Button Grid.Column="4" Content="DBG" Width="44" Height="24" Margin="0,0,3,0"
                 FontSize="10" FontWeight="SemiBold" CornerRadius="3"
                 Background="{Binding DebugBg}" Foreground="{Binding DebugFg}"
                 Click="OnFilterDebugClicked" />
-        <Button Grid.Column="5" Content="TRC" Width="36" Height="24" Margin="0,0,6,0"
+        <Button Grid.Column="5" Content="TRC" Width="44" Height="24" Margin="0,0,6,0"
                 FontSize="10" FontWeight="SemiBold" CornerRadius="3"
                 Background="{Binding TraceBg}" Foreground="{Binding TraceFg}"
                 Click="OnFilterTraceClicked" />

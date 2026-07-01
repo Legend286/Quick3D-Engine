@@ -78,6 +78,15 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnImportAssetClicked(object? sender, RoutedEventArgs e)
+    {
+        var importWindow = new Views.AssetImportWindow
+        {
+            DataContext = new ViewModels.AssetImportViewModel()
+        };
+        importWindow.ShowDialog(this);
+    }
+
     private async void OnNewProjectClicked(object? sender, RoutedEventArgs e)
     {
         var topLevel = TopLevel.GetTopLevel(this);
@@ -222,10 +231,13 @@ obj/
                 Path.Combine(App.EngineSourceRoot, "Content", "scenes", "hello.scene.json"),
                 Path.Combine(newProjectPath, "Content", "scenes", "hello.scene.json")
             );
-            CopyFileAtomic(
-                Path.Combine(App.EngineSourceRoot, "Content", "shaders", "triangle.metal"),
-                Path.Combine(newProjectPath, "Content", "shaders", "triangle.metal")
-            );
+            if (File.Exists(Path.Combine(App.EngineSourceRoot, "Content", "shaders", "triangle.slang")))
+            {
+                CopyFileAtomic(
+                    Path.Combine(App.EngineSourceRoot, "Content", "shaders", "triangle.slang"),
+                    Path.Combine(newProjectPath, "Content", "shaders", "triangle.slang")
+                );
+            }
 
             // Copy Game C# code files
             CopyFileAtomic(Path.Combine(App.EngineSourceRoot, "Game", "GameLoop.cs"), Path.Combine(newProjectPath, "Game", "GameLoop.cs"));

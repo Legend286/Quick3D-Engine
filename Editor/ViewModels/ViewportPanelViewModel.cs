@@ -97,13 +97,14 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             _device = new RhiDevice();
             _swap = _device.CreateSwapchain(_nsView, _width, _height);
             _world = new EcsWorld();
-            SeedTriangleEntity(_world);
+            // SeedTriangleEntity(_world);
 
-            LoadGameLoop();
             SetupSceneWatcher(_contentRoot);
             SetupScriptWatcher();
 
-            _timer.Start();
+            // Perform an initial build and load to ensure any script edits made while
+            // the editor was closed are picked up immediately on startup.
+            HotReload();
         }
         catch (Exception ex)
         {
@@ -299,7 +300,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             Dispatcher.UIThread.Post(() =>
             {
                 _world = new EcsWorld();
-                SeedTriangleEntity(_world);
+                // SeedTriangleEntity(_world);
                 try
                 {
                     LoadGameLoop();
@@ -420,6 +421,32 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         }
         try
         {
+            var dt = (float)_stopwatch.Elapsed.TotalSeconds;
+            _stopwatch.Restart();
+
+            var input = new Engine.RHI.InputState
+            {
+                DeltaTime = dt,
+                LogicalWidth = _host != null ? (float)_host.Bounds.Width : _swap.Width,
+                LogicalHeight = _host != null ? (float)_host.Bounds.Height : _swap.Height,
+                RenderScale = (float)ComputeRenderScaling(),
+                MouseX = _ptrX,
+                MouseY = _ptrY,
+                MouseDeltaX = _ptrDx,
+                MouseDeltaY = _ptrDy,
+                MouseDownLeft = _leftDown,
+                MouseDownRight = _rightDown,
+                MouseDownMiddle = _middleDown,
+                KeyW = _keyW,
+                KeyA = _keyA,
+                KeyS = _keyS,
+                KeyD = _keyD
+            };
+
+            _gameLoop.Update(input);
+            _ptrDx = 0;
+            _ptrDy = 0;
+
             _gameLoop.RenderFrame(image, _swap.Width, _swap.Height);
         }
         catch (Exception ex)
@@ -433,17 +460,48 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         }
     }
 
-    private static void SeedTriangleEntity(IEntityStore world)
+    private readonly System.Diagnostics.Stopwatch _stopwatch = System.Diagnostics.Stopwatch.StartNew();
+    private float _ptrDx;
+    private float _ptrDy;
+    private float _ptrX;
+    private float _ptrY;
+    private bool _leftDown;
+    private bool _rightDown;
+    private bool _middleDown;
+    private bool _keyW, _keyA, _keyS, _keyD;
+
+    public void AddPointerDelta(float dx, float dy)
+    {
+        _ptrDx += dx;
+        _ptrDy += dy;
+    }
+
+    public void UpdatePointerState(float x, float y, bool left, bool right, bool middle)
+    {
+        _ptrX = x;
+        _ptrY = y;
+        _leftDown = left;
+        _rightDown = right;
+        _middleDown = middle;
+    }
+
+    public void SetKeyState(Avalonia.Input.Key key, bool isDown)
+    {
+        switch (key)
+        {
+            case Avalonia.Input.Key.W: _keyW = isDown; break;
+            case Avalonia.Input.Key.A: _keyA = isDown; break;
+            case Avalonia.Input.Key.S: _keyS = isDown; break;
+            case Avalonia.Input.Key.D: _keyD = isDown; break;
+        }
+    }
+
+    /* private static void SeedTriangleEntity(IEntityStore world)
     {
         ulong ent = world.CreateEntity();
         Log.Debug($"[Viewport] Seeding default mesh entity {ent}", "Editor");
-        world.Set(ent, MeshComponent.Create(
-            new float[] {  0.0f,  0.6f, 0.0f,
-                          -0.6f, -0.4f, 0.0f,
-                           0.6f, -0.4f, 0.0f },
-            new float[] { 1, 0, 0, 0, 1, 0, 0, 0, 1 }
-        ));
-    }
+        // Needs proper mesh ID now
+    } */
 
     private void SetupSceneWatcher(string contentRoot)
     {

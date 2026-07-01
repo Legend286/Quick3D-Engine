@@ -89,7 +89,7 @@ internal static class ModulesJsonLoggingReader
     }
 
     private static Result Default(string projectRoot) =>
-        new(4, 1024, 512, true,
+        new(5, 1024, 512, true,
             Path.Combine(projectRoot, "out", "logs", "crash.json"),
             new List<KeyValuePair<string, int>>());
 }
