@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Numerics;
 using Engine.RHI;
 using Engine.RenderGraph;
 using Engine.Scene;
@@ -22,6 +23,7 @@ public sealed class Renderer : IDisposable
     private readonly IEntityStore _world;
     private SceneLoader? _loader;
     private string _contentRoot = "Content";
+    private readonly ImGuiRenderer? _imguiRenderer;
 
     private RenderPlan? _plan;
 
@@ -30,11 +32,12 @@ public sealed class Renderer : IDisposable
     /// can reference the same handle.</summary>
     public static readonly ResourceHandle BackBufferHandle = new(0x80000000);
 
-    public Renderer(RhiDevice device, RhiSwapchain swap, IEntityStore world)
+    public Renderer(RhiDevice device, RhiSwapchain swap, IEntityStore world, ImGuiRenderer? imguiRenderer = null)
     {
         _device = device;
         _swap = swap;
         _world = world;
+        _imguiRenderer = imguiRenderer;
     }
 
     public IEntityStore World => _world;
@@ -45,52 +48,48 @@ public sealed class Renderer : IDisposable
         _loader = new SceneLoader(contentRoot);
         SceneGraph scene = _loader.Load(sceneName);
 
-        // Seed or update the MeshComponent entity in the ECS world using scene graph vertices
-        ulong? existingEnt = null;
-        for (ulong id = 1; id < 1024; ++id)
-        {
-            if (_world.TryGet<MeshComponent>(id, out _))
-            {
-                existingEnt = id;
-                break;
-            }
-        }
-        ulong ent = existingEnt ?? _world.CreateEntity();
+        _world.Clear();
 
-        MeshRef? meshRef = null;
-        foreach (var m in scene.Meshes)
+        foreach (var modelRef in scene.Models)
         {
-            if (m.Vertices != null && m.Vertices.Count > 0)
+            var mdlPath = Path.Combine(_contentRoot, modelRef.Source);
+            var model = Engine.Assets.ModelLoader.LoadMdl(_device, mdlPath);
+            
+            // Register all meshes and materials in the model parts
+            for (int i = 0; i < model.Parts.Length; i++)
             {
-                meshRef = m;
-                break;
+                if (model.Parts[i].Mesh != null)
+                {
+                    ulong meshId = Engine.Assets.AssetRegistry.RegisterMesh(model.Parts[i].Mesh);
+                }
             }
-        }
 
-        if (meshRef != null && meshRef.Vertices != null)
-        {
-            var posList = new List<float>();
-            var colList = new List<float>();
-            foreach (var v in meshRef.Vertices)
-            {
-                posList.AddRange(v.Pos);
-                colList.AddRange(v.Color);
-            }
-            Debug($"[Renderer] Seeding MeshComponent on entity {ent}: {meshRef.Vertices.Count} vertices", "Renderer");
-            _world.Set(ent, MeshComponent.Create(posList.ToArray(), colList.ToArray()));
+            ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
+
+            ulong ent = _world.CreateEntity();
+            _world.Set(ent, ModelComponent.Create(modelId));
+            
+            _world.Set(ent, new Engine.Scene.Components.Transform {
+                Position = new Vector3(modelRef.Position[0], modelRef.Position[1], modelRef.Position[2]),
+                Rotation = Quaternion.CreateFromYawPitchRoll(modelRef.Rotation[1], modelRef.Rotation[0], modelRef.Rotation[2]),
+                Scale = new Vector3(modelRef.Scale[0], modelRef.Scale[1], modelRef.Scale[2])
+            });
         }
 
-        Info($"[Renderer] Compiling render graph with {scene.Passes.Count} pass(es)...", "Renderer");
         var passes = new List<RenderPass>();
         foreach (var scenePass in scene.Passes)
-            passes.Add(new HelloTrianglePass(_device, _world, scene, scenePass, contentRoot));
+            passes.Add(new PbrPass(_device, _world, scene, scenePass, contentRoot));
+            
+        passes.Add(new GridPass(_device, _world, contentRoot, clearScreen: scene.Passes.Count == 0));
+            
+        if (_imguiRenderer != null)
+            passes.Add(new ImGuiPass(_imguiRenderer));
 
-        // Capture the previous graph and only dispose it AFTER the new graph
-        // is built. If Compile throws, the previous (working) graph remains
-        // intact and usable. This avoids a temporary null-state failure
-        // where neither old nor new graph is reachable.
         var previous = _plan;
+        
+        Info($"[Renderer] Compiling render graph with {passes.Count} pass(es)...", "Renderer");
         var newPlan = new RenderGraphCompiler().Compile(passes);
+
         _plan = newPlan;
         previous?.Passes?.DisposeAll();
         Info("[Renderer] Render graph compiled successfully", "Renderer");

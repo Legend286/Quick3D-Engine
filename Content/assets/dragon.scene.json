@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "entities": [
+    {
+      "name": "Sketchfab_model",
+      "components": [
+        { "type": "Engine.Scene.Components.TransformComponent", "position": [0.00102782, -0.0415437, -0.0194279] },
+        { "type": "Engine.Scene.Components.ModelComponent", "model_path": "Sketchfab_model.mdl" }
+      ]
+    }
+  ]
+}

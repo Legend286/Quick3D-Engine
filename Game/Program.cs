@@ -34,11 +34,7 @@ internal static class Program
         using var world = new EcsWorld();  // now IDisposable
 
         var renderer = new Renderer(device, swap, world);
-        // renderer.LoadScene(contentRoot, "hello");
-
-        // Seed AFTER LoadScene so game-code vertex data overrides scene defaults.
-        //  SeedTriangleEntity(world);
-
+        
         if (swap.TryAcquireNextImage(out RhiTexture? image))
         {
             using (image)

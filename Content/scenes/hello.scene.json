@@ -3,8 +3,8 @@
   "passes": [
     {
       "name": "TrianglePass",
-      "shader_vs": "shaders/triangle.metal",
-      "shader_fs": "shaders/triangle.metal",
+      "shader_vs": "shaders/triangle.slang",
+      "shader_fs": "shaders/triangle.slang",
       "entry": "main0",
       "clear_color": [0.05, 0.06, 0.09, 1.0],
       "draws": [

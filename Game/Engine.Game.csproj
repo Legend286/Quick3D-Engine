@@ -14,5 +14,10 @@
     <ProjectReference Include="..\engine_cs\Engine.RHI\Engine.RHI.csproj" />
     <ProjectReference Include="..\engine_cs\Engine.RenderGraph\Engine.RenderGraph.csproj" />
     <ProjectReference Include="..\engine_cs\Engine.Scene\Engine.Scene.csproj" />
+    <ProjectReference Include="..\engine_cs\Engine.Assets\Engine.Assets.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Twizzle.ImGui-Bundle.NET" Version="1.91.5.2" />
   </ItemGroup>
 </Project>

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "albedo_color": [1, 1, 1, 1],
+  "albedo_texture": "/Users/legend286/Desktop/project 9001/Content/assets/dragon_tex_0.ktx2",
+  "normal_texture": "/Users/legend286/Desktop/project 9001/Content/assets/dragon_tex_1.ktx2",
+  "metallic": 0,
+  "roughness": 0.6
+}

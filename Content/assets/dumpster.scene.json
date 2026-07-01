@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "passes": [
+    {
+      "name": "PbrPass",
+      "shader_vs": "shaders/pbr.slang",
+      "shader_fs": "shaders/pbr.slang",
+      "entry": "main",
+      "clear_color": [0.05, 0.06, 0.09, 1.0],
+      "draws": []
+    }
+  ],
+  "models": [
+    {
+      "name": "Sketchfab_model",
+      "source": "Sketchfab_model.mdl",
+      "position": [0.00131357, -0.0228529, 0.0201645],
+      "rotation": [0, 0, 0],
+      "scale": [1, 1, 1]
+    }
+  ]
+}
