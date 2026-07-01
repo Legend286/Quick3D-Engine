@@ -122,6 +122,7 @@ typedef struct EngineLogState {
     pthread_mutex_t        file_lock;
     FILE*                   file_handle;
     uint64_t                file_bytes;
+    char                    active_file_path[ENGINE_LOG_FILE_STR_MAX];
 } EngineLogState;
 
 static EngineLogState g_state;
@@ -305,19 +306,19 @@ static void engine_log_rotate_file_if_needed(void) {
         g_state.file_handle = NULL;
     }
     char alt[ENGINE_LOG_FILE_STR_MAX * 2];
-    const char* cur = ENGINE_LOG_DEFAULT_FILE_PATH;
+    const char* cur = g_state.active_file_path;
     snprintf(alt, sizeof(alt), "%s.1", cur);
     /* rename(2) is POSIX atomic — avoids fork+exec hazards of system(). */
     (void)rename(cur, alt);
-    g_state.file_handle = fopen(ENGINE_LOG_DEFAULT_FILE_PATH, "a");
+    g_state.file_handle = fopen(g_state.active_file_path, "a");
     g_state.file_bytes = 0;
 }
 
 static void engine_log_sink_file(const EngineLogRecord* rec, void* userdata) {
     (void)userdata;
     pthread_mutex_lock(&g_state.file_lock);
-    if (!g_state.file_handle) {
-        g_state.file_handle = fopen(ENGINE_LOG_DEFAULT_FILE_PATH, "a");
+    if (!g_state.file_handle && g_state.active_file_path[0] != '\0') {
+        g_state.file_handle = fopen(g_state.active_file_path, "a");
         g_state.file_bytes = 0;
     }
     if (!g_state.file_handle) {
@@ -467,6 +468,14 @@ int32_t engine_log_init(const EngineLogConfig* config) {
     g_state.ui_ring_count = 0;
     g_state.file_handle = NULL;
     g_state.file_bytes = 0;
+
+    time_t t = time(NULL);
+    struct tm tm_info;
+    localtime_r(&t, &tm_info);
+    snprintf(g_state.active_file_path, sizeof(g_state.active_file_path),
+             "out/logs/engine_%04d-%02d-%02d_%02d%02d%02d.log",
+             tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
+             tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
 
     static const EngineLogSink defaults[] = {
         { .abi = sizeof(EngineLogSink), .write = engine_log_sink_stdout,   .userdata = NULL, .name = "stdout" },

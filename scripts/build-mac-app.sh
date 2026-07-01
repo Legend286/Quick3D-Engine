@@ -12,19 +12,7 @@
 
 set -euo pipefail
 
-CLEAN_MODE=0
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --clean)
-      CLEAN_MODE=1
-      shift
-      ;;
-    *)
-      printf "ERROR: Unknown parameter %s\n" "$1" >&2
-      exit 2
-      ;;
-  esac
-done
+
 
 # ---- locate project root (script lives at scripts/build-mac-app.sh) --------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,13 +51,12 @@ if ! command -v cmake >/dev/null; then
     exit 2
 fi
 
-# ---- stage 0: clean out directory ------------------------------------------
-if [[ "${CLEAN_MODE}" -eq 1 ]]; then
-    log_section "Stage 0/8 - Clean build artifacts"
-    rm -rf "${PROJECT_ROOT}/out"
-else
-    log_section "Stage 0/8 - Incremental build (use --clean to wipe out/)"
-fi
+# ---- stage 0: clean app bundle artifacts -----------------------------------
+log_section "Stage 0/8 - Clean publish artifacts (keeping cached deps)"
+rm -rf "${PUBLISH_OUT_DIR}"
+rm -f "${PROJECT_ROOT}/out/libEngineC.dylib"
+rm -f "${PROJECT_ROOT}/out/basisu"
+rm -f "${PROJECT_ROOT}/out/engine_cook"
 
 # ---- stage 1: cmake (native dylib) -----------------------------------------
 log_section "Stage 1/8 - CMake native dylib"
@@ -77,10 +64,10 @@ mkdir -p "${CMAKE_BUILD_DIR}"
 cmake -S "${PROJECT_ROOT}" -B "${CMAKE_BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF >/dev/null
-cmake --build "${CMAKE_BUILD_DIR}" --target EngineC --parallel
+cmake --build "${CMAKE_BUILD_DIR}" --target EngineC basisu engine_cook --parallel
 
-# ---- stage 1b: mirror dylib to out/libEngineC.dylib (csproj Content path) -
-log_section "Stage 1b/8 - Mirror dylib to out/libEngineC.dylib"
+# ---- stage 1b: mirror dylib and CLIs to out/ -------------------------------
+log_section "Stage 1b/8 - Mirror dylib and CLIs to out/"
 DYLIB_SRC="${CMAKE_BUILD_DIR}/libEngineC.dylib"
 DYLIB_OUT="${PROJECT_ROOT}/out/libEngineC.dylib"
 if [[ ! -f "${DYLIB_SRC}" ]]; then
@@ -90,6 +77,10 @@ fi
 mkdir -p "${PROJECT_ROOT}/out"
 cp -f "${DYLIB_SRC}" "${DYLIB_OUT}"
 log_info "${DYLIB_OUT}"
+
+cp -f "${CMAKE_BUILD_DIR}/_deps/basis_universal-src/bin/basisu" "${PROJECT_ROOT}/out/basisu" 2>/dev/null || true
+cp -f "${CMAKE_BUILD_DIR}/Cook/engine_cook" "${PROJECT_ROOT}/out/engine_cook" 2>/dev/null || true
+log_info "Copied basisu and engine_cook to out/"
 
 # ---- stage 2: dotnet publish ------------------------------------------------
 log_section "Stage 2/8 - dotnet publish -c Release -r ${DOTNET_RUNTIME_ID}"
@@ -111,9 +102,13 @@ mkdir -p "${APP_BUNDLE_DIR}/Contents/MacOS"
 mkdir -p "${APP_BUNDLE_DIR}/Contents/Resources"
 cp -R "${PUBLISH_FLAT}/." "${APP_BUNDLE_DIR}/Contents/MacOS/"
 cp -f "${DYLIB_OUT}" "${APP_BUNDLE_DIR}/Contents/MacOS/libEngineC.dylib"
+cp -f "${PROJECT_ROOT}/out/engine_cook" "${APP_BUNDLE_DIR}/Contents/MacOS/engine_cook" 2>/dev/null || true
+cp -f "${PROJECT_ROOT}/out/basisu" "${APP_BUNDLE_DIR}/Contents/MacOS/basisu" 2>/dev/null || true
 cp "${PROJECT_ROOT}/Editor/Info.plist" "${APP_BUNDLE_DIR}/Contents/Info.plist"
 log_info "Contents/MacOS/Engine.Editor (.NET host)"
 log_info "Contents/MacOS/libEngineC.dylib (force-copied from out/)"
+log_info "Contents/MacOS/engine_cook (force-copied from out/)"
+log_info "Contents/MacOS/basisu (force-copied from out/)"
 log_info "Contents/Info.plist (bundle metadata)"
 
 # ---- stage 4: code sign (Hardened Runtime + ad-hoc fallback) ---------------

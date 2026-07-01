@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 cmake_minimum_required(VERSION 3.25)
 
+set(SLANG_VERSION "2026.12")
+
 project(EndEngine
     VERSION 0.1.0
     DESCRIPTION "Source-inspired game engine: C backend + C# userspace, Metal RHI"
@@ -90,7 +92,11 @@ if(ENGINE_FETCHCONTENT AND NOT ENGINE_VENDORED_THIRDPARTY)
         GIT_TAG 0.11.25
         GIT_SHALLOW TRUE)
 
-    FetchContent_MakeAvailable(flecs cglm mikktspace xatlas tinygltf basis_universal vhacd miniaudio)
+    # Slang - shader cross compiler
+    FetchContent_Declare(slang
+        URL https://github.com/shader-slang/slang/releases/download/v${SLANG_VERSION}/slang-${SLANG_VERSION}-macos-aarch64.zip)
+
+    FetchContent_MakeAvailable(flecs cglm mikktspace xatlas tinygltf basis_universal vhacd miniaudio slang)
     # Jolt is built separately to keep its C++ standard strict.
 endif()
 
@@ -104,6 +110,7 @@ add_library(EngineC
             # to <Content Include> of the dylib. .a would not satisfy P/Invoke.
     engine_c/engine_log.c
     engine_c/engine_ecs.c
+    engine_c/engine_mem.c
     engine_c/rhi/rhi_dispatch.c
 )
 if(APPLE)
@@ -121,10 +128,15 @@ elseif(ENGINE_FETCHCONTENT)
 endif()
 
 target_link_libraries(EngineC PRIVATE flecs)
+if(APPLE)
+    # Link Slang dynamically
+    target_link_libraries(EngineC PRIVATE ${slang_SOURCE_DIR}/lib/libslang.dylib)
+endif()
 
 target_include_directories(EngineC
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/engine_c
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine_c/rhi)
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine_c/rhi
+            ${slang_SOURCE_DIR}/include)
 
 target_compile_options(EngineC PRIVATE
     -Wall -Wextra -Wpedantic
@@ -140,6 +152,15 @@ set_target_properties(EngineC PROPERTIES
     INSTALL_NAME_DIR "@rpath"
     BUILD_RPATH   "@loader_path")
 
+if(APPLE AND ENGINE_FETCHCONTENT)
+    # Copy libslang.dylib to the build directory so C# bindings can load it
+    add_custom_command(TARGET EngineC POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+            ${slang_SOURCE_DIR}/lib/libslang.dylib
+            $<TARGET_FILE_DIR:EngineC>/libslang.dylib
+        COMMENT "Copying libslang.dylib to output directory")
+endif()
+
 # ----------------------------------------------------------------------------
 # Jolt Physics - thin C-export wrapper. Built in Phase 3 once the Jolt
 # binding surface is locked. For now leave a stub so the link graph is stable.
@@ -148,13 +169,20 @@ set_target_properties(EngineC PROPERTIES
 # engine_c/physics/jolt_wrap.c will be added in Phase 3 with the
 # EngineJoltWrap static lib + its Jolt::Jolt link dependency.
 
-# Cook CLI is shipped in Phase 3 (asset pipeline). The include path for
-# tinygltf / basis_universal / xatlas / vhacd is in the global include set
-# so Phase 3 can drop the executable with no CMake changes.
+# ----------------------------------------------------------------------------
+# Cook CLI
+# ----------------------------------------------------------------------------
+add_subdirectory(Cook)
 
 # ----------------------------------------------------------------------------
 # Install rules - none for now, builder uses the build/ tree directly.
 # ----------------------------------------------------------------------------
+
+add_executable(TestEngineMem engine_c/test_engine_mem.c engine_c/engine_mem.c)
+target_include_directories(TestEngineMem PRIVATE engine_c)
+
+enable_testing()
+add_test(NAME MemoryTests COMMAND TestEngineMem)
 
 message(STATUS "EndEngine ${PROJECT_VERSION} configured")
 message(STATUS "  Platform targets: ${ENGINE_PLATFORMS}")
