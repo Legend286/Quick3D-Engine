@@ -10,6 +10,7 @@ namespace Engine.RenderGraph;
 public abstract class RenderPass
 {
     public string Name { get; init; } = string.Empty;
+    public RhiNative.QueueType Queue { get; init; } = RhiNative.QueueType.Graphics;
 
     /// <summary>Declare the pass's resource reads/writes.</summary>
     public abstract void Setup(RenderGraphBuilder builder);
@@ -29,14 +30,28 @@ public interface ICommandSink
                                 RhiNative.LoadOp colorLoad,
                                 RhiNative.StoreOp colorStore,
                                 RhiTexture? depth = null);
+                                
+    public void BeginComputePass(string? name = null);
+    public void EndComputePass();
 
     public void EndPass();
     public void BindPipeline(RhiPipeline pipeline);
     public void BindVertexBuffer(uint slot, RhiBuffer buf, ulong offset = 0);
+    public void PushConstants(uint size, IntPtr data);
     public void SetViewport(float x, float y, float w, float h,
                             float minDepth = 0, float maxDepth = 1);
+    public void SetScissor(uint x, uint y, uint w, uint h);
+    public void BindTexture(uint slot, RhiTexture tex);
+    public void BindTextureArray(uint slot, RhiTexture[] texs);
+    public void BindSampler(uint slot, RhiSampler samp);
+    public void BindIndexBuffer(RhiBuffer buf, bool is32Bit = false, ulong offset = 0);
     public void Draw(uint vertexCount, uint instanceCount = 1,
                      uint firstVertex = 0, uint firstInstance = 0);
+    public void DrawIndirect(RhiBuffer indirectBuffer, ulong offset, uint drawCount, uint stride);
+    public void DrawIndexed(uint indexCount, uint instanceCount = 1,
+                            uint firstIndex = 0, int vertexOffset = 0, uint firstInstance = 0);
+    public void DrawIndexedIndirect(RhiBuffer indirectBuffer, ulong offset, uint drawCount, uint stride);
+    public void Dispatch(uint groupsX, uint groupsY, uint groupsZ);
 }
 
 public sealed class RenderGraphContext

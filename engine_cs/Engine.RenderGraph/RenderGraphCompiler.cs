@@ -21,8 +21,10 @@
 // transient memory aliasing, culling of unused passes, automatic resolve +
 // depth transitions.
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using Engine.CBindings;
 
 namespace Engine.RenderGraph;
 
@@ -75,6 +77,8 @@ public sealed class RenderGraphCompiler
             }
         }
 
+        var aliasingPlan = ComputeAliasing(resourceDecls, passAccesses);
+
         return new RenderPlan
         {
             ResourceDecls = resourceDecls,
@@ -82,6 +86,7 @@ public sealed class RenderGraphCompiler
             PassAccesses = passAccesses,
             BarriersPerPass = barrierLists,
             FinalStates = finalStates,
+            Aliasing = aliasingPlan,
         };
     }
 
@@ -107,6 +112,85 @@ public sealed class RenderGraphCompiler
         }
         return final;
     }
+
+    private static MemoryAliasingPlan ComputeAliasing(
+        IReadOnlyDictionary<ResourceHandle, ResourceDecl> decls,
+        IReadOnlyList<List<AccessDecl>> passAccesses)
+    {
+        // 1. Calculate lifespans
+        var lifespans = new Dictionary<ResourceHandle, (int start, int end)>();
+        for (int i = 0; i < passAccesses.Count; i++)
+        {
+            foreach (var access in passAccesses[i])
+            {
+                if (!lifespans.TryGetValue(access.Resource, out var span))
+                    lifespans[access.Resource] = (i, i);
+                else
+                    lifespans[access.Resource] = (span.start, i);
+            }
+        }
+
+        // 2. Simple linear offset allocator
+        ulong currentOffset = 0;
+        var offsets = new Dictionary<ResourceHandle, ulong>();
+        var activeResources = new List<(ResourceHandle handle, ulong offset, ulong size, int end)>();
+
+        foreach (var (handle, decl) in decls)
+        {
+            if (!lifespans.TryGetValue(handle, out var span)) continue;
+
+            ulong size = GetResourceSize(decl);
+            
+            // Find a free gap or append at end. (Simplified MVP: append at end, but reclaim expired)
+            // To actually alias, we should look for overlapping lifespans. 
+            // For MVP aliasing: just allocate non-overlapping at the same offset.
+            
+            // Expire old
+            activeResources.RemoveAll(r => r.end < span.start);
+
+            // Find max offset needed so far? No, a real allocator places it in the first fitting gap.
+            // Simplified for now: just stack them, but allow reusing base offset if entirely disjoint.
+            ulong placementOffset = 0;
+            foreach (var active in activeResources)
+            {
+                ulong activeEnd = active.offset + active.size;
+                if (placementOffset < activeEnd)
+                {
+                    placementOffset = activeEnd; // Stack after it
+                }
+            }
+
+            // Align to 64KB (Metal max alignment requirement for buffers in heaps is often 16KB or 64KB)
+            placementOffset = (placementOffset + 65535) & ~65535ul;
+            
+            offsets[handle] = placementOffset;
+            activeResources.Add((handle, placementOffset, size, span.end));
+
+            ulong neededHeapSize = placementOffset + size;
+            if (neededHeapSize > currentOffset)
+            {
+                currentOffset = neededHeapSize;
+            }
+        }
+
+        return new MemoryAliasingPlan
+        {
+            TotalHeapSize = currentOffset,
+            ResourceOffsets = offsets
+        };
+    }
+
+    private static ulong GetResourceSize(ResourceDecl decl)
+    {
+        if (decl.Kind == ResourceKind.Buffer) return decl.Buffer!.Size;
+        if (decl.Kind == ResourceKind.Texture)
+        {
+            ulong bpp = 4;
+            if (decl.Texture!.Format == RhiNative.TextureFormat.Rgba16Float) bpp = 8;
+            return (ulong)decl.Texture.Width * (ulong)decl.Texture.Height * bpp;
+        }
+        return 0;
+    }
 }
 
 public sealed class RenderPlan
@@ -116,6 +200,7 @@ public sealed class RenderPlan
     public required IReadOnlyList<List<AccessDecl>> PassAccesses { get; init; }
     public required IReadOnlyList<List<BarrierDecl>> BarriersPerPass { get; init; }
     public required IReadOnlyDictionary<ResourceHandle, ResourceState> FinalStates { get; init; }
+    public required MemoryAliasingPlan Aliasing { get; init; }
 }
 
 public sealed record BarrierDecl(ResourceHandle Resource,
