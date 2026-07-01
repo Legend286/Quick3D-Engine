@@ -12,6 +12,7 @@ public sealed class SceneGraph
     [JsonPropertyName("passes")] public List<ScenePass> Passes { get; set; } = new();
     [JsonPropertyName("cameras")] public List<Camera> Cameras { get; set; } = new();
     [JsonPropertyName("meshes")] public List<MeshRef> Meshes { get; set; } = new();
+    [JsonPropertyName("models")] public List<ModelRef> Models { get; set; } = new();
     [JsonPropertyName("lights")] public List<DirectionalLight> Lights { get; set; } = new();
 }
 
@@ -59,4 +60,13 @@ public sealed class DirectionalLight
     [JsonPropertyName("direction")] public float[] Direction { get; set; } = new float[] { 0, -1, 0 };
     [JsonPropertyName("color")] public float[] Color { get; set; } = new float[] { 1, 1, 1 };
     [JsonPropertyName("intensity")] public float Intensity { get; set; } = 1.0f;
+}
+
+public sealed class ModelRef
+{
+    [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
+    [JsonPropertyName("source")] public string Source { get; set; } = string.Empty;
+    [JsonPropertyName("position")] public float[] Position { get; set; } = new float[] { 0, 0, 0 };
+    [JsonPropertyName("rotation")] public float[] Rotation { get; set; } = new float[] { 0, 0, 0 };
+    [JsonPropertyName("scale")] public float[] Scale { get; set; } = new float[] { 1, 1, 1 };
 }
