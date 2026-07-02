@@ -64,7 +64,10 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         set => _autoHotReloadEnabled = value;
     }
 
-    public ViewportPanelViewModel(string contentRoot, string sceneName = "hello")
+    public EcsWorld? World => _world;
+    public event Action? OnWorldCreated;
+
+    public ViewportPanelViewModel(string contentRoot, string sceneName = "dumpster")
     {
         _contentRoot = contentRoot;
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
@@ -97,6 +100,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             _device = new RhiDevice();
             _swap = _device.CreateSwapchain(_nsView, _width, _height);
             _world = new EcsWorld();
+            OnWorldCreated?.Invoke();
             // SeedTriangleEntity(_world);
 
             SetupSceneWatcher(_contentRoot);
@@ -153,7 +157,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             }
         }
         catch { }
-        return "hello";
+        return "dumpster";
     }
 
     private static string ResolveDotnetExe()
@@ -242,6 +246,26 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         _gameLoop.LoadScene(_contentRoot, ResolveStartupScene());
     }
 
+    public void LoadScene(string sceneName)
+    {
+        _gameLoop?.LoadScene(_contentRoot, sceneName);
+    }
+
+    public void AddModelToScene(string mdlName)
+    {
+        if (_world == null || _device == null) return;
+        
+        var mdlPath = Path.Combine(_contentRoot, "assets", mdlName);
+        if (!File.Exists(mdlPath)) return;
+        
+        var model = Engine.Assets.ModelLoader.LoadMdl(_device, mdlPath);
+        ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
+        
+        ulong ent = _world.CreateEntity();
+        _world.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
+        _world.Set(ent, Engine.Scene.Components.Transform.Default);
+    }
+
     /// <summary>
     /// Initiates a project reload. The method first tears down the current
     /// game loop on the calling (UI) thread, then dispatches the blocking
@@ -300,6 +324,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             Dispatcher.UIThread.Post(() =>
             {
                 _world = new EcsWorld();
+                OnWorldCreated?.Invoke();
                 // SeedTriangleEntity(_world);
                 try
                 {

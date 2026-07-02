@@ -11,9 +11,13 @@ public sealed class EcsWorld : IEntityStore, IDisposable
 {
     private IntPtr _world;
     private readonly ConcurrentDictionary<Type, ulong> _components = new();
+    private readonly System.Collections.Generic.List<ulong> _entities = new();
     private bool _disposed;
 
     public IntPtr NativeWorld => _world;
+    public System.Collections.Generic.IReadOnlyList<ulong> Entities => _entities;
+    public event Action<ulong>? OnEntityCreated;
+    public event Action? OnWorldCleared;
 
     public EcsWorld()
     {
@@ -30,12 +34,17 @@ public sealed class EcsWorld : IEntityStore, IDisposable
         EcsNative.EngineEcsShutdown(_world);
         _world = EcsNative.EngineEcsInit();
         _components.Clear();
+        _entities.Clear();
+        OnWorldCleared?.Invoke();
     }
 
     public ulong CreateEntity()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return EcsNative.EngineEcsCreateEntity(_world);
+        ulong ent = EcsNative.EngineEcsCreateEntity(_world);
+        _entities.Add(ent);
+        OnEntityCreated?.Invoke(ent);
+        return ent;
     }
 
     private ulong GetOrRegisterComponent<T>() where T : unmanaged
