@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "albedo_color": [1, 1, 1, 1],
-  "albedo_texture": "dumpster_tex_0.ktx2",
-  "normal_texture": "dumpster_tex_2.ktx2",
-  "rma_texture": "dumpster_tex_1.ktx2",
-  "metallic": 1,
-  "roughness": 1
-}
