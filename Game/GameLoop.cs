@@ -88,8 +88,8 @@ public sealed class GameLoop : IGameLoop
 
             if (input.KeyW) move += forward;
             if (input.KeyS) move -= forward;
-            if (input.KeyA) move -= right;
-            if (input.KeyD) move += right;
+            if (input.KeyA) move += right;
+            if (input.KeyD) move -= right;
 
             if (move.LengthSquared() > 0)
                 move = Vector3.Normalize(move);
