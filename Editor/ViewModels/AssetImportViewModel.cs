@@ -18,4 +18,7 @@ public partial class AssetImportViewModel : ObservableObject
 
     [ObservableProperty]
     private string _statusMessage = "Ready";
+
+    public bool ImportSucceeded { get; set; }
+    public string ImportedSceneName { get; set; } = string.Empty;
 }

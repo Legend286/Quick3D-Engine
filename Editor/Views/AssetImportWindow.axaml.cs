@@ -143,6 +143,8 @@ public partial class AssetImportWindow : Window
                 else
                 {
                     vm.StatusMessage = "Import completed successfully!";
+                    vm.ImportSucceeded = true;
+                    vm.ImportedSceneName = Path.GetFileNameWithoutExtension(vm.SourceFile);
                     Info($"Import succeeded:\n{output}", "Editor");
                     // Wait a moment then close
                     await Task.Delay(1000);

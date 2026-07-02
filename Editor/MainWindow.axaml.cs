@@ -78,13 +78,22 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnImportAssetClicked(object? sender, RoutedEventArgs e)
+    private async void OnImportAssetClicked(object? sender, RoutedEventArgs e)
     {
+        var vm = new ViewModels.AssetImportViewModel();
         var importWindow = new Views.AssetImportWindow
         {
-            DataContext = new ViewModels.AssetImportViewModel()
+            DataContext = vm
         };
-        importWindow.ShowDialog(this);
+        await importWindow.ShowDialog(this);
+        
+        if (vm.ImportSucceeded && !string.IsNullOrEmpty(vm.ImportedSceneName))
+        {
+            if (DataContext is MainWindowViewModel mainVm && mainVm.ViewportVm is not null)
+            {
+                mainVm.ViewportVm.AddModelToScene(vm.ImportedSceneName + ".mdl");
+            }
+        }
     }
 
     private async void OnNewProjectClicked(object? sender, RoutedEventArgs e)
