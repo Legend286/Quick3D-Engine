@@ -1,4 +1,4 @@
-# End Engine
+# Quick 3D Engine
 
 A Source-Engine-inspired game engine. C backend + C# userspace, Metal-first RHI with Vulkan-later, FLECS for gameplay, Avalonia + ImGui editor suite.
 

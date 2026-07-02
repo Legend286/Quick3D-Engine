@@ -39,31 +39,31 @@ A C-backed game engine inspired by Valve's Source Engine, with a C# userspace fo
 
 ```
 +--------------------------------------------------------+
-|                    C# Userspace                         |
-|  ┌──────────────────────────────────────────────────┐   |
-|  │ Game Code (FLECS components, C# scripts, AI)     │   |
-|  ├──────────────────────────────────────────────────┤   |
-|  │ Engine Modules (Renderer, Scene, Physics-bind,   │   |
-|  │ Audio-bind, Asset, Editor, Networking)           │   |
-|  ├──────────────────────────────────────────────────┤   |
-|  │ C# Renderer (uses RHI bindings)                  │   |
-|  └──────────────────────────────────────────────────┘   |
-|                          ▲                               |
-|                          │ P/Invoke                      |
-|                          ▼                               |
-|  ┌──────────────────────────────────────────────────┐   |
-|                C Engine Backing                         |
-|  ┌──────────────────────────────────────────────────┐   |
-|  │ Engine C API (memory, threads, containers, log,   │  |
+|                    C# Userspace                        |
+|  ┌──────────────────────────────────────────────────   |
+|  │ Game Code (FLECS components, C# scripts, AI)     │  |
+|  ├──────────────────────────────────────────────────┤  |
+|  │ Engine Modules (Renderer, Scene, Physics-bind,   │  |
+|  │ Audio-bind, Asset, Editor, Networking)           │  |
+|  ├──────────────────────────────────────────────────┤  |
+|  │ C# Renderer (uses RHI bindings)                  │  |
+|  └──────────────────────────────────────────────────┘  |
+|                          ▲                             |
+|                          │ P/Invoke                    |
+|                          ▼                             |
+|  ┌──────────────────────────────────────────────────┐  |
+|                C Engine Backing                        |
+|  ┌──────────────────────────────────────────────────┐  |
+|  │ Engine C API (memory, threads, containers, log,  │  |
 |  │ RHI, ECS-C-export, physics-C-export, audio...)   │  |
-|  ├──────────────────────────────────────────────────┤   |
+|  ├──────────────────────────────────────────────────┤  |
 |  │ RHI (Metal primary; Vulkan stub for later)       │  |
-|  ├──────────────────────────────────────────────────┤   |
-|  │ FLECS (C)                                         │  |
-|  ├──────────────────────────────────────────────────┤   |
-|  │ cglm, MikkTSpace, xatlas, tinygltf, basis/univ., │   |
-|  │ VHACD, Jolt (C++ compiled to C export), miniaudio │  |
-|  └──────────────────────────────────────────────────┘   |
+|  ├──────────────────────────────────────────────────┤  |
+|  │ FLECS (C)                                        │  |
+|  ├──────────────────────────────────────────────────┤  |
+|  │ cglm, MikkTSpace, xatlas, tinygltf, basis/univ., │  |
+|  │ VHACD, Jolt (C++ compiled to C export), miniaudio│  |
+|  └──────────────────────────────────────────────────┘  |
 +--------------------------------------------------------+
 ```
 
