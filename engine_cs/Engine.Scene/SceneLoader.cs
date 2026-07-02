@@ -21,9 +21,15 @@ public sealed class SceneLoader
     public SceneGraph Load(string sceneName)
     {
         if (_cache.TryGetValue(sceneName, out var hit)) return hit;
+        
         string path = Path.Combine(_contentRoot, "scenes", sceneName + ".scene.json");
         if (!File.Exists(path))
-            throw new FileNotFoundException($"Scene not found: {path}", path);
+        {
+            path = Path.Combine(_contentRoot, "assets", sceneName + ".scene.json");
+            if (!File.Exists(path))
+                throw new FileNotFoundException($"Scene not found in scenes/ or assets/: {sceneName}.scene.json");
+        }
+            
         string json = File.ReadAllText(path);
         var opts = new JsonSerializerOptions
         {

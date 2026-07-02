@@ -53,6 +53,9 @@ public sealed class Renderer : IDisposable
         foreach (var modelRef in scene.Models)
         {
             var mdlPath = Path.Combine(_contentRoot, modelRef.Source);
+            if (!File.Exists(mdlPath))
+                mdlPath = Path.Combine(_contentRoot, "assets", Path.GetFileName(modelRef.Source));
+                
             var model = Engine.Assets.ModelLoader.LoadMdl(_device, mdlPath);
             
             // Register all meshes and materials in the model parts
