@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> AI-agent instructions for the Source-Inspired Game Engine.
+> AI-agent instructions for the Quick 3D Engine (a Source-Inspired Game Engine).
 > This file is read by automated coding assistants (Codebuff, Cursor, Aider, Copilot Workspace, etc.) at the start of every session. Honor its rules on every change.
 
 ---
@@ -315,6 +315,10 @@ When an agent is invoked on this repository it should:
 6. Run formatter + tests for the area you touched.
 7. End with a concise summary of what changed.
 
+### 6.4 Building the project
+
+Until cross-platform builds are fully supported, **always use the `scripts/build-mac-app.sh` script** for building the project. Do not use generic `dotnet build` or `cmake` commands directly for the main application build unless specifically working on those systems.
+
 ---
 
 ## 7. Project-specific reminders
@@ -385,6 +389,7 @@ BREAKING CHANGE: external mount schema renamed 'path' -> 'mount_path'
 - **Hardcoded paths in code** — paths go through `Engine.Assets` or VFS.
 - **Raw pointers across threads / hot reloads** — generational handles only.
 - **Committing `editor.local.json`** — gitignored.
+- **Using Git LFS** — Git LFS is removed and disabled. Use standard git for all assets.
 
 ### 8.3 Minimum bar for "done"
 
