@@ -42,6 +42,7 @@ using System.IO;
 using Engine.CBindings;
 using Engine.RHI;
 using ZstdSharp;
+using static Engine.CBindings.Log;
 
 namespace Engine.Assets;
 
@@ -54,7 +55,7 @@ public static class Ktx2Loader
     {
         if (!File.Exists(path))
         {
-            Console.WriteLine($"KTX2 not found: {path}");
+            Error($"KTX2 not found at '{path}'. Check that Cook produced the .ktx2 binary (it is required next to the .tex sidecar).", "KTX2Loader");
             return null;
         }
 
@@ -65,14 +66,14 @@ public static class Ktx2Loader
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Failed to read KTX2 {path}: {ex.Message}");
+            Error($"Failed to read KTX2 '{path}': {ex.Message}", "KTX2Loader");
             return null;
         }
 
         if (bytes.Length < 80 ||
             !bytes.AsSpan(0, 12).SequenceEqual(KTX2Identifier))
         {
-            Console.WriteLine($"Not a KTX2 file: {path}");
+            Error($"Not a KTX2 file: '{path}' (missing identifier or truncated). Re-cook via Cook or verify the source asset.", "KTX2Loader");
             return null;
         }
 
@@ -92,25 +93,27 @@ public static class Ktx2Loader
                 2 => "Zstandard (Khronos deprecated alias)",
                 _ => $"unknown ({supercompress})",
             };
-            Console.WriteLine(
+            Error(
                 $"KTX2 supercompression={schemeName} not supported by this loader. " +
                 $"Re-encode with `basisu -ktx2 -uastc` so vkFormat is real and scheme=3 (Zstd), " +
-                $"or `-no_zstd` for scheme=0. file={path}");
+                $"or `-no_zstd` for scheme=0. file={path}",
+                "KTX2Loader");
             return null;
         }
 
         if (!TryMapVkFormat(vkFormat, out var rhiFormat, out string fmtName))
         {
-            Console.WriteLine($"KTX2 has unsupported vkFormat={vkFormat} (file={path})");
+            Error($"KTX2 has unsupported vkFormat={vkFormat} (file={path}). Add a mapping in Ktx2Loader.TryMapVkFormat.", "KTX2Loader");
             return null;
         }
 
         var blockInfo = RhiTexture.GetBlockInfo(rhiFormat);
         if (!blockInfo.IsBlockCompressed)
         {
-            Console.WriteLine(
+            Error(
                 $"KTX2 vkFormat={vkFormat} mapped to {rhiFormat} which is not block-compressed; " +
-                $"uncompressed KTX2 textures should use rhi_texture_upload, not the per-mip path. file={path}");
+                $"uncompressed KTX2 textures should use rhi_texture_upload, not the per-mip path. file={path}",
+                "KTX2Loader");
             return null;
         }
 
@@ -128,7 +131,7 @@ public static class Ktx2Loader
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Failed to create KTX2 texture ({fmtName}) for {path}: {ex.Message}");
+            Error($"Failed to create KTX2 texture ({fmtName}) for '{path}': {ex.Message}", "KTX2Loader");
             return null;
         }
 
@@ -168,8 +171,9 @@ public static class Ktx2Loader
 
             if (byteOffset + byteLength > (ulong)bytes.Length)
             {
-                Console.WriteLine(
-                    $"KTX2 level {level} extends past EOF (offset {byteOffset} + length {byteLength} > {bytes.Length}). file={path}");
+                Error(
+                    $"KTX2 level {level} extends past EOF (offset {byteOffset} + length {byteLength} > {bytes.Length}). file={path}",
+                    "KTX2Loader");
                 tex.Dispose();
                 return null;
             }
@@ -192,8 +196,9 @@ public static class Ktx2Loader
                         int written = dec.Unwrap(span.Slice((int)byteOffset, (int)byteLength), uncomp);
                         if (uncompressedLength > 0 && (ulong)written != uncompressedLength)
                         {
-                            Console.WriteLine(
-                                $"KTX2 Zstd level {level}: decompressed size {written} ≠ expected {uncompressedLength}. file={path}");
+                            Error(
+                                $"KTX2 Zstd level {level}: decompressed size {written} ≠ expected {uncompressedLength}. file={path}",
+                                "KTX2Loader");
                             tex.Dispose();
                             return null;
                         }
@@ -213,7 +218,7 @@ public static class Ktx2Loader
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"KTX2 level {level} upload failed ({fmtName}): {ex.Message}");
+                    Error($"KTX2 level {level} upload failed ({fmtName}) for '{path}': {ex.Message}", "KTX2Loader");
                     tex.Dispose();
                     return null;
                 }
