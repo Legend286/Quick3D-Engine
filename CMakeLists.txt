@@ -112,19 +112,25 @@ add_library(EngineC
     engine_c/engine_ecs.c
     engine_c/engine_mem.c
     engine_c/rhi/rhi_dispatch.c
+    engine_c/input/input_dispatch.c
 )
 if(APPLE)
     target_sources(EngineC PRIVATE
-        engine_c/rhi/rhi_metal.mm)
+        engine_c/rhi/rhi_metal.mm
+        engine_c/input/input_mac.m)
     target_link_libraries(EngineC PRIVATE
         ${METAL_FRAMEWORK}
         ${APPKIT_FRAMEWORK}
         ${QUARTZ_FRAMEWORK}
         ${FOUNDATION_FRAMEWORK})
-elseif(ENGINE_FETCHCONTENT)
-    # Vulkan stub - link-time no-op until Phase 4+.
+elseif(WIN32)
     target_sources(EngineC PRIVATE
-        engine_c/rhi/rhi_vulkan_stub.c)
+        engine_c/rhi/rhi_vulkan_stub.c
+        engine_c/input/input_win32.c)
+elseif(ENGINE_FETCHCONTENT)
+    target_sources(EngineC PRIVATE
+        engine_c/rhi/rhi_vulkan_stub.c
+        engine_c/input/input_linux.c)
 endif()
 
 target_link_libraries(EngineC PRIVATE flecs)
