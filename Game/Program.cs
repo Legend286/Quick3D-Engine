@@ -39,7 +39,7 @@ internal static class Program
         {
             using (image)
             {
-                renderer.RenderFrame(image, width, height);
+                renderer.RenderFrame(image!, width, height);
                 swap.Present();
             }
         }

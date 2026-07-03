@@ -7,4 +7,8 @@
     <IsPackable>false</IsPackable>
     <RootNamespace>Engine.Scene</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Engine.RHI\Engine.RHI.csproj" />
+    <ProjectReference Include="..\Engine.Assets\Engine.Assets.csproj" />
+  </ItemGroup>
 </Project>

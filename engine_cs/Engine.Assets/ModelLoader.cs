@@ -52,6 +52,7 @@ public struct ModelPart
 
 public class Model
 {
+    public string SourcePath { get; set; } = string.Empty;
     public ModelPart[] Parts { get; set; } = Array.Empty<ModelPart>();
 }
 
@@ -67,8 +68,11 @@ public static class ModelLoader
         if (def == null)
             throw new InvalidDataException("Failed to parse .mdl");
 
-        var model = new Model();
-        model.Parts = new ModelPart[def.Parts.Length];
+        var model = new Model
+        {
+            SourcePath = path,
+            Parts = new ModelPart[def.Parts.Length]
+        };
 
         for (int i = 0; i < def.Parts.Length; i++)
         {
@@ -77,14 +81,34 @@ public static class ModelLoader
             
             if (!string.IsNullOrEmpty(partDef.Mesh))
             {
-                part.Mesh = MeshLoader.LoadMsh(device, Path.Combine(Path.GetDirectoryName(path) ?? "", partDef.Mesh));
-                part.MeshId = AssetRegistry.RegisterMesh(part.Mesh);
+                try
+                {
+                    part.Mesh = MeshLoader.LoadMsh(device, Path.Combine(Path.GetDirectoryName(path) ?? "", partDef.Mesh));
+                    part.MeshId = AssetRegistry.RegisterMesh(part.Mesh);
+                }
+                catch (Exception ex)
+                {
+                    Engine.CBindings.Log.Error($"[ModelLoader] Failed to load mesh '{partDef.Mesh}': {ex.Message}", "Assets");
+                }
             }
                 
             if (!string.IsNullOrEmpty(partDef.Material))
             {
-                part.Material = MaterialLoader.LoadMat(device, Path.Combine(Path.GetDirectoryName(path) ?? "", partDef.Material));
-                part.MaterialId = AssetRegistry.RegisterMaterial(part.Material);
+                try
+                {
+                    part.Material = MaterialLoader.LoadMat(device, Path.Combine(Path.GetDirectoryName(path) ?? "", partDef.Material));
+                    part.MaterialId = AssetRegistry.RegisterMaterial(part.Material);
+                }
+                catch (Exception ex)
+                {
+                    Engine.CBindings.Log.Warn($"[ModelLoader] Missing material '{partDef.Material}', using fallback. ({ex.Message})", "Assets");
+                    part.Material = new Material 
+                    { 
+                        AlbedoColor = new float[] { 1.0f, 0.0f, 1.0f, 1.0f },
+                        EmissiveColor = new float[] { 1.0f, 0.0f, 1.0f, 1.0f },
+                    };
+                    part.MaterialId = AssetRegistry.RegisterMaterial(part.Material);
+                }
             }
                 
             if (partDef.Bounds != null)

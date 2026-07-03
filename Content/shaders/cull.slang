@@ -76,78 +76,16 @@ void computeMain(uint3 threadId : SV_DispatchThreadID)
 
     InstanceData inst = push.instances[instIdx];
     
-    float3 corners[8] = {
-        float3(inst.aabbMin.x, inst.aabbMin.y, inst.aabbMin.z),
-        float3(inst.aabbMax.x, inst.aabbMin.y, inst.aabbMin.z),
-        float3(inst.aabbMin.x, inst.aabbMax.y, inst.aabbMin.z),
-        float3(inst.aabbMax.x, inst.aabbMax.y, inst.aabbMin.z),
-        float3(inst.aabbMin.x, inst.aabbMin.y, inst.aabbMax.z),
-        float3(inst.aabbMax.x, inst.aabbMin.y, inst.aabbMax.z),
-        float3(inst.aabbMin.x, inst.aabbMax.y, inst.aabbMax.z),
-        float3(inst.aabbMax.x, inst.aabbMax.y, inst.aabbMax.z)
-    };
-    
-    float3 worldMin = float3(1000000.0, 1000000.0, 1000000.0);
-    float3 worldMax = float3(-1000000.0, -1000000.0, -1000000.0);
-    
-    for (int c = 0; c < 8; ++c) {
-        float4 wc = mul(inst.modelMatrix, float4(corners[c], 1.0));
-        worldMin = min(worldMin, wc.xyz);
-        worldMax = max(worldMax, wc.xyz);
-    }
-
-    int instStatus = TestAABB(worldMin, worldMax, push.frustumPlanes);
-    if (instStatus > 0) {
-        for (uint p = 0; p < inst.partCount; ++p) {
-            uint partIdx = inst.firstPartIndex + p;
-            PartData part = push.parts[partIdx];
-            
-            bool isVisible = true;
-            
-            if (instStatus == 1) {
-                // Intersecting, we must test the part's AABB
-                float3 pcorners[8] = {
-                    float3(part.aabbMin.x, part.aabbMin.y, part.aabbMin.z),
-                    float3(part.aabbMax.x, part.aabbMin.y, part.aabbMin.z),
-                    float3(part.aabbMin.x, part.aabbMax.y, part.aabbMin.z),
-                    float3(part.aabbMax.x, part.aabbMax.y, part.aabbMin.z),
-                    float3(part.aabbMin.x, part.aabbMin.y, part.aabbMax.z),
-                    float3(part.aabbMax.x, part.aabbMin.y, part.aabbMax.z),
-                    float3(part.aabbMin.x, part.aabbMax.y, part.aabbMax.z),
-                    float3(part.aabbMax.x, part.aabbMax.y, part.aabbMax.z)
-                };
-                
-                float3 pworldMin = float3(1000000.0, 1000000.0, 1000000.0);
-                float3 pworldMax = float3(-1000000.0, -1000000.0, -1000000.0);
-                
-                for (int pc = 0; pc < 8; ++pc) {
-                    float4 pwc = mul(inst.modelMatrix, float4(pcorners[pc], 1.0));
-                    pworldMin = min(pworldMin, pwc.xyz);
-                    pworldMax = max(pworldMax, pwc.xyz);
-                }
-                
-                isVisible = TestAABB(pworldMin, pworldMax, push.frustumPlanes) > 0;
-            }
-            
-            if (isVisible) {
-                uint cmdIdx = 0;
-                
-                DrawIndirectCommand cmd;
-                cmd.vertexCount = part.indexCount;
-                cmd.instanceCount = 1;
-                cmd.vertexStart = 0;
-                cmd.baseInstance = partIdx; 
-                
-                push.drawCmds[partIdx] = cmd;
-            } else {
-                DrawIndirectCommand cmd;
-                cmd.vertexCount = 0;
-                cmd.instanceCount = 0;
-                cmd.vertexStart = 0;
-                cmd.baseInstance = 0;
-                
-                push.drawCmds[partIdx] = cmd;
-            }
-        }
+    for (uint p = 0; p < inst.partCount; ++p) {
+        uint partIdx = inst.firstPartIndex + p;
+        PartData part = push.parts[partIdx];
+        
+        DrawIndirectCommand cmd;
+        cmd.vertexCount = part.indexCount;
+        cmd.instanceCount = 1;
+        cmd.vertexStart = 0;
+        cmd.baseInstance = partIdx; 
+        
+        push.drawCmds[partIdx] = cmd;
     }
 }

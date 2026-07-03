@@ -34,6 +34,7 @@ public class MaterialDefinition
 public class Material
 {
     public float[] AlbedoColor { get; set; } = { 1, 1, 1, 1 };
+    public float[] EmissiveColor { get; set; } = { 0, 0, 0, 1 };
     public RhiTexture? AlbedoTexture { get; set; }
     public RhiTexture? NormalTexture { get; set; }
     public RhiTexture? RmaTexture { get; set; }

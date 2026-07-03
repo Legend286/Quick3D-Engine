@@ -18,9 +18,9 @@ public sealed class GridPass : RenderPass, IDisposable
     
     private RhiShader _vs;
     private RhiShader _fs;
-    private RhiPipeline _pipeline;
+    private RhiPipeline? _pipeline;
     private bool _clearScreen;
-    private RhiBuffer _vertexBuffer;
+    private RhiBuffer? _vertexBuffer;
     private uint _vertexCount;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -86,6 +86,7 @@ public sealed class GridPass : RenderPass, IDisposable
     public override void Setup(RenderGraphBuilder builder)
     {
         builder.Write(Renderer.BackBufferHandle, ResourceState.RenderTarget);
+        builder.Read(Renderer.DepthBufferHandle, ResourceState.DepthStencil);
     }
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext context)
@@ -132,12 +133,22 @@ public sealed class GridPass : RenderPass, IDisposable
         };
 
         var loadOp = _clearScreen ? RhiNative.LoadOp.Clear : RhiNative.LoadOp.Load;
-        sink.BeginRenderPass(colorTarget, loadOp, RhiNative.StoreOp.Store, depth: null);
-        sink.BindPipeline(_pipeline);
-        sink.BindVertexBuffer(1, _vertexBuffer, 0);
-        sink.PushConstants((uint)sizeof(GridPushData), new IntPtr(&pushData));
-        sink.Draw(_vertexCount);
-        sink.EndPass();
+        context.TryGetTexture(Renderer.DepthBufferHandle, out RhiTexture depthTarget);
+        if (_pipeline != null && _vertexBuffer != null)
+        {
+            // Preserve the depth that PbrPass wrote so the grid lines
+            // depth-test against the geometry. Only discard when the grid
+            // is the first pass (clearScreen=true).
+            var depthLoad = _clearScreen ? RhiNative.LoadOp.Clear : RhiNative.LoadOp.Load;
+            sink.BeginRenderPass(colorTarget, loadOp, RhiNative.StoreOp.Store,
+                                  depthTarget, depthLoad, RhiNative.StoreOp.Store);
+            sink.SetViewport(0, 0, w, h);
+            sink.BindPipeline(_pipeline);
+            sink.BindVertexBuffer(1, _vertexBuffer, 0);
+            sink.PushConstants(0, (uint)sizeof(GridPushData), new IntPtr(&pushData));
+            sink.Draw(_vertexCount);
+            sink.EndPass();
+        }
     }
 
     public void Dispose()

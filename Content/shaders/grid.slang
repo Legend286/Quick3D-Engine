@@ -34,11 +34,20 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     float3 color = float3(0.5, 0.5, 0.5); // Default grey line
     
     // Highlight axes
-    if (abs(input.worldPos.x) < 0.0001) {
+    if (abs(input.worldPos.x) == 0) {
         color = float3(0.2, 0.2, 1.0); // Z axis blue
     }
-    if (abs(input.worldPos.z) < 0.0001) {
+    if (abs(input.worldPos.z) == 0) {
         color = float3(1.0, 0.2, 0.2); // X axis red
+    }
+
+    // major lines
+    if (abs(input.worldPos.x) % 10 == 0) {
+        color *= 1.5f;
+    }
+
+    if (abs(input.worldPos.z) % 10 == 0) {
+        color *= 1.5f;
     }
     
     return float4(color, fade * 0.8);

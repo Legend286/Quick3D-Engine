@@ -43,12 +43,23 @@ public class PbrPass : RenderPass
     [StructLayout(LayoutKind.Sequential)]
     private struct MaterialData {
         public Vector4 BaseColor;
+        public Vector4 EmissiveColor;
         public float Metallic;
         public float Roughness;
         public uint AlbedoTexIndex;
         public uint NormalTexIndex;
         public uint RmaTexIndex;
+        public uint EmissiveTexIndex;
         public uint _pad0;
+        public uint _pad1;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LightData {
+        public Vector4 Position;   // w = range
+        public Vector4 Direction;  // w = type (0=Dir, 1=Point, 2=Spot)
+        public Vector4 Color;      // w = intensity
+        public Vector4 SpotParams; // x = innerCone, y = outerCone
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -57,14 +68,15 @@ public class PbrPass : RenderPass
         public ulong Instances;
         public ulong Materials;
         public ulong Camera;
+        public ulong Lights;
+        public uint LightCount;
+        public uint _pad0;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct CameraData {
         public Matrix4x4 ViewProj;
-        public Vector4 CameraPosition;
-        public Vector4 LightDir;
-        public Vector4 LightColor;
+        public Vector4 CameraPosition; // w = exposure
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -102,6 +114,7 @@ public class PbrPass : RenderPass
     private RhiBuffer _partBuffer;
     private RhiBuffer _materialBuffer;
     private RhiBuffer _cameraBuffer;
+    private RhiBuffer _lightBuffer;
     private RhiBuffer _drawCmdBuffer;
     private RhiBuffer _drawCountBuffer;
 
@@ -142,6 +155,7 @@ public class PbrPass : RenderPass
         _partBuffer = RhiBuffer.Create(_device, 4096 * (ulong)sizeof(PartData), RhiNative.BufferUsage.Storage);
         _materialBuffer = RhiBuffer.Create(_device, 1024 * (ulong)sizeof(MaterialData), RhiNative.BufferUsage.Storage);
         _cameraBuffer = RhiBuffer.Create(_device, (ulong)sizeof(CameraData), RhiNative.BufferUsage.Storage);
+        _lightBuffer = RhiBuffer.Create(_device, 1024 * (ulong)sizeof(LightData), RhiNative.BufferUsage.Storage);
         
         // Indirect struct is 16 bytes
         _drawCmdBuffer = RhiBuffer.Create(_device, 4096 * 16, RhiNative.BufferUsage.Storage | RhiNative.BufferUsage.Indirect);
@@ -151,6 +165,7 @@ public class PbrPass : RenderPass
     public override void Setup(RenderGraphBuilder builder)
     {
         builder.Write(Engine.Game.Renderer.BackBufferHandle, ResourceState.RenderTarget);
+        builder.Write(Engine.Game.Renderer.DepthBufferHandle, ResourceState.DepthStencil);
     }
 
     private void ExtractPlanes(Matrix4x4 vp, out CullPushData p)
@@ -181,6 +196,7 @@ public class PbrPass : RenderPass
     {
         if (!context.TryGetTexture(Engine.Game.Renderer.BackBufferHandle, out RhiTexture colorTarget))
             return;
+        context.TryGetTexture(Engine.Game.Renderer.DepthBufferHandle, out RhiTexture depthTarget);
 
         uint w = context.Width > 0 ? context.Width : 1280;
         uint h = context.Height > 0 ? context.Height : 720;
@@ -188,10 +204,9 @@ public class PbrPass : RenderPass
 
         CameraData camData = default;
         camData.ViewProj = Matrix4x4.Identity;
-        camData.LightDir = new Vector4(Vector3.Normalize(new Vector3(1, -1, 1)), 1.0f);
-        camData.LightColor = new Vector4(1, 1, 1, 1);
+        camData.CameraPosition = new Vector4(0, 0, 0, 1.0f); // 1.0f exposure default
 
-        for (ulong id = 1; id < 1024; ++id)
+        foreach (var id in _world.Entities)
         {
             if (_world.TryGet<Engine.Scene.Components.Camera>(id, out var cam))
             {
@@ -214,11 +229,38 @@ public class PbrPass : RenderPass
         
         _cameraBuffer.Upload(new ReadOnlySpan<CameraData>(ref camData));
 
+        var lights = new List<LightData>();
+        foreach (var l in _scene.Lights)
+        {
+            float type = 0.0f;
+            if (l.Type == "point") type = 1.0f;
+            else if (l.Type == "spot") type = 2.0f;
+            
+            lights.Add(new LightData {
+                Position = new Vector4(l.Position[0], l.Position[1], l.Position[2], l.Range),
+                Direction = new Vector4(l.Direction[0], l.Direction[1], l.Direction[2], type),
+                Color = new Vector4(l.Color[0], l.Color[1], l.Color[2], l.Intensity),
+                SpotParams = new Vector4(l.InnerCone, l.OuterCone, 0, 0)
+            });
+        }
+        if (lights.Count == 0)
+        {
+            lights.Add(new LightData {
+                Position = new Vector4(0, 0, 0, 10.0f),
+                Direction = new Vector4(Vector3.Normalize(new Vector3(-1, 1, -1)), 0.0f), // Dir Light
+                Color = new Vector4(1, 1, 1, 2.0f),
+                SpotParams = Vector4.Zero
+            });
+        }
+        _lightBuffer.Upload(CollectionsMarshal.AsSpan(lights));
+
         _instances.Clear();
         _parts.Clear();
         _materials.Clear();
         _bindlessTextures.Clear();
         _textureMap.Clear();
+        
+        HashSet<Engine.Assets.Mesh> uniqueMeshes = new HashSet<Engine.Assets.Mesh>();
 
         uint GetTexIndex(RhiTexture? tex)
         {
@@ -230,7 +272,7 @@ public class PbrPass : RenderPass
             return idx;
         }
 
-        for (ulong id = 1; id < 1024; ++id)
+        foreach (var id in _world.Entities)
         {
             if (_world.TryGet<ModelComponent>(id, out var modelComp))
             {
@@ -254,9 +296,11 @@ public class PbrPass : RenderPass
                         var material = AssetRegistry.GetMaterial(p.MaterialId);
                         
                         if (mesh == null) continue;
+                        uniqueMeshes.Add(mesh);
                         
                         uint matIdx = (uint)_materials.Count;
                         Vector4 baseColor = new Vector4(1, 1, 1, 1);
+                        Vector4 emissiveColor = new Vector4(0, 0, 0, 1);
                         uint albedoTex = 0xFFFFFFFF;
                         uint normalTex = 0xFFFFFFFF;
                         uint rmaTex = 0xFFFFFFFF;
@@ -266,18 +310,29 @@ public class PbrPass : RenderPass
                             if (material.AlbedoColor != null && material.AlbedoColor.Length >= 4) {
                                 baseColor = new Vector4(material.AlbedoColor[0], material.AlbedoColor[1], material.AlbedoColor[2], material.AlbedoColor[3]);
                             }
+                            if (material.EmissiveColor != null && material.EmissiveColor.Length >= 4) {
+                                emissiveColor = new Vector4(material.EmissiveColor[0], material.EmissiveColor[1], material.EmissiveColor[2], material.EmissiveColor[3]);
+                            }
                             albedoTex = GetTexIndex(material.AlbedoTexture);
                             normalTex = GetTexIndex(material.NormalTexture);
                             rmaTex = GetTexIndex(material.RmaTexture);
                         }
+                        else
+                        {
+                            // Hardcoded fallback material (pink emissive)
+                            baseColor = new Vector4(1.0f, 0.0f, 1.0f, 1.0f);
+                            emissiveColor = new Vector4(1.0f, 0.0f, 1.0f, 1.0f);
+                        }
 
                         _materials.Add(new MaterialData {
                             BaseColor = baseColor,
+                            EmissiveColor = emissiveColor,
                             Metallic = material?.Metallic ?? 0.0f,
                             Roughness = material?.Roughness ?? 1.0f,
                             AlbedoTexIndex = albedoTex,
                             NormalTexIndex = normalTex,
-                            RmaTexIndex = rmaTex
+                            RmaTexIndex = rmaTex,
+                            EmissiveTexIndex = 0xFFFFFFFF
                         });
 
                         // Use bounds loaded from the model
@@ -331,33 +386,48 @@ public class PbrPass : RenderPass
 
             sink.BeginComputePass();
             sink.BindPipeline(_cullPipeline);
-            sink.PushConstants((uint)sizeof(CullPushData), (IntPtr)(&cullPush));
+            sink.UseBuffer(_instanceBuffer, 1);
+            sink.UseBuffer(_partBuffer, 1);
+            sink.UseBuffer(_drawCmdBuffer, 2); // Write usage: cull shader populates indirect draw commands
+            sink.UseBuffer(_drawCountBuffer, 1);
+            foreach (var mesh in uniqueMeshes) {
+                sink.UseBuffer(mesh.VertexBuffer, 1);
+                sink.UseBuffer(mesh.IndexBuffer, 1);
+            }
+            sink.PushConstants(0, (uint)sizeof(CullPushData), (IntPtr)(&cullPush));
             // 64 threads per group
             sink.Dispatch((uint)((_instances.Count + 63) / 64), 1, 1);
             sink.EndComputePass();
 
-            // Insert barrier (Wait for compute to finish writing indirect buffer)
-            // Note: EndComputePass inside ICmdSink should implicitly insert appropriate barriers, 
-            // or we add a PipelineBarrier call if the RHI demands it.
-
             // 2. Draw
-            sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store, depth: null);
+            sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store, depthTarget);
             sink.BindPipeline(_pipeline);
             sink.SetViewport(0, 0, w, h);
+            sink.UseBuffer(_instanceBuffer, 1);
+            sink.UseBuffer(_partBuffer, 1);
+            sink.UseBuffer(_materialBuffer, 1);
+            sink.UseBuffer(_cameraBuffer, 1);
+            sink.UseBuffer(_lightBuffer, 1);
+            foreach (var mesh in uniqueMeshes) {
+                sink.UseBuffer(mesh.VertexBuffer, 1);
+                sink.UseBuffer(mesh.IndexBuffer, 1);
+            }
 
             PbrPushData pbrPush = new PbrPushData {
                 Parts = _partBuffer.DeviceAddress,
                 Instances = _instanceBuffer.DeviceAddress,
                 Materials = _materialBuffer.DeviceAddress,
-                Camera = _cameraBuffer.DeviceAddress
+                Camera = _cameraBuffer.DeviceAddress,
+                Lights = _lightBuffer.DeviceAddress,
+                LightCount = (uint)lights.Count
             };
-            sink.PushConstants((uint)sizeof(PbrPushData), (IntPtr)(&pbrPush));
+            sink.PushConstants(0, (uint)sizeof(PbrPushData), (IntPtr)(&pbrPush));
             
             // Bind bindless textures
             if (_bindlessTextures.Count > 0)
             {
-                // Slot 0 for textures
-                sink.BindTextureArray(0, _bindlessTextures.ToArray());
+                // Slot 2 for textures (slot 0 is push constants)
+                sink.BindTextureArray(2, _bindlessTextures.ToArray());
                 // Slot 1 for sampler
                 sink.BindSampler(1, _sampler);
             }
@@ -382,7 +452,7 @@ public class PbrPass : RenderPass
         }
         else
         {
-            sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store, depth: null);
+            sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store, depthTarget);
             sink.EndPass();
         }
     }
@@ -406,6 +476,7 @@ public class PbrPass : RenderPass
         _partBuffer?.Dispose();
         _materialBuffer?.Dispose();
         _cameraBuffer?.Dispose();
+        _lightBuffer?.Dispose();
         _drawCmdBuffer?.Dispose();
         _drawCountBuffer?.Dispose();
     }
