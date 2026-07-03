@@ -359,6 +359,11 @@ int main(int argc, char** argv) {
     int failed = texture_failure_count.load(std::memory_order_relaxed);
     if (failed > 0) {
         std::cerr << "ERROR: " << failed << " texture(s) failed to cook. Material files will omit those references. Re-run with --basisu-path set to a working binary to recover.\n";
+        // Defensive: per-texture fail_with_cleanup scrubbed the specific
+        // sidecars, but a sibling .ktx2 may have been truncated by ENOSPC
+        // or a process SIGKILL between writes. Walk the directory once more
+        // so the editor never sees a fresh lying sidecar.
+        ScrubOrphanSidecars(fs::path(out_dir) / "textures");
         return 3;
     }
 
