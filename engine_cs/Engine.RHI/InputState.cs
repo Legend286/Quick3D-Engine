@@ -1,7 +1,11 @@
+using System.Collections.Generic;
+
 namespace Engine.RHI;
 
 public struct InputState
 {
+    public List<Engine.CBindings.NativeInput.EngineInputEvent>? Events;
+
     public float DeltaTime;
     
     // Display

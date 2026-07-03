@@ -5,6 +5,8 @@ namespace Engine.RHI;
 
 public interface IEntityStore
 {
+    event Action? OnWorldCleared;
+    System.Collections.Generic.IReadOnlyList<ulong> Entities { get; }
     void Clear();
     ulong CreateEntity();
     void Set<T>(ulong entity, in T component) where T : unmanaged;

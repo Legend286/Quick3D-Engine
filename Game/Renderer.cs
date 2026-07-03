@@ -9,9 +9,11 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.IO;
 using Engine.RHI;
 using Engine.RenderGraph;
 using Engine.Scene;
+using Engine.Assets;
 using static Engine.CBindings.Log;
 
 namespace Engine.Game;
@@ -31,6 +33,10 @@ public sealed class Renderer : IDisposable
     /// back-buffer before each frame. Console-friendly constant so callers
     /// can reference the same handle.</summary>
     public static readonly ResourceHandle BackBufferHandle = new(0x80000000);
+    public static readonly ResourceHandle DepthBufferHandle = new(0x80000001);
+
+    private RhiTexture? _depthTexture;
+    private uint _depthWidth, _depthHeight;
 
     public Renderer(RhiDevice device, RhiSwapchain swap, IEntityStore world, ImGuiRenderer? imguiRenderer = null)
     {
@@ -56,7 +62,16 @@ public sealed class Renderer : IDisposable
             if (!File.Exists(mdlPath))
                 mdlPath = Path.Combine(_contentRoot, "assets", Path.GetFileName(modelRef.Source));
                 
-            var model = Engine.Assets.ModelLoader.LoadMdl(_device, mdlPath);
+            Model? model = null;
+            try 
+            {
+                model = Engine.Assets.ModelLoader.LoadMdl(_device, mdlPath);
+            }
+            catch (Exception ex)
+            {
+                Error($"[Renderer] Failed to load model '{mdlPath}': {ex.Message}", "Renderer");
+                continue;
+            }
             
             // Register all meshes and materials in the model parts
             for (int i = 0; i < model.Parts.Length; i++)
@@ -72,10 +87,20 @@ public sealed class Renderer : IDisposable
             ulong ent = _world.CreateEntity();
             _world.Set(ent, ModelComponent.Create(modelId));
             
+            var pos = modelRef.Position ?? new float[] { 0, 0, 0 };
+            var rot = modelRef.Rotation ?? new float[] { 0, 0, 0, 1 };
+            var scl = modelRef.Scale ?? new float[] { 1, 1, 1 };
+            
+            Quaternion q = Quaternion.Identity;
+            if (rot.Length >= 4)
+                q = new Quaternion(rot[0], rot[1], rot[2], rot[3]);
+            else if (rot.Length == 3)
+                q = Quaternion.CreateFromYawPitchRoll(rot[1] * MathF.PI / 180f, rot[0] * MathF.PI / 180f, rot[2] * MathF.PI / 180f);
+
             _world.Set(ent, new Engine.Scene.Components.Transform {
-                Position = new Vector3(modelRef.Position[0], modelRef.Position[1], modelRef.Position[2]),
-                Rotation = Quaternion.CreateFromYawPitchRoll(modelRef.Rotation[1], modelRef.Rotation[0], modelRef.Rotation[2]),
-                Scale = new Vector3(modelRef.Scale[0], modelRef.Scale[1], modelRef.Scale[2])
+                Position = pos.Length >= 3 ? new Vector3(pos[0], pos[1], pos[2]) : Vector3.Zero,
+                Rotation = q,
+                Scale = scl.Length >= 3 ? new Vector3(scl[0], scl[1], scl[2]) : Vector3.One
             });
         }
 
@@ -101,10 +126,31 @@ public sealed class Renderer : IDisposable
     public void RenderFrame(RhiTexture backBuffer, uint width, uint height)
     {
         if (_plan is null) return;
+        
+        if (_depthTexture == null || _depthWidth != width || _depthHeight != height)
+        {
+            _depthTexture?.Dispose();
+            _depthWidth = width > 0 ? width : 1;
+            _depthHeight = height > 0 ? height : 1;
+            
+            var desc = new Engine.CBindings.RhiNative.TextureDesc
+            {
+                Abi = 1,
+                Width = _depthWidth,
+                Height = _depthHeight,
+                MipLevels = 1,
+                Format = Engine.CBindings.RhiNative.TextureFormat.Depth32Float,
+                UsageFlags = Engine.CBindings.RhiNative.TextureRenderTarget
+            };
+            _depthTexture = RhiTexture.CreateDepth(_device, _depthWidth, _depthHeight);
+        }
+
         using var executor = new RenderGraphExecutor(_device);
         executor.SetViewportSize(width, height);
-        executor.BindSwapchain(backBuffer, BackBufferHandle,
-                                ResourceState.RenderTarget);
+        executor.BindSwapchain(backBuffer, BackBufferHandle, ResourceState.RenderTarget);
+        if (_depthTexture != null)
+            executor.BindSwapchain(_depthTexture, DepthBufferHandle, ResourceState.DepthStencil);
+            
         executor.Execute(_plan);
     }
 
@@ -113,6 +159,8 @@ public sealed class Renderer : IDisposable
         _plan?.Passes?.DisposeAll();
         _plan = null;
         _loader = null;
+        _depthTexture?.Dispose();
+        _depthTexture = null;
     }
 }
 

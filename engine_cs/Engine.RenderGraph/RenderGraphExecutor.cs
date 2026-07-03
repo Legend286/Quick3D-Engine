@@ -18,7 +18,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     private readonly RhiDevice _device;
     private readonly CommandRecorder _rec;
     private readonly RenderGraphContext _ctx = new();
-    
+
     private RhiHeap? _transientHeap;
     private ulong _currentHeapSize;
 
@@ -74,7 +74,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             pass.Execute(this, _ctx);
         }
         _rec.Submit();
-        
+
         // Release transient wrappers after submission
         ReleaseTransientResources(graph);
     }
@@ -88,7 +88,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             // Ensure minimum 1MB and align to 64KB (Metal heap requirements)
             if (_currentHeapSize < 1024 * 1024) _currentHeapSize = 1024 * 1024;
             _currentHeapSize = (_currentHeapSize + 65535) & ~65535ul;
-            
+
             if (_currentHeapSize > 0)
             {
                 _transientHeap = new RhiHeap(_device, _currentHeapSize, RhiNative.HeapUsageRenderTarget | RhiNative.HeapUsageShaderRead);
@@ -150,8 +150,10 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     public void BeginRenderPass(RhiTexture color,
                                 RhiNative.LoadOp colorLoad,
                                 RhiNative.StoreOp colorStore,
-                                RhiTexture? depth = null)
-        => _rec.BeginRenderPass(color, colorLoad, colorStore, depth);
+                                RhiTexture? depth = null,
+                                RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
+                                RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store)
+        => _rec.BeginRenderPass(color, colorLoad, colorStore, depth, depthLoad, depthStore);
 
     public void BeginComputePass(string? name = null) => _rec.BeginComputePass(name);
     public void EndComputePass() => _rec.EndComputePass();
@@ -161,8 +163,6 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     public void BindVertexBuffer(uint slot, RhiBuffer buf, ulong offset = 0)
         => _rec.BindVertexBuffer(slot, buf, offset);
 
-    public void BindIndexBuffer(RhiBuffer buf, bool is32Bit = false, ulong offset = 0)
-        => _rec.BindIndexBuffer(buf, is32Bit, offset);
 
     public void BindTexture(uint slot, RhiTexture tex)
         => _rec.BindTexture(slot, tex);
@@ -173,9 +173,14 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     public void BindSampler(uint slot, RhiSampler samp)
         => _rec.BindSampler(slot, samp);
 
-    public void PushConstants(uint size, IntPtr data)
-        => _rec.PushConstants(size, data);
+    public void PushConstants(uint slot, uint size, IntPtr data)
+        => _rec.PushConstants(slot, size, data);
 
+    public void UseBuffer(RhiBuffer buf, uint usage = 1)
+        => _rec.UseBuffer(buf, usage);
+
+    public void BindIndexBuffer(RhiBuffer buf, bool is32Bit = false, ulong offset = 0)
+        => _rec.BindIndexBuffer(buf, is32Bit, offset);
     public void SetViewport(float x, float y, float w, float h,
                             float minDepth = 0, float maxDepth = 1)
         => _rec.SetViewport(x, y, w, h, minDepth, maxDepth);

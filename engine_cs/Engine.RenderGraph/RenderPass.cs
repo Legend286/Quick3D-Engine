@@ -29,21 +29,24 @@ public interface ICommandSink
     public void BeginRenderPass(RhiTexture color,
                                 RhiNative.LoadOp colorLoad,
                                 RhiNative.StoreOp colorStore,
-                                RhiTexture? depth = null);
-                                
+                                RhiTexture? depth = null,
+                                RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
+                                RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store);
+ 
     public void BeginComputePass(string? name = null);
     public void EndComputePass();
 
     public void EndPass();
     public void BindPipeline(RhiPipeline pipeline);
     public void BindVertexBuffer(uint slot, RhiBuffer buf, ulong offset = 0);
-    public void PushConstants(uint size, IntPtr data);
+    public void PushConstants(uint slot, uint size, IntPtr data);
     public void SetViewport(float x, float y, float w, float h,
                             float minDepth = 0, float maxDepth = 1);
     public void SetScissor(uint x, uint y, uint w, uint h);
     public void BindTexture(uint slot, RhiTexture tex);
     public void BindTextureArray(uint slot, RhiTexture[] texs);
     public void BindSampler(uint slot, RhiSampler samp);
+    public void UseBuffer(RhiBuffer buf, uint usage = 1);
     public void BindIndexBuffer(RhiBuffer buf, bool is32Bit = false, ulong offset = 0);
     public void Draw(uint vertexCount, uint instanceCount = 1,
                      uint firstVertex = 0, uint firstInstance = 0);

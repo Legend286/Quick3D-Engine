@@ -30,7 +30,9 @@ public sealed class CommandRecorder : IDisposable
     public void BeginRenderPass(RhiTexture colorAttachment,
                                 RhiNative.LoadOp loadOp = RhiNative.LoadOp.Clear,
                                 RhiNative.StoreOp storeOp = RhiNative.StoreOp.Store,
-                                RhiTexture? depth = null)
+                                RhiTexture? depth = null,
+                                RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
+                                RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store)
     {
         var color = new RhiNative.PassAttachment
         {
@@ -52,8 +54,8 @@ public sealed class CommandRecorder : IDisposable
                 depthStruct = new RhiNative.PassAttachment
                 {
                     Texture = depth.Handle,
-                    LoadOp = RhiNative.LoadOp.Clear,
-                    StoreOp = RhiNative.StoreOp.Store,
+                    LoadOp = depthLoad,
+                    StoreOp = depthStore,
                 };
                 dPtr = &depthStruct;
             }
@@ -103,8 +105,8 @@ public sealed class CommandRecorder : IDisposable
     public void BindVertexBuffer(uint slot, RhiBuffer buf, ulong offset = 0)
         => RhiNative.RhiCmdBindVertexBuffer(CurrentEncoder, slot, buf.Handle, offset);
 
-    public void PushConstants(uint size, IntPtr data)
-        => RhiNative.RhiCmdPushConstants(CurrentEncoder, size, data);
+    public void PushConstants(uint slot, uint size, IntPtr data)
+        => RhiNative.RhiCmdPushConstants(CurrentEncoder, slot, size, data);
 
 
     public void SetViewport(float x, float y, float w, float h,
@@ -183,6 +185,9 @@ public sealed class CommandRecorder : IDisposable
 
     public void BindSampler(uint slot, RhiSampler samp)
         => RhiNative.RhiCmdBindSampler(CurrentEncoder, slot, samp.Handle);
+
+    public void UseBuffer(RhiBuffer buf, uint usage = 1 /* Read */)
+        => RhiNative.RhiCmdUseBuffer(CurrentEncoder, buf.Handle, usage);
 
     public void SetScissor(uint x, uint y, uint w, uint h)
         => RhiNative.RhiCmdSetScissor(CurrentEncoder, x, y, w, h);

@@ -23,9 +23,13 @@ public sealed class GameLoop : IGameLoop
         _device = new RhiDevice(deviceHandle, ownsHandle: false);
         _swap = new RhiSwapchain(_device, swapchainHandle, ownsHandle: false);
         _world = world;
-        _world?.Clear();
-        _imguiRenderer = new ImGuiRenderer(_device);
-        _renderer = new Renderer(_device, _swap, _world, _imguiRenderer);
+        if (_world != null)
+        {
+            _world.OnWorldCleared += () => _editorCameraEnt = 0;
+            _world.Clear();
+        }
+        _imguiRenderer = new ImGuiRenderer(_device!);
+        _renderer = new Renderer(_device!, _swap!, _world!, _imguiRenderer);
         Info("[GameLoop] Initialized successfully", "Game");
     }
 
@@ -50,7 +54,7 @@ public sealed class GameLoop : IGameLoop
         });
         _world.Set(_editorCameraEnt, Transform.Default with 
         {
-            Position = new Vector3(0, 3, -5) // stepped back a bit
+            Position = new Vector3(0, 0, -5) // stepped back a bit
         });
     }
 
@@ -62,6 +66,15 @@ public sealed class GameLoop : IGameLoop
         if (_imguiRenderer != null)
         {
             _imguiRenderer.UpdateInput(input, _lastWidth, _lastHeight);
+            
+            if (input.Events != null)
+            {
+                foreach (var ev in input.Events)
+                {
+                    _imguiRenderer.HandleEvent(ev);
+                }
+            }
+            
             ImGuiNET.ImGui.NewFrame();
             
             // Draw a test window
@@ -70,15 +83,18 @@ public sealed class GameLoop : IGameLoop
 
         if (_world.TryGet<Transform>(_editorCameraEnt, out var t))
         {
-            // Simple euler angles for pitch/yaw
-            // We'll store pitch and yaw in some persistent state, or extract from rotation.
-            // For a simple implementation, let's keep pitch/yaw locally in GameLoop.
-            
-            _yaw += input.MouseDeltaX * -0.005f;
-            _pitch += input.MouseDeltaY * 0.005f;
-
-            // clamp pitch
-            _pitch = Math.Clamp(_pitch, -1.5f, 1.5f);
+            float mx = input.MouseX;
+            float my = input.MouseY;
+            if (input.MouseDownRight)
+            {
+                var dx = mx - _lastMouseX;
+                var dy = my - _lastMouseY;
+                _yaw += dx * -0.005f;
+                _pitch += dy * 0.005f;
+                _pitch = Math.Clamp(_pitch, -1.5f, 1.5f);
+            }
+            _lastMouseX = mx;
+            _lastMouseY = my;
 
             var rotation = Quaternion.CreateFromYawPitchRoll(_yaw, _pitch, 0);
 
@@ -103,6 +119,8 @@ public sealed class GameLoop : IGameLoop
 
     private float _pitch;
     private float _yaw;
+    private float _lastMouseX;
+    private float _lastMouseY;
 
     public void LoadScene(string contentRoot, string sceneName)
     {
@@ -119,7 +137,15 @@ public sealed class GameLoop : IGameLoop
     {
         _lastWidth = width;
         _lastHeight = height;
-        _renderer?.RenderFrame(backBuffer, width, height);
+        try
+        {
+            _renderer?.RenderFrame(backBuffer, width, height);
+        }
+        catch
+        {
+            ImGuiNET.ImGui.EndFrame();
+            throw;
+        }
     }
 
     public void Dispose()
