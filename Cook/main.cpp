@@ -30,28 +30,159 @@ struct MeshHeader {
     uint32_t index_format; // 16 or 32
 };
 
+// Resolved at startup by main(). Empty means "we never located basisu" and
+// ExecuteBasisu will refuse to spawn it. See ResolveBasisuPath for the
+// resolution order (CLI override > self-discovery > bounded ancestor walk
+// > env var > CWD legacy).
+static std::string g_basisu_path;
+
+// Minimum plausible file size for a KTX2 file. The Khronos KTX2 spec requires
+// the 80-byte base header (12-byte identifier + 68 bytes of
+// format/dimension/levelCount/etc.) before any level data. Anything smaller is
+// rejected by the verify-before-sidecar guard so it doesn't masquerade as a
+// valid runtime texture.
+constexpr std::size_t kMinKtx2FileSize = 80;
+
+// Walk `<tex_out_dir>/*.tex` and remove any sidecar whose `.ktx2` neighbour is
+// missing or truncated. Used by the early-exit paths in main() to scrub stale
+// lying sidecars left over from a previously-failed cook. The texture-phase
+// lambda uses its own fail_with_cleanup for individual sidecars.
+static void ScrubOrphanSidecars(const fs::path& tex_out_dir) {
+    std::error_code ec;
+    if (!fs::exists(tex_out_dir, ec) || !fs::is_directory(tex_out_dir, ec)) return;
+    for (auto it = fs::directory_iterator(tex_out_dir, ec); !ec && it != fs::end(it); it.increment(ec)) {
+        const auto& entry = *it;
+        if (entry.path().extension() != ".tex") continue;
+        fs::path ktx2 = entry.path();
+        ktx2.replace_extension(".ktx2");
+        std::error_code ec_exists, ec_sz;
+        bool exists = fs::exists(ktx2, ec_exists);
+        auto sz = exists ? fs::file_size(ktx2, ec_sz) : 0;
+        bool orphan = !exists || ec_sz || sz < kMinKtx2FileSize;
+        if (orphan) {
+            std::error_code ec_rm;
+            fs::remove(entry.path(), ec_rm);
+            std::cerr << "WARN: removed orphan sidecar " << entry.path()
+                      << " (ktx2 missing or < " << kMinKtx2FileSize << " bytes)\n";
+        }
+    }
+}
+
+static std::string ResolveBasisuPath(const char* self_argv0, const std::string& cli_override) {
+    // 1. --basisu-path <abs> (CLI override, e.g. when running cook out-of-tree)
+    if (!cli_override.empty()) {
+        std::error_code ec;
+        fs::path abs = fs::absolute(cli_override, ec);
+        if (!ec && fs::exists(abs)) return abs.string();
+    }
+
+    // 2. Self-discovery: engine_cook lives at <engine_root>/out/engine_cook.
+    //    realpath(argv[0]) -> outs/<engine>/out/engine_cook; parent.parent()
+    //    -> <engine_root>; candidate <root>/out/basisu. Works when the
+    //    editor or a script invokes the engine's own cook binary directly.
+    //    Bounded to a 4-level ancestor walk to recover from unusual staging
+    //    (e.g. CI bundles, sandboxed packaging where cook is symlinked
+    //    through an intermediate path) by looking for the engine mark
+    //    `engine_cs/` near a directory containing `out/basisu`.
+    if (self_argv0 && self_argv0[0] != '\0') {
+        char* self = realpath(self_argv0, nullptr);
+        if (self) {
+            // NOTE: must use brace-init here; the paren form `fs::path start(fs::path(self))`
+            // is a most-vexing-parse (interpreted as a function declaration).
+            fs::path dir{fs::path(self).parent_path()};
+            std::free(self);
+            for (int depth = 0; depth < 4 && !dir.empty(); ++depth) {
+                fs::path cand = dir / "out" / "basisu";
+                // Marker: prefer paths that are flagged as engine root
+                // (`engine_cs/` adjacent), or live directly inside an
+                // `out/` sibling of the engine root (e.g. staged packaging
+                // where cook is at /staging/engine/out/engine_cook and root
+                // is /staging/engine/).
+                if (fs::exists(cand) &&
+                    (fs::exists(dir / "engine_cs") || dir.filename() == "out"))
+                    return cand.string();
+                fs::path parent = dir.parent_path();
+                if (parent == dir) break;
+                dir = parent;
+            }
+        }
+    }
+
+    // 3. $QUICK3D_ENGINE_ROOT/out/basisu (env hint, useful for CI / sandboxed packaging)
+    const char* env = std::getenv("QUICK3D_ENGINE_ROOT");
+    if (env && env[0] != '\0') {
+        fs::path cand = fs::path(env) / "out" / "basisu";
+        if (fs::exists(cand)) return cand.string();
+    }
+
+    // 4. ./out/basisu (CWD-relative legacy fallback; only correct when CWD
+    //    is the engine root, which used to be the original assumption).
+    if (fs::exists("./out/basisu")) {
+        std::error_code ec;
+        return fs::absolute("./out/basisu", ec).string();
+    }
+
+    return "";
+}
+
 std::string ExecuteBasisu(const std::string& input_img, const std::string& out_dir, bool is_normal, bool is_linear, int width, int height, int channels, const std::string& type_name) {
     std::string tex_out_dir = (fs::path(out_dir) / "textures").string();
     fs::create_directories(tex_out_dir);
     // basisu defaults to ETC1S+BasisLZ (scheme=1, vkFormat=0), which the
     // runtime Ktx2Loader cannot decode (Basis Universal transcoder is not
-    // wired in). -uastc forces ASTC_4x4_UNORM_BLOCK blocks (vkFormat=157)
+    // wired in). -ktx2 -uastc forces ASTC_4x4_UNORM_BLOCK blocks (vkFormat=157)
     // and Zstd supercompression by default (scheme=3), both of which the
-    // loader handles natively. See docs/asset-pipeline/ktx2.md.
-    std::string cmd = "./out/basisu -ktx2 -uastc \"" + input_img + "\" -output_path \"" + tex_out_dir + "\"";
+    // loader handles natively. See docs/asset-pipeline/cook.md.
+    if (g_basisu_path.empty()) {
+        std::cerr << "ERROR: basisu binary path not resolved before texture phase. Re-run engine_cook with --basisu-path or set QUICK3D_ENGINE_ROOT.\n";
+        return "";
+    }
+
+    std::string cmd = "\"" + g_basisu_path + "\" -ktx2 -uastc \"" + input_img + "\" -output_path \"" + tex_out_dir + "\"";
     if (is_normal) cmd += " -normal_map";
     if (is_linear) cmd += " -linear";
     std::cout << "Running: " << cmd << "\n";
     int ret = std::system(cmd.c_str());
-    if (ret != 0) {
-        std::cerr << "Warning: basisu failed for " << input_img << "\n";
-    }
     fs::path p(input_img);
     std::string base_name = p.stem().string();
     std::string ktx2_path = (fs::path(tex_out_dir) / base_name).string() + ".ktx2";
-    
-    // Write out .tex metadata
     std::string tex_meta_path = (fs::path(tex_out_dir) / base_name).string() + ".tex";
+
+    // On any failure: scrub any pre-existing sidecar so a previously
+    // failed cook's lying sidecar can't survive a re-cook. The new cook
+    // can't overwrite it because the sidecar-write is correctly gated
+    // behind a verified .ktx2.
+    auto fail_with_cleanup = [&](const std::string& why) -> std::string {
+        std::error_code ec_rm;
+        fs::remove(tex_meta_path, ec_rm);  // ignore ec_rm (file may not exist)
+        std::cerr << "ERROR: " << why << " (input=" << input_img << ", expected=" << ktx2_path << ")\n";
+        return "";
+    };
+
+    if (ret != 0) {
+        return fail_with_cleanup(std::string("basisu failed with exit code ") + std::to_string(ret));
+    }
+
+    // Verify the actual .ktx2 exists and is non-trivial before writing any
+    // metadata sidecar. The original version wrote the .tex JSON
+    // unconditionally, which produced lying sidecars whenever basisu
+    // failed (binary not on PATH, library mismatch, etc.) and the runtime
+    // loader then silently nulled the texture (black / untextured material).
+    {
+        std::error_code ec_exists;
+        if (!fs::exists(ktx2_path, ec_exists)) {
+            return fail_with_cleanup("basisu reported success but .ktx2 missing");
+        }
+        std::error_code ec_size;
+        auto sz = fs::file_size(ktx2_path, ec_size);
+        if (ec_size || sz < kMinKtx2FileSize) {
+            return fail_with_cleanup(
+                std::string(".ktx2 is suspiciously small (size=") +
+                std::to_string(sz) + ", ec=\"" + ec_size.message() + "\")");
+        }
+    }
+
+    // Write out .tex metadata (only after the verified .ktx2 is on disk).
     std::ofstream tex_meta(tex_meta_path);
     tex_meta << "{\n";
     tex_meta << "  \"version\": 1,\n";
@@ -63,7 +194,7 @@ std::string ExecuteBasisu(const std::string& input_img, const std::string& out_d
     tex_meta << "}\n";
     tex_meta.close();
 
-    // Return the relative filename for serialization in materials
+    // Return the relative filename for serialization in materials (only on success)
     return "../../textures/" + base_name + ".ktx2";
 }
 
@@ -79,6 +210,7 @@ int main(int argc, char** argv) {
     if (out_dir.empty()) out_dir = ".";
     
     float scale_x = 1.0f, scale_y = 1.0f, scale_z = 1.0f;
+    std::string cli_basisu;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-scale" && i + 3 < argc) {
@@ -87,7 +219,28 @@ int main(int argc, char** argv) {
             scale_z = std::stof(argv[i+3]);
             i += 3;
         }
+        // --basisu-path is passed through /bin/sh -c by std::system as a
+        // string interpolation. We deliberately do NOT sanitise shell
+        // metacharacters; this is a developer CLI so the path is trusted
+        // input. If a future caller delegates it to non-trusted sources,
+        // switch to fork+execv with an argv array.
+        else if (arg == "--basisu-path" && i + 1 < argc) {
+            cli_basisu = argv[++i];
+        }
     }
+
+    g_basisu_path = ResolveBasisuPath(argc > 0 ? argv[0] : nullptr, cli_basisu);
+    if (g_basisu_path.empty()) {
+        std::cerr << "ERROR: cannot locate basisu binary. Tried in order:\n"
+                  << "  1. --basisu-path <abs path>            (CLI override)\n"
+                  << "  2. <engine_root>/out/basisu             (auto-discovered from engine_cook's location)\n"
+                  << "  3. $QUICK3D_ENGINE_ROOT/out/basisu       (env hint)\n"
+                  << "  4. ./out/basisu                         (CWD-relative legacy fallback)\n"
+                  << "Set --basisu-path or QUICK3D_ENGINE_ROOT and re-run.\n";
+        ScrubOrphanSidecars(fs::path(out_dir) / "textures");
+        return 2;
+    }
+    std::cout << "Using basisu: " << g_basisu_path << "\n";
     
     fs::create_directories(fs::path(out_dir) / "models");
     fs::create_directories(fs::path(out_dir) / "models" / "materials");
@@ -112,6 +265,7 @@ int main(int argc, char** argv) {
     if (!err.empty()) std::cerr << "Err: " << err << "\n";
     if (!ret) {
         std::cerr << "Failed to load " << input_file << "\n";
+        ScrubOrphanSidecars(fs::path(out_dir) / "textures");
         return 1;
     }
 
@@ -138,9 +292,10 @@ int main(int argc, char** argv) {
     std::vector<std::string> cooked_textures(model.images.size());
     std::vector<std::future<void>> texture_futures;
     std::mutex tex_log_mutex;
+    std::atomic<int> texture_failure_count{0};
 
     for (size_t i = 0; i < model.images.size(); ++i) {
-        
+
         texture_futures.push_back(std::async(std::launch::async, [&, i]() {
             auto& img = model.images[i];
             std::string temp_png = (fs::path(out_dir) / (base_name + "_tex_" + std::to_string(i) + ".png")).string();
@@ -172,13 +327,26 @@ int main(int argc, char** argv) {
             if (tex_types[i] == TexType::Normal) type_name = "normal";
             if (tex_types[i] == TexType::RMA) type_name = "rma";
             
-            std::string out_ktx2 = ExecuteBasisu(input_img, out_dir, is_normal, is_linear, w, h, comp, type_name);
-            
-            // Delete temp png if we extracted it
-            if (input_img == temp_png) {
-                fs::remove(temp_png);
+            std::string out_ktx2;
+            try {
+                out_ktx2 = ExecuteBasisu(input_img, out_dir, is_normal, is_linear, w, h, comp, type_name);
+                // Delete temp png if we extracted it
+                if (input_img == temp_png) {
+                    fs::remove(temp_png);
+                }
             }
-            
+            catch (const std::exception& ex) {
+                std::lock_guard<std::mutex> lock(tex_log_mutex);
+                std::cerr << "ERROR: texture worker " << i << " threw: " << ex.what() << "\n";
+                texture_failure_count.fetch_add(1, std::memory_order_relaxed);
+                out_ktx2 = "";
+            }
+            catch (...) {
+                std::lock_guard<std::mutex> lock(tex_log_mutex);
+                std::cerr << "ERROR: texture worker " << i << " threw non-std exception\n";
+                texture_failure_count.fetch_add(1, std::memory_order_relaxed);
+                out_ktx2 = "";
+            }
             cooked_textures[i] = out_ktx2;
         }));
 
@@ -186,6 +354,12 @@ int main(int argc, char** argv) {
 
     for (auto& fut : texture_futures) {
         fut.get();
+    }
+
+    int failed = texture_failure_count.load(std::memory_order_relaxed);
+    if (failed > 0) {
+        std::cerr << "ERROR: " << failed << " texture(s) failed to cook. Material files will omit those references. Re-run with --basisu-path set to a working binary to recover.\n";
+        return 3;
     }
 
     // 2. Process Materials
@@ -205,18 +379,27 @@ int main(int argc, char** argv) {
                  << mat.pbrMetallicRoughness.baseColorFactor[2] << ", "
                  << mat.pbrMetallicRoughness.baseColorFactor[3] << "],\n";
                  
+        // Bound on cooked_textures and skip-empty-guards prevent a failed
+        // texture from materializing as a `""` reference in the .mat JSON,
+        // which would silently bind a black texture at runtime.
         if (mat.pbrMetallicRoughness.baseColorTexture.index >= 0) {
             int tex_idx = model.textures[mat.pbrMetallicRoughness.baseColorTexture.index].source;
-            mat_file << "  \"albedo_texture\": \"" << cooked_textures[tex_idx] << "\",\n";
+            if (tex_idx >= 0 && tex_idx < (int)cooked_textures.size() && !cooked_textures[tex_idx].empty()) {
+                mat_file << "  \"albedo_texture\": \"" << cooked_textures[tex_idx] << "\",\n";
+            }
         }
         if (mat.normalTexture.index >= 0) {
             int tex_idx = model.textures[mat.normalTexture.index].source;
-            mat_file << "  \"normal_texture\": \"" << cooked_textures[tex_idx] << "\",\n";
+            if (tex_idx >= 0 && tex_idx < (int)cooked_textures.size() && !cooked_textures[tex_idx].empty()) {
+                mat_file << "  \"normal_texture\": \"" << cooked_textures[tex_idx] << "\",\n";
+            }
         }
-        
+
         if (mat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0) {
             int tex_idx = model.textures[mat.pbrMetallicRoughness.metallicRoughnessTexture.index].source;
-            mat_file << "  \"rma_texture\": \"" << cooked_textures[tex_idx] << "\",\n";
+            if (tex_idx >= 0 && tex_idx < (int)cooked_textures.size() && !cooked_textures[tex_idx].empty()) {
+                mat_file << "  \"rma_texture\": \"" << cooked_textures[tex_idx] << "\",\n";
+            }
         }
         mat_file << "  \"metallic\": " << mat.pbrMetallicRoughness.metallicFactor << ",\n";
 
