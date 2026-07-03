@@ -37,12 +37,19 @@ public sealed class RhiTexture : IDisposable
     public static RhiTexture Create2D(RhiDevice device, uint w, uint h,
                                       RhiNative.TextureFormat format)
     {
+        return CreateWithMips(device, w, h, format, 1);
+    }
+
+    public static RhiTexture CreateWithMips(RhiDevice device, uint w, uint h,
+                                              RhiNative.TextureFormat format,
+                                              uint mipLevels)
+    {
         var desc = new RhiNative.TextureDesc
         {
             Abi = 1,
             Width = w,
             Height = h,
-            MipLevels = 1,
+            MipLevels = mipLevels,
             Format = format,
             UsageFlags = RhiNative.TextureShaderRead,
         };
@@ -55,6 +62,27 @@ public sealed class RhiTexture : IDisposable
     {
         int rc = RhiNative.RhiTextureUpload(Handle, bytes, size, stride);
         if (rc != 0) throw new InvalidOperationException($"rhi_texture_upload rc={rc}");
+    }
+
+    public void UploadMip(uint mipLevel, IntPtr bytes, ulong size, uint stride)
+    {
+        int rc = RhiNative.RhiTextureUploadMip(Handle, mipLevel, bytes, size, stride);
+        if (rc != 0) throw new InvalidOperationException($"rhi_texture_upload_mip rc={rc}");
+    }
+
+    public readonly struct BlockInfo
+    {
+        public readonly uint BlockWidth;
+        public readonly uint BlockHeight;
+        public readonly uint BytesPerBlock;
+        public BlockInfo(uint w, uint h, uint b) { BlockWidth = w; BlockHeight = h; BytesPerBlock = b; }
+        public bool IsBlockCompressed => BlockWidth > 0 && BlockHeight > 0 && BytesPerBlock > 0;
+    }
+
+    public static BlockInfo GetBlockInfo(RhiNative.TextureFormat fmt)
+    {
+        RhiNative.RhiFormatBlockInfo(fmt, out uint w, out uint h, out uint b);
+        return new BlockInfo(w, h, b);
     }
 
     public static RhiTexture CreateDepth(RhiDevice device, uint w, uint h)
