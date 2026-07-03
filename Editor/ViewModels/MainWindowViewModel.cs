@@ -9,6 +9,8 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private string _statusText = "Engine starting...";
 
+    public string WindowTitle => (ViewportVm?.IsDirty == true ? "* " : "") + "End Engine - Editor - " + (ViewportVm?.CurrentSceneName ?? "No Scene");
+
     public ConsolePanelViewModel ConsoleVm { get; } = new();
     public HierarchyViewModel HierarchyVm { get; } = new();
     public InspectorViewModel InspectorVm { get; } = new();
@@ -30,6 +32,7 @@ public partial class MainWindowViewModel : ObservableObject
             HierarchyVm.OnEntitySelected += (ent) => InspectorVm.SetSelectedEntity(ent);
             
             ViewportVm.OnWorldCreated += () => InspectorVm.Bind(ViewportVm.World);
+            ViewportVm.OnDirtyChanged += () => OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs(nameof(WindowTitle)));
         }
     }
 

@@ -17,6 +17,8 @@ public partial class ViewportPanelView : UserControl
         PointerReleased += OnPointerReleased;
         KeyDown += OnKeyDown;
         KeyUp += OnKeyUp;
+        TextInput += OnTextInput;
+        PointerWheelChanged += OnPointerWheelChanged;
     }
 
     private void InitializeComponent() => AvaloniaXamlLoader.Load(this);
@@ -31,6 +33,14 @@ public partial class ViewportPanelView : UserControl
         {
             var p = e.GetPosition(this);
             vm.UpdatePointerState((float)p.X, (float)p.Y, props.IsLeftButtonPressed, props.IsRightButtonPressed, props.IsMiddleButtonPressed);
+            
+            int btn = props.PointerUpdateKind switch {
+                Avalonia.Input.PointerUpdateKind.LeftButtonPressed => 0,
+                Avalonia.Input.PointerUpdateKind.RightButtonPressed => 1,
+                Avalonia.Input.PointerUpdateKind.MiddleButtonPressed => 2,
+                _ => -1
+            };
+            if (btn != -1) vm.QueueMouseButtonEvent(btn, true);
         }
 
         if (props.IsRightButtonPressed)
@@ -67,6 +77,14 @@ public partial class ViewportPanelView : UserControl
         {
             var p = e.GetPosition(this);
             vm.UpdatePointerState((float)p.X, (float)p.Y, props.IsLeftButtonPressed, props.IsRightButtonPressed, props.IsMiddleButtonPressed);
+
+            int btn = props.PointerUpdateKind switch {
+                Avalonia.Input.PointerUpdateKind.LeftButtonReleased => 0,
+                Avalonia.Input.PointerUpdateKind.RightButtonReleased => 1,
+                Avalonia.Input.PointerUpdateKind.MiddleButtonReleased => 2,
+                _ => -1
+            };
+            if (btn != -1) vm.QueueMouseButtonEvent(btn, false);
         }
 
         if (e.InitialPressMouseButton == Avalonia.Input.MouseButton.Right)
@@ -87,5 +105,22 @@ public partial class ViewportPanelView : UserControl
     {
         if (DataContext is ViewportPanelViewModel vm)
             vm.SetKeyState(e.Key, false);
+    }
+    
+    private void OnTextInput(object? sender, Avalonia.Input.TextInputEventArgs e)
+    {
+        if (DataContext is ViewportPanelViewModel vm && !string.IsNullOrEmpty(e.Text))
+        {
+            foreach (var c in e.Text)
+                vm.QueueCharEvent(c);
+        }
+    }
+    
+    private void OnPointerWheelChanged(object? sender, Avalonia.Input.PointerWheelEventArgs e)
+    {
+        if (DataContext is ViewportPanelViewModel vm)
+        {
+            vm.QueueScrollEvent((float)e.Delta.X, (float)e.Delta.Y);
+        }
     }
 }

@@ -37,10 +37,21 @@
                 </StackPanel>
 
                 <StackPanel Spacing="8">
-                    <TextBlock Text="Target Directory (Content/)" Foreground="#d0d4dc" FontSize="12" FontWeight="SemiBold" />
-                    <Grid ColumnDefinitions="*,Auto">
-                        <TextBox Text="{Binding TargetDirectory}" Background="#12151c" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4,0,0,4" Watermark="Select destination..." IsReadOnly="True" />
-                        <Button Grid.Column="1" Content="Browse..." Background="#2d3139" Foreground="#d0d4dc" Padding="16,6" CornerRadius="0,4,4,0" Click="OnBrowseTargetClicked" />
+                    <TextBlock Text="Scale Configuration" Foreground="#d0d4dc" FontSize="12" FontWeight="SemiBold" />
+                    <CheckBox Content="Uniform Scale" IsChecked="{Binding UniformScale}" Foreground="#aab0b6" />
+                    <Grid ColumnDefinitions="*,12,*,12,*">
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Text="X" Foreground="#5a5f6b" FontSize="10" Margin="0,0,0,4"/>
+                            <TextBox Text="{Binding ScaleX}" Background="#12151c" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="Y" Foreground="#5a5f6b" FontSize="10" Margin="0,0,0,4"/>
+                            <TextBox Text="{Binding ScaleY}" Background="#12151c" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="4">
+                            <TextBlock Text="Z" Foreground="#5a5f6b" FontSize="10" Margin="0,0,0,4"/>
+                            <TextBox Text="{Binding ScaleZ}" Background="#12151c" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4" />
+                        </StackPanel>
                     </Grid>
                 </StackPanel>
                 

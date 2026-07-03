@@ -8,9 +8,9 @@
         MinWidth="800" MinHeight="500"
         FontFamily="-apple-system,Segoe UI,Helvetica,Arial,sans-serif"
         FontSize="13"
-        TransparencyLevelHint="AcrylicBlur"
-        Background="Transparent"
-        Title="End Engine — Editor">
+        Background="#12151c"
+        TransparencyLevelHint="None"
+        Title="{Binding WindowTitle}">
 
   <Grid RowDefinitions="Auto,*,Auto">
     <Grid.ColumnDefinitions>
@@ -26,7 +26,12 @@
       <MenuItem Header="_File">
         <MenuItem Header="_New Project…" Click="OnNewProjectClicked" />
         <MenuItem Header="_Open Project…" Click="OnOpenProjectClicked" />
-        <MenuItem Header="_Save" />
+        <MenuItem Header="_Open Project…" Click="OnOpenProjectClicked" />
+        <Separator />
+        <MenuItem Header="_New Scene" Click="OnNewSceneClicked" />
+        <MenuItem Header="_Open Scene…" Click="OnOpenSceneClicked" />
+        <MenuItem Header="_Save Scene" Click="OnSaveSceneClicked" />
+        <MenuItem Header="Save Scene _As…" Click="OnSaveSceneAsClicked" />
         <Separator />
         <MenuItem Header="_Import Asset…" Click="OnImportAssetClicked" />
         <Separator />
@@ -82,31 +87,31 @@
                   <TextBlock Grid.Row="0" Grid.Column="0" Text="Position" VerticalAlignment="Center" Margin="0,0,10,0"/>
                   <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="5" Margin="0,0,0,5">
                     <TextBlock Text="X" VerticalAlignment="Center" Foreground="#ff6b6b"/>
-                    <TextBox Text="{Binding PosX, StringFormat=\{0:F2\}}" Width="50" IsReadOnly="True" />
+                    <TextBox Text="{Binding PosX, StringFormat=\{0:F2\}}" Width="50" />
                     <TextBlock Text="Y" VerticalAlignment="Center" Foreground="#51cf66"/>
-                    <TextBox Text="{Binding PosY, StringFormat=\{0:F2\}}" Width="50" IsReadOnly="True" />
+                    <TextBox Text="{Binding PosY, StringFormat=\{0:F2\}}" Width="50" />
                     <TextBlock Text="Z" VerticalAlignment="Center" Foreground="#339af0"/>
-                    <TextBox Text="{Binding PosZ, StringFormat=\{0:F2\}}" Width="50" IsReadOnly="True" />
+                    <TextBox Text="{Binding PosZ, StringFormat=\{0:F2\}}" Width="50" />
                   </StackPanel>
 
                   <TextBlock Grid.Row="1" Grid.Column="0" Text="Rotation" VerticalAlignment="Center" Margin="0,0,10,0"/>
                   <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="5" Margin="0,0,0,5">
                     <TextBlock Text="X" VerticalAlignment="Center" Foreground="#ff6b6b"/>
-                    <TextBox Text="{Binding RotX, StringFormat=\{0:F2\}}" Width="50" IsReadOnly="True" />
+                    <TextBox Text="{Binding RotX, StringFormat=\{0:F2\}}" Width="50" />
                     <TextBlock Text="Y" VerticalAlignment="Center" Foreground="#51cf66"/>
-                    <TextBox Text="{Binding RotY, StringFormat=\{0:F2\}}" Width="50" IsReadOnly="True" />
+                    <TextBox Text="{Binding RotY, StringFormat=\{0:F2\}}" Width="50" />
                     <TextBlock Text="Z" VerticalAlignment="Center" Foreground="#339af0"/>
-                    <TextBox Text="{Binding RotZ, StringFormat=\{0:F2\}}" Width="50" IsReadOnly="True" />
+                    <TextBox Text="{Binding RotZ, StringFormat=\{0:F2\}}" Width="50" />
                   </StackPanel>
 
                   <TextBlock Grid.Row="2" Grid.Column="0" Text="Scale" VerticalAlignment="Center" Margin="0,0,10,0"/>
                   <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Spacing="5" Margin="0,0,0,5">
                     <TextBlock Text="X" VerticalAlignment="Center" Foreground="#ff6b6b"/>
-                    <TextBox Text="{Binding ScaleX, StringFormat=\{0:F2\}}" Width="50" IsReadOnly="True" />
+                    <TextBox Text="{Binding ScaleX, StringFormat=\{0:F2\}}" Width="50" />
                     <TextBlock Text="Y" VerticalAlignment="Center" Foreground="#51cf66"/>
-                    <TextBox Text="{Binding ScaleY, StringFormat=\{0:F2\}}" Width="50" IsReadOnly="True" />
+                    <TextBox Text="{Binding ScaleY, StringFormat=\{0:F2\}}" Width="50" />
                     <TextBlock Text="Z" VerticalAlignment="Center" Foreground="#339af0"/>
-                    <TextBox Text="{Binding ScaleZ, StringFormat=\{0:F2\}}" Width="50" IsReadOnly="True" />
+                    <TextBox Text="{Binding ScaleZ, StringFormat=\{0:F2\}}" Width="50" />
                   </StackPanel>
                 </Grid>
               </Expander>

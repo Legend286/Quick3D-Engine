@@ -44,22 +44,7 @@ public partial class AssetImportWindow : Window
         }
     }
 
-    private async void OnBrowseTargetClicked(object? sender, RoutedEventArgs e)
-    {
-        var topLevel = TopLevel.GetTopLevel(this);
-        if (topLevel == null) return;
 
-        var folders = await topLevel.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
-        {
-            Title = "Select Target Directory",
-            AllowMultiple = false
-        });
-
-        if (folders.Count > 0 && DataContext is AssetImportViewModel vm)
-        {
-            vm.TargetDirectory = folders[0].Path.LocalPath;
-        }
-    }
 
     private async void OnImportClicked(object? sender, RoutedEventArgs e)
     {
@@ -71,11 +56,9 @@ public partial class AssetImportWindow : Window
             return;
         }
         
-        if (string.IsNullOrWhiteSpace(vm.TargetDirectory))
-        {
-            vm.StatusMessage = "Please select a target directory.";
-            return;
-        }
+        string targetDirectory = Path.Combine(App.ProjectRoot, "Content");
+        if (!Directory.Exists(targetDirectory))
+            Directory.CreateDirectory(targetDirectory);
 
         vm.StatusMessage = "Cooking asset... Please wait.";
 
@@ -117,7 +100,7 @@ public partial class AssetImportWindow : Window
         var processInfo = new ProcessStartInfo
         {
             FileName = cookExe,
-            Arguments = $"\"{vm.SourceFile}\" \"{vm.TargetDirectory}\"",
+            Arguments = $"\"{vm.SourceFile}\" \"{targetDirectory}\" -scale {vm.ScaleX} {vm.ScaleY} {vm.ScaleZ}",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,

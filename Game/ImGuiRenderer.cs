@@ -79,11 +79,155 @@ public sealed class ImGuiRenderer : IDisposable
         io.DisplayFramebufferScale = new Vector2(input.RenderScale > 0 ? input.RenderScale : 1.0f);
         io.DeltaTime = input.DeltaTime > 0 ? input.DeltaTime : 1.0f / 60.0f;
         
-        io.AddMousePosEvent(input.MouseX, input.MouseY);
-        io.AddMouseButtonEvent(0, input.MouseDownLeft);
-        io.AddMouseButtonEvent(1, input.MouseDownRight);
-        io.AddMouseButtonEvent(2, input.MouseDownMiddle);
-        // AddMouseWheelEvent, AddKeyEvent...
+        // Key states are now handled via events
+    }
+    
+    public void HandleEvent(NativeInput.EngineInputEvent ev)
+    {
+        var io = ImGui.GetIO();
+        if (ev.Type == 0) // KeyDown
+        {
+            var igKey = MapKey(ev.Key);
+            if (igKey != ImGuiKey.None) io.AddKeyEvent(igKey, true);
+        }
+        else if (ev.Type == 1) // KeyUp
+        {
+            var igKey = MapKey(ev.Key);
+            if (igKey != ImGuiKey.None) io.AddKeyEvent(igKey, false);
+        }
+        else if (ev.Type == 2) // MouseMove
+        {
+            io.AddMousePosEvent(ev.MouseX, ev.MouseY);
+        }
+        else if (ev.Type == 3) // MouseDown
+        {
+            io.AddMouseButtonEvent((int)ev.MouseButton, true);
+        }
+        else if (ev.Type == 4) // MouseUp
+        {
+            io.AddMouseButtonEvent((int)ev.MouseButton, false);
+        }
+        else if (ev.Type == 5) // Scroll
+        {
+            io.AddMouseWheelEvent(ev.ScrollX, ev.ScrollY);
+        }
+        else if (ev.Type == 6) // Char
+        {
+            io.AddInputCharacter(ev.CharCode);
+        }
+    }
+
+    private ImGuiKey MapKey(NativeInput.EngineKey key)
+    {
+        return key switch
+        {
+            NativeInput.EngineKey.Space => ImGuiKey.Space,
+            NativeInput.EngineKey.Apostrophe => ImGuiKey.Apostrophe,
+            NativeInput.EngineKey.Comma => ImGuiKey.Comma,
+            NativeInput.EngineKey.Minus => ImGuiKey.Minus,
+            NativeInput.EngineKey.Period => ImGuiKey.Period,
+            NativeInput.EngineKey.Slash => ImGuiKey.Slash,
+            NativeInput.EngineKey.Num0 => ImGuiKey._0,
+            NativeInput.EngineKey.Num1 => ImGuiKey._1,
+            NativeInput.EngineKey.Num2 => ImGuiKey._2,
+            NativeInput.EngineKey.Num3 => ImGuiKey._3,
+            NativeInput.EngineKey.Num4 => ImGuiKey._4,
+            NativeInput.EngineKey.Num5 => ImGuiKey._5,
+            NativeInput.EngineKey.Num6 => ImGuiKey._6,
+            NativeInput.EngineKey.Num7 => ImGuiKey._7,
+            NativeInput.EngineKey.Num8 => ImGuiKey._8,
+            NativeInput.EngineKey.Num9 => ImGuiKey._9,
+            NativeInput.EngineKey.Semicolon => ImGuiKey.Semicolon,
+            NativeInput.EngineKey.Equal => ImGuiKey.Equal,
+            NativeInput.EngineKey.A => ImGuiKey.A,
+            NativeInput.EngineKey.B => ImGuiKey.B,
+            NativeInput.EngineKey.C => ImGuiKey.C,
+            NativeInput.EngineKey.D => ImGuiKey.D,
+            NativeInput.EngineKey.E => ImGuiKey.E,
+            NativeInput.EngineKey.F => ImGuiKey.F,
+            NativeInput.EngineKey.G => ImGuiKey.G,
+            NativeInput.EngineKey.H => ImGuiKey.H,
+            NativeInput.EngineKey.I => ImGuiKey.I,
+            NativeInput.EngineKey.J => ImGuiKey.J,
+            NativeInput.EngineKey.K => ImGuiKey.K,
+            NativeInput.EngineKey.L => ImGuiKey.L,
+            NativeInput.EngineKey.M => ImGuiKey.M,
+            NativeInput.EngineKey.N => ImGuiKey.N,
+            NativeInput.EngineKey.O => ImGuiKey.O,
+            NativeInput.EngineKey.P => ImGuiKey.P,
+            NativeInput.EngineKey.Q => ImGuiKey.Q,
+            NativeInput.EngineKey.R => ImGuiKey.R,
+            NativeInput.EngineKey.S => ImGuiKey.S,
+            NativeInput.EngineKey.T => ImGuiKey.T,
+            NativeInput.EngineKey.U => ImGuiKey.U,
+            NativeInput.EngineKey.V => ImGuiKey.V,
+            NativeInput.EngineKey.W => ImGuiKey.W,
+            NativeInput.EngineKey.X => ImGuiKey.X,
+            NativeInput.EngineKey.Y => ImGuiKey.Y,
+            NativeInput.EngineKey.Z => ImGuiKey.Z,
+            NativeInput.EngineKey.LeftBracket => ImGuiKey.LeftBracket,
+            NativeInput.EngineKey.Backslash => ImGuiKey.Backslash,
+            NativeInput.EngineKey.RightBracket => ImGuiKey.RightBracket,
+            NativeInput.EngineKey.GraveAccent => ImGuiKey.GraveAccent,
+            NativeInput.EngineKey.Escape => ImGuiKey.Escape,
+            NativeInput.EngineKey.Enter => ImGuiKey.Enter,
+            NativeInput.EngineKey.Tab => ImGuiKey.Tab,
+            NativeInput.EngineKey.Backspace => ImGuiKey.Backspace,
+            NativeInput.EngineKey.Insert => ImGuiKey.Insert,
+            NativeInput.EngineKey.Delete => ImGuiKey.Delete,
+            NativeInput.EngineKey.Right => ImGuiKey.RightArrow,
+            NativeInput.EngineKey.Left => ImGuiKey.LeftArrow,
+            NativeInput.EngineKey.Down => ImGuiKey.DownArrow,
+            NativeInput.EngineKey.Up => ImGuiKey.UpArrow,
+            NativeInput.EngineKey.PageUp => ImGuiKey.PageUp,
+            NativeInput.EngineKey.PageDown => ImGuiKey.PageDown,
+            NativeInput.EngineKey.Home => ImGuiKey.Home,
+            NativeInput.EngineKey.End => ImGuiKey.End,
+            NativeInput.EngineKey.CapsLock => ImGuiKey.CapsLock,
+            NativeInput.EngineKey.ScrollLock => ImGuiKey.ScrollLock,
+            NativeInput.EngineKey.NumLock => ImGuiKey.NumLock,
+            NativeInput.EngineKey.PrintScreen => ImGuiKey.PrintScreen,
+            NativeInput.EngineKey.Pause => ImGuiKey.Pause,
+            NativeInput.EngineKey.F1 => ImGuiKey.F1,
+            NativeInput.EngineKey.F2 => ImGuiKey.F2,
+            NativeInput.EngineKey.F3 => ImGuiKey.F3,
+            NativeInput.EngineKey.F4 => ImGuiKey.F4,
+            NativeInput.EngineKey.F5 => ImGuiKey.F5,
+            NativeInput.EngineKey.F6 => ImGuiKey.F6,
+            NativeInput.EngineKey.F7 => ImGuiKey.F7,
+            NativeInput.EngineKey.F8 => ImGuiKey.F8,
+            NativeInput.EngineKey.F9 => ImGuiKey.F9,
+            NativeInput.EngineKey.F10 => ImGuiKey.F10,
+            NativeInput.EngineKey.F11 => ImGuiKey.F11,
+            NativeInput.EngineKey.F12 => ImGuiKey.F12,
+            NativeInput.EngineKey.Kp0 => ImGuiKey.Keypad0,
+            NativeInput.EngineKey.Kp1 => ImGuiKey.Keypad1,
+            NativeInput.EngineKey.Kp2 => ImGuiKey.Keypad2,
+            NativeInput.EngineKey.Kp3 => ImGuiKey.Keypad3,
+            NativeInput.EngineKey.Kp4 => ImGuiKey.Keypad4,
+            NativeInput.EngineKey.Kp5 => ImGuiKey.Keypad5,
+            NativeInput.EngineKey.Kp6 => ImGuiKey.Keypad6,
+            NativeInput.EngineKey.Kp7 => ImGuiKey.Keypad7,
+            NativeInput.EngineKey.Kp8 => ImGuiKey.Keypad8,
+            NativeInput.EngineKey.Kp9 => ImGuiKey.Keypad9,
+            NativeInput.EngineKey.KpDecimal => ImGuiKey.KeypadDecimal,
+            NativeInput.EngineKey.KpDivide => ImGuiKey.KeypadDivide,
+            NativeInput.EngineKey.KpMultiply => ImGuiKey.KeypadMultiply,
+            NativeInput.EngineKey.KpSubtract => ImGuiKey.KeypadSubtract,
+            NativeInput.EngineKey.KpAdd => ImGuiKey.KeypadAdd,
+            NativeInput.EngineKey.KpEnter => ImGuiKey.KeypadEnter,
+            NativeInput.EngineKey.KpEqual => ImGuiKey.KeypadEqual,
+            NativeInput.EngineKey.LeftShift => ImGuiKey.LeftShift,
+            NativeInput.EngineKey.LeftCtrl => ImGuiKey.LeftCtrl,
+            NativeInput.EngineKey.LeftAlt => ImGuiKey.LeftAlt,
+            NativeInput.EngineKey.LeftSuper => ImGuiKey.LeftSuper,
+            NativeInput.EngineKey.RightShift => ImGuiKey.RightShift,
+            NativeInput.EngineKey.RightCtrl => ImGuiKey.RightCtrl,
+            NativeInput.EngineKey.RightAlt => ImGuiKey.RightAlt,
+            NativeInput.EngineKey.RightSuper => ImGuiKey.RightSuper,
+            NativeInput.EngineKey.Menu => ImGuiKey.Menu,
+            _ => ImGuiKey.None,
+        };
     }
     
     public unsafe void Render(ICommandSink sink)
@@ -146,7 +290,7 @@ public sealed class ImGuiRenderer : IDisposable
         if (_vertexBuffer != null) sink.BindVertexBuffer(1, _vertexBuffer, 0);
         if (_indexBuffer != null) sink.BindIndexBuffer(_indexBuffer, false, 0); // false because ImDrawIdx is ushort
         
-        sink.PushConstants((uint)sizeof(PushConstants), new IntPtr(&pc));
+        sink.PushConstants(0, (uint)sizeof(PushConstants), new IntPtr(&pc));
         
         int globalVtxOffset = 0;
         int globalIdxOffset = 0;

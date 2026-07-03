@@ -1,14 +1,4 @@
 // SPDX-License-Identifier: MIT
-// Avalonia 11 entry point for the Editor.
-//
-// The Avalonia SDK's auto-generated Main was emitting CS5001 under
-// dotnet 10 RC SDK when no .axaml generator wired the Program.Main delegate;
-// explicit wins over auto-gen and gives us a single place to configure
-// platform detection / Skia / tracing.
-//
-// StartWithClassicDesktopLifetime is used (not StartWithLifetime) so the
-// existing MainWindow.OnClosed swapchain-tear-down flows continue to match
-// the App.OnFrameworkInitializationCompleted path.
 
 using System;
 using Avalonia;
@@ -19,7 +9,40 @@ internal static class Program
 {
     [STAThread]
     public static int Main(string[] args)
-        => BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    {
+        // Fix for macOS Finder launch where CWD is /
+        if (AppDomain.CurrentDomain.BaseDirectory.Contains(".app/Contents/MacOS"))
+        {
+            var appRoot = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../../../../"));
+            Environment.CurrentDirectory = appRoot;
+        }
+
+        AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+        {
+            if (e.ExceptionObject is Exception ex)
+            {
+                Engine.CBindings.Log.Error($"[AppDomain] Unhandled exception: {ex}", "Editor");
+            }
+        };
+
+        System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (s, e) =>
+        {
+            Engine.CBindings.Log.Error($"[TaskScheduler] Unobserved exception: {e.Exception}", "Editor");
+            e.SetObserved();
+        };
+
+        try
+        {
+            var result = BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+            Engine.CBindings.EngineLog.EngineLogShutdown();
+            return result;
+        }
+        catch (Exception ex)
+        {
+            File.WriteAllText("/tmp/editor_crash.txt", ex.ToString());
+            return 1;
+        }
+    }
 
     public static AppBuilder BuildAvaloniaApp()
         => AppBuilder.Configure<App>()

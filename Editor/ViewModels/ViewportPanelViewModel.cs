@@ -54,6 +54,21 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     private int _debounceGeneration;
     private readonly object _hotReloadLock = new();
 
+    private Engine.Scene.SceneGraph _baseScene = new();
+    public string CurrentSceneName { get; private set; } = "hello";
+    
+    private bool _isDirty;
+    public bool IsDirty
+    {
+        get => _isDirty;
+        private set
+        {
+            if (SetProperty(ref _isDirty, value))
+                OnDirtyChanged?.Invoke();
+        }
+    }
+    public event Action? OnDirtyChanged;
+
     /// <summary>
     /// Enable/disable automatic hot-reload when Game/*.cs scripts change.
     /// Disabled during a reload to prevent re-entrancy.
@@ -67,7 +82,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     public EcsWorld? World => _world;
     public event Action? OnWorldCreated;
 
-    public ViewportPanelViewModel(string contentRoot, string sceneName = "dumpster")
+    public ViewportPanelViewModel(string contentRoot, string sceneName = "hello")
     {
         _contentRoot = contentRoot;
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
@@ -157,7 +172,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             }
         }
         catch { }
-        return "dumpster";
+        return "hello";
     }
 
     private static string ResolveDotnetExe()
@@ -248,7 +263,48 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
 
     public void LoadScene(string sceneName)
     {
-        _gameLoop?.LoadScene(_contentRoot, sceneName);
+        CurrentSceneName = sceneName;
+        try 
+        {
+            _baseScene = new Engine.Scene.SceneLoader(_contentRoot).Load(sceneName);
+        }
+        catch { _baseScene = new Engine.Scene.SceneGraph(); }
+        try 
+        {
+            _gameLoop?.LoadScene(_contentRoot, sceneName);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[Viewport] Failed to load scene '{sceneName}': {ex.Message}", "Editor");
+        }
+        IsDirty = false;
+    }
+
+    public void SaveScene()
+    {
+        if (_world == null) return;
+        string path = Path.Combine(_contentRoot, "scenes", CurrentSceneName + ".scene.json");
+        Engine.Scene.SceneSaver.Save(_world, _baseScene, path);
+        IsDirty = false;
+    }
+
+    public void SaveSceneAs(string name)
+    {
+        CurrentSceneName = name;
+        SaveScene();
+    }
+
+    public void NewScene()
+    {
+        _world?.Clear();
+        _baseScene = new Engine.Scene.SceneGraph();
+        CurrentSceneName = "New Scene";
+        IsDirty = true;
+    }
+
+    public void MarkDirty()
+    {
+        IsDirty = true;
     }
 
     public void AddModelToScene(string mdlName)
@@ -449,6 +505,16 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             var dt = (float)_stopwatch.Elapsed.TotalSeconds;
             _stopwatch.Restart();
 
+            System.Collections.Generic.List<Engine.CBindings.NativeInput.EngineInputEvent>? frameEvents = null;
+            lock (_events)
+            {
+                if (_events.Count > 0)
+                {
+                    frameEvents = new(_events);
+                    _events.Clear();
+                }
+            }
+
             var input = new Engine.RHI.InputState
             {
                 DeltaTime = dt,
@@ -465,7 +531,8 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
                 KeyW = _keyW,
                 KeyA = _keyA,
                 KeyS = _keyS,
-                KeyD = _keyD
+                KeyD = _keyD,
+                Events = frameEvents
             };
 
             _gameLoop.Update(input);
@@ -508,6 +575,51 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         _leftDown = left;
         _rightDown = right;
         _middleDown = middle;
+
+        QueueEvent(new Engine.CBindings.NativeInput.EngineInputEvent
+        {
+            Type = 2, // MouseMove
+            MouseX = x,
+            MouseY = y
+        });
+    }
+
+    private System.Collections.Generic.List<Engine.CBindings.NativeInput.EngineInputEvent> _events = new();
+
+    public void QueueEvent(Engine.CBindings.NativeInput.EngineInputEvent ev)
+    {
+        lock (_events)
+        {
+            _events.Add(ev);
+        }
+    }
+
+    public void QueueCharEvent(char c)
+    {
+        QueueEvent(new Engine.CBindings.NativeInput.EngineInputEvent
+        {
+            Type = 6, // Char
+            CharCode = c
+        });
+    }
+    
+    public void QueueMouseButtonEvent(int button, bool isDown)
+    {
+        QueueEvent(new Engine.CBindings.NativeInput.EngineInputEvent
+        {
+            Type = isDown ? 3u : 4u, // MouseDown / MouseUp
+            MouseButton = (Engine.CBindings.NativeInput.EngineMouseButton)button
+        });
+    }
+    
+    public void QueueScrollEvent(float scrollX, float scrollY)
+    {
+        QueueEvent(new Engine.CBindings.NativeInput.EngineInputEvent
+        {
+            Type = 5, // Scroll
+            ScrollX = scrollX,
+            ScrollY = scrollY
+        });
     }
 
     public void SetKeyState(Avalonia.Input.Key key, bool isDown)
@@ -519,6 +631,80 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             case Avalonia.Input.Key.S: _keyS = isDown; break;
             case Avalonia.Input.Key.D: _keyD = isDown; break;
         }
+
+        var ek = MapAvaloniaKey(key);
+        if (ek != Engine.CBindings.NativeInput.EngineKey.Unknown)
+        {
+            QueueEvent(new Engine.CBindings.NativeInput.EngineInputEvent
+            {
+                Type = isDown ? 0u : 1u,
+                Key = ek
+            });
+        }
+    }
+
+    private Engine.CBindings.NativeInput.EngineKey MapAvaloniaKey(Avalonia.Input.Key key)
+    {
+        return key switch
+        {
+            Avalonia.Input.Key.A => Engine.CBindings.NativeInput.EngineKey.A,
+            Avalonia.Input.Key.B => Engine.CBindings.NativeInput.EngineKey.B,
+            Avalonia.Input.Key.C => Engine.CBindings.NativeInput.EngineKey.C,
+            Avalonia.Input.Key.D => Engine.CBindings.NativeInput.EngineKey.D,
+            Avalonia.Input.Key.E => Engine.CBindings.NativeInput.EngineKey.E,
+            Avalonia.Input.Key.F => Engine.CBindings.NativeInput.EngineKey.F,
+            Avalonia.Input.Key.G => Engine.CBindings.NativeInput.EngineKey.G,
+            Avalonia.Input.Key.H => Engine.CBindings.NativeInput.EngineKey.H,
+            Avalonia.Input.Key.I => Engine.CBindings.NativeInput.EngineKey.I,
+            Avalonia.Input.Key.J => Engine.CBindings.NativeInput.EngineKey.J,
+            Avalonia.Input.Key.K => Engine.CBindings.NativeInput.EngineKey.K,
+            Avalonia.Input.Key.L => Engine.CBindings.NativeInput.EngineKey.L,
+            Avalonia.Input.Key.M => Engine.CBindings.NativeInput.EngineKey.M,
+            Avalonia.Input.Key.N => Engine.CBindings.NativeInput.EngineKey.N,
+            Avalonia.Input.Key.O => Engine.CBindings.NativeInput.EngineKey.O,
+            Avalonia.Input.Key.P => Engine.CBindings.NativeInput.EngineKey.P,
+            Avalonia.Input.Key.Q => Engine.CBindings.NativeInput.EngineKey.Q,
+            Avalonia.Input.Key.R => Engine.CBindings.NativeInput.EngineKey.R,
+            Avalonia.Input.Key.S => Engine.CBindings.NativeInput.EngineKey.S,
+            Avalonia.Input.Key.T => Engine.CBindings.NativeInput.EngineKey.T,
+            Avalonia.Input.Key.U => Engine.CBindings.NativeInput.EngineKey.U,
+            Avalonia.Input.Key.V => Engine.CBindings.NativeInput.EngineKey.V,
+            Avalonia.Input.Key.W => Engine.CBindings.NativeInput.EngineKey.W,
+            Avalonia.Input.Key.X => Engine.CBindings.NativeInput.EngineKey.X,
+            Avalonia.Input.Key.Y => Engine.CBindings.NativeInput.EngineKey.Y,
+            Avalonia.Input.Key.Z => Engine.CBindings.NativeInput.EngineKey.Z,
+            Avalonia.Input.Key.D0 => Engine.CBindings.NativeInput.EngineKey.Num0,
+            Avalonia.Input.Key.D1 => Engine.CBindings.NativeInput.EngineKey.Num1,
+            Avalonia.Input.Key.D2 => Engine.CBindings.NativeInput.EngineKey.Num2,
+            Avalonia.Input.Key.D3 => Engine.CBindings.NativeInput.EngineKey.Num3,
+            Avalonia.Input.Key.D4 => Engine.CBindings.NativeInput.EngineKey.Num4,
+            Avalonia.Input.Key.D5 => Engine.CBindings.NativeInput.EngineKey.Num5,
+            Avalonia.Input.Key.D6 => Engine.CBindings.NativeInput.EngineKey.Num6,
+            Avalonia.Input.Key.D7 => Engine.CBindings.NativeInput.EngineKey.Num7,
+            Avalonia.Input.Key.D8 => Engine.CBindings.NativeInput.EngineKey.Num8,
+            Avalonia.Input.Key.D9 => Engine.CBindings.NativeInput.EngineKey.Num9,
+            Avalonia.Input.Key.Escape => Engine.CBindings.NativeInput.EngineKey.Escape,
+            Avalonia.Input.Key.Enter => Engine.CBindings.NativeInput.EngineKey.Enter,
+            Avalonia.Input.Key.Tab => Engine.CBindings.NativeInput.EngineKey.Tab,
+            Avalonia.Input.Key.Back => Engine.CBindings.NativeInput.EngineKey.Backspace,
+            Avalonia.Input.Key.Insert => Engine.CBindings.NativeInput.EngineKey.Insert,
+            Avalonia.Input.Key.Delete => Engine.CBindings.NativeInput.EngineKey.Delete,
+            Avalonia.Input.Key.Right => Engine.CBindings.NativeInput.EngineKey.Right,
+            Avalonia.Input.Key.Left => Engine.CBindings.NativeInput.EngineKey.Left,
+            Avalonia.Input.Key.Down => Engine.CBindings.NativeInput.EngineKey.Down,
+            Avalonia.Input.Key.Up => Engine.CBindings.NativeInput.EngineKey.Up,
+            Avalonia.Input.Key.PageUp => Engine.CBindings.NativeInput.EngineKey.PageUp,
+            Avalonia.Input.Key.PageDown => Engine.CBindings.NativeInput.EngineKey.PageDown,
+            Avalonia.Input.Key.Home => Engine.CBindings.NativeInput.EngineKey.Home,
+            Avalonia.Input.Key.End => Engine.CBindings.NativeInput.EngineKey.End,
+            Avalonia.Input.Key.LeftShift => Engine.CBindings.NativeInput.EngineKey.LeftShift,
+            Avalonia.Input.Key.RightShift => Engine.CBindings.NativeInput.EngineKey.RightShift,
+            Avalonia.Input.Key.LeftCtrl => Engine.CBindings.NativeInput.EngineKey.LeftCtrl,
+            Avalonia.Input.Key.RightCtrl => Engine.CBindings.NativeInput.EngineKey.RightCtrl,
+            Avalonia.Input.Key.LeftAlt => Engine.CBindings.NativeInput.EngineKey.LeftAlt,
+            Avalonia.Input.Key.RightAlt => Engine.CBindings.NativeInput.EngineKey.RightAlt,
+            _ => Engine.CBindings.NativeInput.EngineKey.Unknown
+        };
     }
 
     /* private static void SeedTriangleEntity(IEntityStore world)

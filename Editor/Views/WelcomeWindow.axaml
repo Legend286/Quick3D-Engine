@@ -1,0 +1,70 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Engine.Editor.ViewModels"
+        x:Class="Engine.Editor.Views.WelcomeWindow"
+        x:DataType="vm:WelcomeViewModel"
+        Width="600" Height="400"
+        CanResize="False"
+        WindowStartupLocation="CenterScreen"
+        FontFamily="-apple-system,Segoe UI,Helvetica,Arial,sans-serif"
+        FontSize="13"
+        Background="#12151c"
+        Title="End Engine — Welcome">
+
+    <Grid RowDefinitions="Auto,*,Auto">
+        <!-- Header -->
+        <Border Grid.Row="0" Background="#1c1f24" Padding="20">
+            <TextBlock Text="Welcome to End Engine" Foreground="#d0d4dc" FontSize="20" FontWeight="SemiBold" />
+        </Border>
+
+        <!-- Main Content -->
+        <Border Grid.Row="1" Padding="20">
+            <StackPanel Spacing="20">
+                <!-- Open Project -->
+                <StackPanel Spacing="10" IsVisible="{Binding !IsNewProjectMode}">
+                    <TextBlock Text="Recent Projects" Foreground="#aab0b6" FontSize="14" FontWeight="SemiBold" />
+                    <TextBlock Text="No recent projects." Foreground="#5a5f6b" FontStyle="Italic" Margin="0,0,0,10" />
+                    
+                    <Button Content="Open Existing Project..." Background="#2d3139" Foreground="#d0d4dc" Padding="20,10" CornerRadius="4" Click="OnOpenProjectClicked" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                    
+                    <Separator Margin="0,10" Background="#2d3139" />
+                    
+                    <Button Content="Create New Project" Background="#339af0" Foreground="White" Padding="20,10" CornerRadius="4" Command="{Binding SetNewProjectModeCommand}" CommandParameter="{x:True}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                </StackPanel>
+
+                <!-- New Project -->
+                <StackPanel Spacing="15" IsVisible="{Binding IsNewProjectMode}">
+                    <TextBlock Text="Create New Project" Foreground="#aab0b6" FontSize="14" FontWeight="SemiBold" />
+                    
+                    <StackPanel Spacing="5">
+                        <TextBlock Text="Project Name" Foreground="#d0d4dc" FontSize="12" />
+                        <TextBox Text="{Binding ProjectName}" Background="#1a1d24" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="5">
+                        <TextBlock Text="Organization / Company" Foreground="#d0d4dc" FontSize="12" />
+                        <TextBox Text="{Binding Organization}" Background="#1a1d24" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="5">
+                        <TextBlock Text="Location" Foreground="#d0d4dc" FontSize="12" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBox Text="{Binding TargetDirectory}" Background="#1a1d24" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4,0,0,4" Watermark="Select folder..." IsReadOnly="True" />
+                            <Button Grid.Column="1" Content="Browse..." Background="#2d3139" Foreground="#d0d4dc" Padding="16,6" CornerRadius="0,4,4,0" Click="OnBrowseTargetClicked" />
+                        </Grid>
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right" Margin="0,10,0,0">
+                        <Button Content="Cancel" Background="Transparent" Foreground="#aab0b6" Padding="20,10" CornerRadius="4" Command="{Binding SetNewProjectModeCommand}" CommandParameter="{x:False}" />
+                        <Button Content="Create" Background="#51cf66" Foreground="White" Padding="20,10" CornerRadius="4" Click="OnCreateProjectClicked" />
+                    </StackPanel>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Status -->
+        <Border Grid.Row="2" Background="#1c1f24" Padding="10" IsVisible="{Binding StatusMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+            <TextBlock Text="{Binding StatusMessage}" Foreground="#ff6b6b" FontSize="12" />
+        </Border>
+    </Grid>
+</Window>

@@ -22,8 +22,20 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            EngineLogBootstrap.InitFromProject(desktop.Args ?? Array.Empty<string>());
-            desktop.MainWindow = new MainWindow();
+            var projectRoot = EngineLogBootstrap.ResolveProjectRoot(desktop.Args ?? Array.Empty<string>());
+            
+            if (string.IsNullOrEmpty(projectRoot))
+            {
+                // No project found or specified. Show Welcome Window.
+                App.EngineSourceRoot = EngineLogBootstrap.ResolveEngineSourceRoot();
+                desktop.MainWindow = new Views.WelcomeWindow();
+            }
+            else
+            {
+                // Project found, init engine and launch MainWindow
+                EngineLogBootstrap.InitFromProject(projectRoot);
+                desktop.MainWindow = new MainWindow();
+            }
         }
         base.OnFrameworkInitializationCompleted();
     }
@@ -35,13 +47,12 @@ public partial class App : Application
 /// </summary>
 internal static class EngineLogBootstrap
 {
-    public static void InitFromProject(string[] args)
+    public static void InitFromProject(string projectRoot)
     {
-        var projectRoot = ResolveProjectRoot(args);
         App.ProjectRoot = projectRoot;
-        App.EngineSourceRoot = projectRoot;
+        App.EngineSourceRoot = ResolveEngineSourceRoot();
         Console.WriteLine($"[AppBootstrap] Resolved ProjectRoot: '{projectRoot}'");
-        Console.WriteLine($"[AppBootstrap] Resolved EngineSourceRoot: '{projectRoot}'");
+        Console.WriteLine($"[AppBootstrap] Resolved EngineSourceRoot: '{App.EngineSourceRoot}'");
         Console.WriteLine($"[AppBootstrap] AppDomain BaseDirectory: '{AppDomain.CurrentDomain.BaseDirectory}'");
 
         try
@@ -84,7 +95,7 @@ internal static class EngineLogBootstrap
         }
     }
 
-    private static string ResolveProjectRoot(string[] args)
+    public static string? ResolveProjectRoot(string[] args)
     {
         for (int i = 0; i + 1 < args.Length; ++i)
         {
@@ -99,12 +110,8 @@ internal static class EngineLogBootstrap
             var dir = baseDir;
             for (int i = 0; i < 8; ++i)
             {
-                if (Directory.Exists(Path.Combine(dir, ".eeproj")) ||
-                    Directory.Exists(Path.Combine(dir, "Content")) ||
-                    File.Exists(Path.Combine(dir, "CMakeLists.txt")))
-                {
+                if (Directory.Exists(Path.Combine(dir, ".eeproj")))
                     return dir;
-                }
                 var parent = Directory.GetParent(dir);
                 if (parent is null) break;
                 dir = parent.FullName;
@@ -112,22 +119,46 @@ internal static class EngineLogBootstrap
         }
 
         // Fallback to walking up from CurrentDirectory
+        var currDir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 6; ++i)
         {
-            var dir = Directory.GetCurrentDirectory();
-            for (int i = 0; i < 6; ++i)
+            if (Directory.Exists(Path.Combine(currDir, ".eeproj")))
+                return currDir;
+            var parent = Directory.GetParent(currDir);
+            if (parent is null) break;
+            currDir = parent.FullName;
+        }
+
+        return null;
+    }
+
+    public static string ResolveEngineSourceRoot()
+    {
+        // Try to find the directory containing 'engine_cs' or 'CMakeLists.txt' representing the engine repo
+        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        if (!string.IsNullOrEmpty(baseDir))
+        {
+            var dir = baseDir;
+            for (int i = 0; i < 8; ++i)
             {
-                if (Directory.Exists(Path.Combine(dir, ".eeproj")) ||
-                    Directory.Exists(Path.Combine(dir, "Content")) ||
-                    File.Exists(Path.Combine(dir, "CMakeLists.txt")))
-                {
+                if (Directory.Exists(Path.Combine(dir, "engine_cs")) && Directory.Exists(Path.Combine(dir, "Content")))
                     return dir;
-                }
                 var parent = Directory.GetParent(dir);
                 if (parent is null) break;
                 dir = parent.FullName;
             }
         }
+        
+        var currDir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 6; ++i)
+        {
+            if (Directory.Exists(Path.Combine(currDir, "engine_cs")) && Directory.Exists(Path.Combine(currDir, "Content")))
+                return currDir;
+            var parent = Directory.GetParent(currDir);
+            if (parent is null) break;
+            currDir = parent.FullName;
+        }
 
-        return Directory.GetCurrentDirectory();
+        return Directory.GetCurrentDirectory(); // Fallback
     }
 }

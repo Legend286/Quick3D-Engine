@@ -337,7 +337,7 @@ static void engine_log_sink_file(const EngineLogRecord* rec, void* userdata) {
     size_t wrote = fwrite(rec->msg, 1, rec->msg_len, g_state.file_handle);
     g_state.file_bytes += wrote;
     fputc('\n', g_state.file_handle);
-    rec->level >= ENGINE_LOG_ERROR ? fflush(g_state.file_handle) : (void)0;
+    fflush(g_state.file_handle);
     pthread_mutex_unlock(&g_state.file_lock);
 }
 
