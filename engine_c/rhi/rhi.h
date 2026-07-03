@@ -29,7 +29,7 @@ extern "C" {
 #  endif
 #endif
 
-#define ENGINE_ABI_VERSION_RHI 3
+#define ENGINE_ABI_VERSION_RHI 4
 
 typedef struct RhiDevice         RhiDevice;
 typedef struct RhiSwapchain      RhiSwapchain;
@@ -42,6 +42,7 @@ typedef struct RhiCommandList    RhiCommandList;
 typedef struct RhiEncoder        RhiEncoder;
 typedef struct RhiHeap           RhiHeap;
 typedef struct RhiFence          RhiFence;
+typedef struct RhiBindlessHeap   RhiBindlessHeap;
 
 /** Stable resource handle used by the C# render graph. u64 = (generation << 32) | slot_index. */
 typedef uint64_t RhiResourceHandle;
@@ -54,15 +55,26 @@ typedef enum RhiQueueType {
 /**
  * Texture formats. Additions are binary-compatible; unknown values fall through
  * on consumers that don't know the new code.
+ *
+ * Uncompressed formats 0-6. Block-compressed formats start at 20 so an enum
+ * value added later in the uncompressed range (e.g. Vulkan format 7-19
+ * eventually landing here) doesn't collide with a new compressed entry.
  */
 typedef enum RhiTextureFormat {
-    RHI_FORMAT_UNDEFINED       = 0,
-    RHI_FORMAT_RGBA8_UNORM     = 1,
-    RHI_FORMAT_RGBA8_SRGB      = 2,
-    RHI_FORMAT_RGBA16_FLOAT    = 3,
-    RHI_FORMAT_BGRA8_UNORM     = 4,
-    RHI_FORMAT_DEPTH32_FLOAT   = 5,
-    RHI_FORMAT_DEPTH24_STENCIL8 = 6,
+    RHI_FORMAT_UNDEFINED             = 0,
+    RHI_FORMAT_RGBA8_UNORM           = 1,
+    RHI_FORMAT_RGBA8_SRGB            = 2,
+    RHI_FORMAT_RGBA16_FLOAT          = 3,
+    RHI_FORMAT_BGRA8_UNORM           = 4,
+    RHI_FORMAT_DEPTH32_FLOAT         = 5,
+    RHI_FORMAT_DEPTH24_STENCIL8      = 6,
+    RHI_FORMAT_BC1_RGB_UNORM_BLOCK   = 20,
+    RHI_FORMAT_BC1_RGBA_UNORM_BLOCK  = 21,
+    RHI_FORMAT_BC3_UNORM_BLOCK       = 22,
+    RHI_FORMAT_BC5_UNORM_BLOCK       = 23,
+    RHI_FORMAT_BC7_UNORM_BLOCK       = 24,
+    RHI_FORMAT_ETC2_RGB8_UNORM_BLOCK = 25,
+    RHI_FORMAT_ASTC_4x4_UNORM_BLOCK  = 26,
 } RhiTextureFormat;
 
 typedef enum RhiPrimitiveTopology {
@@ -158,6 +170,14 @@ typedef struct RhiHeapDesc {
     uint64_t size;
     uint32_t usage_flags; // e.g. RHI_HEAP_USAGE_RENDER_TARGET | RHI_HEAP_USAGE_SHADER_READ
 } RhiHeapDesc;
+
+/* Bindless heap descriptor. capacity=0 requests the device's natural cap
+ * (e.g. MTLDevice.maxArgumentBufferSamplerCount on Metal 13+); falls back to
+ * 65536 on older platforms. ABI is forward-growth. */
+typedef struct RhiBindlessHeapDesc {
+    uint32_t abi;
+    uint32_t capacity;
+} RhiBindlessHeapDesc;
 
 #define RHI_HEAP_USAGE_RENDER_TARGET (1u << 0)
 #define RHI_HEAP_USAGE_SHADER_READ    (1u << 1)
@@ -300,6 +320,41 @@ ENGINE_API void rhi_destroy_pipeline(RhiPipeline* pipeline);
 ENGINE_API void rhi_destroy_heap(RhiHeap* heap);
 ENGINE_API void rhi_destroy_fence(RhiFence* fence);
 
+/* ----- Bindless heap -----
+ *
+ * Stable, runtime-sized sampler/texture descriptor table. Slang/shader-side
+ * declarations of the form `Texture2D textures[] ` inside a [binding(N,0)]
+ * ParameterBlock can be backed by this heap; shaders then index
+ * `bindless.textures[idx]` from a uniform-supplied id.
+ *
+ * CPU-side slot allocator (R/W): register/release/lookup map a stable id
+ * (a uint32 slot) to/from an RhiTexture. GPU-side bind (R): attach the heap's
+ * resident argument buffer + texture residency list to a command encoder at a
+ * target binding slot.
+ *
+ * Coexists with the legacy `rhi_cmd_bind_texture_array` API — bindless heaps
+ * are additive and do not break existing callers. */
+ENGINE_API int32_t rhi_create_bindless_heap(RhiDevice* device,
+                                            const RhiBindlessHeapDesc* desc,
+                                            RhiBindlessHeap** out_heap);
+ENGINE_API void    rhi_destroy_bindless_heap(RhiBindlessHeap* heap);
+
+/* Allocates the next free slot. Returns 0 + slot in *out_slot on success,
+ * -1 if the heap is full. Repeat calls with the same RhiTexture* return the
+ * same slot (a stable map is maintained). */
+ENGINE_API int32_t rhi_bindless_register_texture(RhiBindlessHeap* heap,
+                                                 RhiTexture* texture,
+                                                 uint32_t* out_slot);
+
+/* Releases the slot; subsequent register calls reuse it. */
+ENGINE_API void    rhi_bindless_release_texture(RhiBindlessHeap* heap,
+                                                 uint32_t slot);
+
+/* Reverse lookup: texture* -> slot. Returns 0 on hit, -1 on miss. */
+ENGINE_API int32_t rhi_bindless_lookup_slot(RhiBindlessHeap* heap,
+                                            RhiTexture* texture,
+                                            uint32_t* out_slot);
+
 ENGINE_API uint64_t rhi_get_buffer_device_address(RhiBuffer* buf);
 
 /* ----- Data transfer ----- */
@@ -312,6 +367,21 @@ ENGINE_API int32_t  rhi_texture_readback(RhiTexture* tex,
 
 ENGINE_API int32_t  rhi_texture_upload(RhiTexture* tex, const void* data,
                                        uint64_t size, uint32_t stride);
+
+/** Upload one mip level of a texture (block-compressed or uncompressed).
+ * Stride is the byte size of one row of blocks (for compressed) or pixels
+ * (for uncompressed). Destination is mipmapLevel=`mip_level`. */
+ENGINE_API int32_t  rhi_texture_upload_mip(RhiTexture* tex, uint32_t mip_level,
+                                            const void* data, uint64_t size,
+                                            uint32_t stride);
+
+/** Block dimensions for a compressed format. Returns block_width, block_height,
+ * and bytes_per_block via the out parameters. Returns 0 on an uncompressed
+ * format or an unknown one. */
+ENGINE_API void     rhi_format_block_info(RhiTextureFormat fmt,
+                                            uint32_t* out_block_w,
+                                            uint32_t* out_block_h,
+                                            uint32_t* out_bytes_per_block);
 
 /* ----- Command list ----- */
 
@@ -347,6 +417,7 @@ ENGINE_API void rhi_cmd_set_scissor(RhiEncoder* enc,
 ENGINE_API void rhi_cmd_set_clear_color(RhiEncoder* enc,
                                         float r, float g, float b, float a);
 ENGINE_API void rhi_cmd_push_constants(RhiEncoder* enc,
+                                       uint32_t slot,
                                        uint32_t size, const void* data);
 ENGINE_API void rhi_cmd_draw(RhiEncoder* enc, const RhiDrawArgs* args);
 ENGINE_API void rhi_cmd_draw_indirect(RhiEncoder* enc, const RhiDrawIndirectArgs* args);
@@ -356,7 +427,9 @@ ENGINE_API void rhi_cmd_bind_index_buffer(RhiEncoder* enc, RhiBuffer* buf,
                                           int32_t is_32bit, uint64_t offset);
 ENGINE_API void rhi_cmd_bind_texture(RhiEncoder* enc, uint32_t slot, RhiTexture* tex);
 ENGINE_API void rhi_cmd_bind_sampler(RhiEncoder* enc, uint32_t slot, RhiSampler* samp);
+ENGINE_API void rhi_cmd_use_buffer(RhiEncoder* enc, RhiBuffer* buf, uint32_t usage);
 ENGINE_API void rhi_cmd_bind_texture_array(RhiEncoder* enc, uint32_t slot, RhiTexture** texs, uint32_t count);
+ENGINE_API void rhi_cmd_bind_bindless_heap(RhiEncoder* enc, RhiBindlessHeap* heap, uint32_t slot);
 ENGINE_API void rhi_cmd_dispatch(RhiEncoder* enc,
                                  uint32_t groups_x, uint32_t groups_y,
                                  uint32_t groups_z);

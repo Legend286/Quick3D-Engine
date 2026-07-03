@@ -22,6 +22,13 @@ public static partial class RhiNative
         Bgra8Unorm = 4,
         Depth32Float = 5,
         Depth24Stencil8 = 6,
+        Bc1RgbUnormBlock = 20,
+        Bc1RgbaUnormBlock = 21,
+        Bc3UnormBlock = 22,
+        Bc5UnormBlock = 23,
+        Bc7UnormBlock = 24,
+        Etc2Rgb8UnormBlock = 25,
+        Astc4x4UnormBlock = 26,
     }
 
     [Flags]
@@ -299,6 +306,41 @@ public static partial class RhiNative
     [LibraryImport(Library, EntryPoint = "rhi_destroy_fence")]
     public static partial void RhiDestroyFence(IntPtr f);
 
+    // ---- Bindless heap ----
+    //
+    // Additive ABI: legacy rhi_cmd_bind_texture_array keeps working. Bindless
+    // heaps give shaders unbounded descriptor indexing. capacity=0 requests
+    // the device's natural cap (Metal: MTLDevice.maxArgumentBufferSamplerCount,
+    // falling back to 65536 on legacy OS).
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BindlessHeapDesc
+    {
+        public uint Abi;
+        public uint Capacity;
+    }
+
+    [LibraryImport(Library, EntryPoint = "rhi_create_bindless_heap")]
+    public static partial int RhiCreateBindlessHeap(IntPtr device,
+                                                    in BindlessHeapDesc desc,
+                                                    out IntPtr outHeap);
+
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_bindless_heap")]
+    public static partial void RhiDestroyBindlessHeap(IntPtr heap);
+
+    [LibraryImport(Library, EntryPoint = "rhi_bindless_register_texture")]
+    public static partial int RhiBindlessRegisterTexture(IntPtr heap,
+                                                          IntPtr texture,
+                                                          out uint outSlot);
+
+    [LibraryImport(Library, EntryPoint = "rhi_bindless_release_texture")]
+    public static partial void RhiBindlessReleaseTexture(IntPtr heap, uint slot);
+
+    [LibraryImport(Library, EntryPoint = "rhi_bindless_lookup_slot")]
+    public static partial int RhiBindlessLookupSlot(IntPtr heap,
+                                                     IntPtr texture,
+                                                     out uint outSlot);
+
     [LibraryImport(Library, EntryPoint = "rhi_get_buffer_device_address")]
     public static partial ulong RhiGetBufferDeviceAddress(IntPtr buf);
 
@@ -338,6 +380,19 @@ public static partial class RhiNative
                                                IntPtr bytes,
                                                ulong size,
                                                uint stride);
+
+    [LibraryImport(Library, EntryPoint = "rhi_texture_upload_mip")]
+    public static partial int RhiTextureUploadMip(IntPtr tex,
+                                                   uint mipLevel,
+                                                   IntPtr bytes,
+                                                   ulong size,
+                                                   uint stride);
+
+    [LibraryImport(Library, EntryPoint = "rhi_format_block_info")]
+    public static partial void RhiFormatBlockInfo(TextureFormat fmt,
+                                                   out uint outBlockW,
+                                                   out uint outBlockH,
+                                                   out uint outBytesPerBlock);
 
     // ---- command-list / encoders ----
 
@@ -393,6 +448,7 @@ public static partial class RhiNative
 
     [LibraryImport(Library, EntryPoint = "rhi_cmd_push_constants")]
     public static partial void RhiCmdPushConstants(IntPtr encoder,
+                                                   uint slot,
                                                    uint size, IntPtr data);
 
     [LibraryImport(Library, EntryPoint = "rhi_cmd_draw")]
@@ -416,8 +472,14 @@ public static partial class RhiNative
     [LibraryImport(Library, EntryPoint = "rhi_cmd_bind_texture_array")]
     public static partial void RhiCmdBindTextureArray(IntPtr encoder, uint slot, ref IntPtr texs, uint count);
 
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_bind_bindless_heap")]
+    public static partial void RhiCmdBindBindlessHeap(IntPtr encoder, IntPtr heap, uint slot);
+
     [LibraryImport(Library, EntryPoint = "rhi_cmd_bind_sampler")]
-    public static partial void RhiCmdBindSampler(IntPtr encoder, uint slot, IntPtr samp);
+    public static partial void RhiCmdBindSampler(nint encoder, uint slot, nint samp);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_use_buffer")]
+    public static partial void RhiCmdUseBuffer(nint encoder, nint buf, uint usage);
 
     [LibraryImport(Library, EntryPoint = "rhi_cmd_dispatch")]
     public static partial void RhiCmdDispatch(IntPtr encoder,

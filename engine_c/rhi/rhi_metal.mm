@@ -36,6 +36,8 @@
 #include <slang-com-ptr.h>
 
 #include <cstring>
+#include <unordered_map>
+#include <vector>
 
 @interface RhiMetalView : NSView
 - (void)syncLayerSize;
@@ -77,6 +79,26 @@ struct RhiTextureImpl {
     __strong id<MTLTexture> tex;
     __strong id<CAMetalDrawable> drawable;
     __strong id<MTLCommandQueue> queue;
+};
+
+// Runtime-sized bindless heap. Backed by a Metal Tier-2 argument buffer with
+// `capacity` separate descriptors — one per slot — each holding a single
+// texture handle. We use the universal `setTexture(_:atIndex:)` selector
+// instead of the optional `setTexture:atIndex:arrayIndex:` (added later in
+// some SDKs) so this compiles on every supported macOS / iOS version.
+//
+// Slots are managed with a free-list; the heap keeps both forward
+// `texture* -> slot` (for stable re-registers and lookups) and reverse
+// `slot -> texture*` (for O(1) release).
+struct RhiBindlessHeapImpl {
+    __strong id<MTLBuffer>              arg_buffer;
+    __strong id<MTLArgumentEncoder>     arg_encoder;
+    uint32_t                            capacity;
+    std::vector<__strong id<MTLResource>> slot_to_resource;
+    std::vector<RhiTexture*>            slot_to_texture;     // reverse by-slot index for O(1) erase
+    std::vector<uint32_t>               free_list;
+    uint32_t                            next_unalloc = 0;
+    std::unordered_map<RhiTexture*, uint32_t> texture_to_slot; // forward lookup
 };
 
 struct RhiShaderImpl {
@@ -138,10 +160,14 @@ static void  metal_destroy_texture(RhiTexture* t);
 static void  metal_destroy_shader(RhiShader* s);
 static void  metal_destroy_pipeline(RhiPipeline* p);
 static void  metal_destroy_heap(RhiHeap* h);
-static void  metal_destroy_fence(RhiFence* f);
-static int32_t  metal_buffer_upload(RhiBuffer* b, const void* data, uint64_t size);
-static int32_t  metal_texture_readback(RhiTexture* t, void* out, uint64_t out_size, uint32_t stride);
-static int32_t  metal_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride);
+static void  metal_destroy_fence(RhiFence* f);static int32_t metal_buffer_upload(RhiBuffer* b, const void* data, uint64_t size);
+static int32_t metal_texture_readback(RhiTexture* t, void* out, uint64_t out_size, uint32_t stride);
+static int32_t metal_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride);
+static int32_t metal_texture_upload_mip(RhiTexture* t, uint32_t mip_level,
+                                          const void* data, uint64_t size, uint32_t stride);
+static void     metal_format_block_info(RhiTextureFormat fmt,
+                                          uint32_t* out_block_w, uint32_t* out_block_h,
+                                          uint32_t* out_bytes_per_block);
 
 static RhiCommandList* metal_begin_cmdlist(RhiDevice* d, RhiQueueType queue);
 static int32_t         metal_submit(RhiDevice* d, RhiCommandList* cl);
@@ -167,13 +193,20 @@ static void metal_cmd_set_viewport(RhiEncoder* e, float x, float y,
 static void metal_cmd_set_scissor(RhiEncoder* e, uint32_t x, uint32_t y,
                                    uint32_t w, uint32_t h);
 static void metal_cmd_set_clear_color(RhiEncoder* e, float r, float g, float b, float a);
-static void metal_cmd_push_constants(RhiEncoder* e, uint32_t sz, const void* d);
+static void metal_cmd_push_constants(RhiEncoder* e, uint32_t slot, uint32_t sz, const void* d);
 static void metal_cmd_draw(RhiEncoder* e, const RhiDrawArgs* a);
 static void metal_cmd_draw_indexed(RhiEncoder* e, const RhiDrawIndexedArgs* a);
 static void metal_cmd_bind_index_buffer(RhiEncoder* e, RhiBuffer* buf, int32_t is_32bit, uint64_t offset);
 static void metal_cmd_bind_texture(RhiEncoder* e, uint32_t slot, RhiTexture* tex);
 static void metal_cmd_bind_texture_array(RhiEncoder* e, uint32_t slot, RhiTexture** texs, uint32_t count);
 static void metal_cmd_dispatch(RhiEncoder* e, uint32_t x, uint32_t y, uint32_t z);
+
+static int32_t metal_create_bindless_heap(RhiDevice* d, const RhiBindlessHeapDesc* desc, RhiBindlessHeap** out);
+static void    metal_destroy_bindless_heap(RhiBindlessHeap* h);
+static int32_t metal_bindless_register_texture(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot);
+static void    metal_bindless_release_texture(RhiBindlessHeap* h, uint32_t slot);
+static int32_t metal_bindless_lookup_slot(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot);
+static void    metal_cmd_bind_bindless_heap(RhiEncoder* e, RhiBindlessHeap* h, uint32_t slot);
 
 // ----- impl -----
 
@@ -406,12 +439,19 @@ static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, Rh
         RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
         MTLPixelFormat fmt = MTLPixelFormatBGRA8Unorm;
         switch (desc->format) {
-            case RHI_FORMAT_RGBA8_UNORM:        fmt = MTLPixelFormatRGBA8Unorm; break;
-            case RHI_FORMAT_RGBA8_SRGB:         fmt = MTLPixelFormatRGBA8Unorm_sRGB; break;
-            case RHI_FORMAT_RGBA16_FLOAT:       fmt = MTLPixelFormatRGBA16Float; break;
-            case RHI_FORMAT_BGRA8_UNORM:        fmt = MTLPixelFormatBGRA8Unorm; break;
-            case RHI_FORMAT_DEPTH32_FLOAT:      fmt = MTLPixelFormatDepth32Float; break;
-            case RHI_FORMAT_DEPTH24_STENCIL8:   fmt = MTLPixelFormatDepth24Unorm_Stencil8; break;
+            case RHI_FORMAT_RGBA8_UNORM:             fmt = MTLPixelFormatRGBA8Unorm; break;
+            case RHI_FORMAT_RGBA8_SRGB:              fmt = MTLPixelFormatRGBA8Unorm_sRGB; break;
+            case RHI_FORMAT_RGBA16_FLOAT:            fmt = MTLPixelFormatRGBA16Float; break;
+            case RHI_FORMAT_BGRA8_UNORM:             fmt = MTLPixelFormatBGRA8Unorm; break;
+            case RHI_FORMAT_DEPTH32_FLOAT:           fmt = MTLPixelFormatDepth32Float; break;
+            case RHI_FORMAT_DEPTH24_STENCIL8:        fmt = MTLPixelFormatDepth24Unorm_Stencil8; break;
+            case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:     fmt = MTLPixelFormatBC1_RGBA; break;
+            case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:    fmt = MTLPixelFormatBC1_RGBA; break;
+            case RHI_FORMAT_BC3_UNORM_BLOCK:         fmt = MTLPixelFormatBC3_RGBA; break;
+            case RHI_FORMAT_BC5_UNORM_BLOCK:         fmt = MTLPixelFormatBC5_RGUnorm; break;
+            case RHI_FORMAT_BC7_UNORM_BLOCK:         fmt = MTLPixelFormatBC7_RGBAUnorm; break;
+            case RHI_FORMAT_ETC2_RGB8_UNORM_BLOCK:   fmt = MTLPixelFormatETC2_RGB8; break;
+            case RHI_FORMAT_ASTC_4x4_UNORM_BLOCK:    fmt = MTLPixelFormatASTC_4x4_LDR; break;
             default: break;
         }
         NSUInteger mip_count = desc->mip_levels > 0 ? desc->mip_levels : 1;
@@ -424,11 +464,16 @@ static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, Rh
         td.usage = 0;
         if (desc->usage_flags & RHI_TEXTURE_RENDER_TARGET) td.usage |= MTLTextureUsageRenderTarget;
         if (desc->usage_flags & RHI_TEXTURE_SHADER_READ) td.usage |= MTLTextureUsageShaderRead;
-        
+
         if (desc->usage_flags & RHI_TEXTURE_RENDER_TARGET) {
             td.storageMode = MTLStorageModePrivate;
         } else {
 #if TARGET_OS_OSX
+            // Compressed formats stay Managed on macOS: the CPU-side
+            // replaceRegion: + [synchronizeTexture] blit path used by
+            // metal_texture_upload_mip / metal_texture_upload requires
+            // CPU-writeable storage. Switching to Private would need a
+            // staging-buffer blit path (TODO for iOS + Private GPU heaps).
             td.storageMode = MTLStorageModeManaged;
 #else
             td.storageMode = MTLStorageModeShared;
@@ -643,12 +688,19 @@ static int32_t metal_create_texture_from_heap(RhiDevice* d, RhiHeap* h, const Rh
         RhiHeapImpl* hi = reinterpret_cast<RhiHeapImpl*>(h);
         MTLPixelFormat fmt = MTLPixelFormatBGRA8Unorm;
         switch (desc->format) {
-            case RHI_FORMAT_RGBA8_UNORM:        fmt = MTLPixelFormatRGBA8Unorm; break;
-            case RHI_FORMAT_RGBA8_SRGB:         fmt = MTLPixelFormatRGBA8Unorm_sRGB; break;
-            case RHI_FORMAT_RGBA16_FLOAT:       fmt = MTLPixelFormatRGBA16Float; break;
-            case RHI_FORMAT_BGRA8_UNORM:        fmt = MTLPixelFormatBGRA8Unorm; break;
-            case RHI_FORMAT_DEPTH32_FLOAT:      fmt = MTLPixelFormatDepth32Float; break;
-            case RHI_FORMAT_DEPTH24_STENCIL8:   fmt = MTLPixelFormatDepth24Unorm_Stencil8; break;
+            case RHI_FORMAT_RGBA8_UNORM:             fmt = MTLPixelFormatRGBA8Unorm; break;
+            case RHI_FORMAT_RGBA8_SRGB:              fmt = MTLPixelFormatRGBA8Unorm_sRGB; break;
+            case RHI_FORMAT_RGBA16_FLOAT:            fmt = MTLPixelFormatRGBA16Float; break;
+            case RHI_FORMAT_BGRA8_UNORM:             fmt = MTLPixelFormatBGRA8Unorm; break;
+            case RHI_FORMAT_DEPTH32_FLOAT:           fmt = MTLPixelFormatDepth32Float; break;
+            case RHI_FORMAT_DEPTH24_STENCIL8:        fmt = MTLPixelFormatDepth24Unorm_Stencil8; break;
+            case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:     fmt = MTLPixelFormatBC1_RGBA; break;
+            case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:    fmt = MTLPixelFormatBC1_RGBA; break;
+            case RHI_FORMAT_BC3_UNORM_BLOCK:         fmt = MTLPixelFormatBC3_RGBA; break;
+            case RHI_FORMAT_BC5_UNORM_BLOCK:         fmt = MTLPixelFormatBC5_RGUnorm; break;
+            case RHI_FORMAT_BC7_UNORM_BLOCK:         fmt = MTLPixelFormatBC7_RGBAUnorm; break;
+            case RHI_FORMAT_ETC2_RGB8_UNORM_BLOCK:   fmt = MTLPixelFormatETC2_RGB8; break;
+            case RHI_FORMAT_ASTC_4x4_UNORM_BLOCK:    fmt = MTLPixelFormatASTC_4x4_LDR; break;
             default: break;
         }
         NSUInteger mip_count = desc->mip_levels > 0 ? desc->mip_levels : 1;
@@ -703,6 +755,34 @@ struct RhiSamplerImpl {
     id<MTLSamplerState> samp;
 };
 
+// Cached MTLDepthStencilState used by every render pass that has a depth
+// attachment. Apple docs are unambiguous: when no MTLDepthStencilState is
+// bound on the encoder, depth AND stencil test, read, AND write are all
+// disabled regardless of `depthAttachmentPixelFormat` on the pipeline state.
+// Without this binding our PbrPass + GridPass were rendering with depth test
+// disabled, which is why models didn't occlude each other and the grid
+// showed through them.
+static __strong id<MTLDepthStencilState> g_depth_stencil_state = nil;
+static __weak id<MTLDevice>             g_dss_owner_device = nil;
+
+static id<MTLDepthStencilState> GetOrCreateDepthStencilState(id<MTLDevice> device) {
+    @autoreleasepool {
+        if (g_depth_stencil_state && g_dss_owner_device == device) {
+            return g_depth_stencil_state;
+        }
+        MTLDepthStencilDescriptor* desc = [[MTLDepthStencilDescriptor alloc] init];
+        desc.depthCompareFunction = MTLCompareFunctionLess;
+        desc.depthWriteEnabled    = YES;
+        desc.backFaceStencil      = nil;
+        desc.frontFaceStencil     = nil;
+        id<MTLDepthStencilState> s = [device newDepthStencilStateWithDescriptor:desc];
+        if (!s) return nil;
+        g_depth_stencil_state = s;
+        g_dss_owner_device    = device;
+        return s;
+    }
+}
+
 static void metal_destroy_buffer(RhiBuffer* b) {
     if (!b) return;
     delete reinterpret_cast<RhiBufferImpl*>(b);
@@ -724,10 +804,10 @@ static RhiSampler* metal_create_sampler(RhiDevice* d) {
     desc.tAddressMode = MTLSamplerAddressModeRepeat;
     desc.rAddressMode = MTLSamplerAddressModeRepeat;
     desc.maxAnisotropy = 16;
-    
+
     id<MTLSamplerState> s = [di->device newSamplerStateWithDescriptor:desc];
     if (!s) return nullptr;
-    
+
     RhiSamplerImpl* si = new RhiSamplerImpl();
     si->samp = s;
     return reinterpret_cast<RhiSampler*>(si);
@@ -806,6 +886,70 @@ static int32_t metal_texture_upload(RhiTexture* t, const void* data, uint64_t si
     }
 }
 
+static int32_t metal_texture_upload_mip(RhiTexture* t, uint32_t mip_level, const void* data, uint64_t size, uint32_t stride) {
+    @autoreleasepool {
+        RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(t);
+        if (!ti->tex) return -1;
+
+        // For block-compressed formats the mip dimensions are clamped so the
+        // block grid never collapses below one block wide/tall. Metal
+        // requires bytesPerRow to be >= blocks_wide * bytes_per_block, so
+        // the loader passes a stride derived from max(1, dim / block_w).
+        NSUInteger mip_w = MAX((NSUInteger)1, [ti->tex width]  >> mip_level);
+        NSUInteger mip_h = MAX((NSUInteger)1, [ti->tex height] >> mip_level);
+        MTLRegion r = MTLRegionMake2D(0, 0, mip_w, mip_h);
+        [ti->tex replaceRegion:r mipmapLevel:mip_level withBytes:data bytesPerRow:stride];
+
+#if TARGET_OS_OSX
+        if (ti->tex.storageMode == MTLStorageModeManaged && ti->queue) {
+            id<MTLCommandBuffer> cb = [ti->queue commandBuffer];
+            id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+            [blit synchronizeTexture:ti->tex slice:0 level:mip_level];
+            [blit endEncoding];
+            [cb commit];
+            [cb waitUntilCompleted];
+        }
+#endif
+        return 0;
+    }
+}
+
+static void metal_format_block_info(RhiTextureFormat fmt,
+                                     uint32_t* out_block_w,
+                                     uint32_t* out_block_h,
+                                     uint32_t* out_bytes_per_block) {
+    switch (fmt) {
+        case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:
+        case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:
+            if (out_block_w) *out_block_w = 4;
+            if (out_block_h) *out_block_h = 4;
+            if (out_bytes_per_block) *out_bytes_per_block = 8;
+            break;
+        case RHI_FORMAT_BC3_UNORM_BLOCK:
+        case RHI_FORMAT_BC5_UNORM_BLOCK:
+        case RHI_FORMAT_BC7_UNORM_BLOCK:
+            if (out_block_w) *out_block_w = 4;
+            if (out_block_h) *out_block_h = 4;
+            if (out_bytes_per_block) *out_bytes_per_block = 16;
+            break;
+        case RHI_FORMAT_ETC2_RGB8_UNORM_BLOCK:
+            if (out_block_w) *out_block_w = 4;
+            if (out_block_h) *out_block_h = 4;
+            if (out_bytes_per_block) *out_bytes_per_block = 8;
+            break;
+        case RHI_FORMAT_ASTC_4x4_UNORM_BLOCK:
+            if (out_block_w) *out_block_w = 4;
+            if (out_block_h) *out_block_h = 4;
+            if (out_bytes_per_block) *out_bytes_per_block = 16;
+            break;
+        default:
+            if (out_block_w) *out_block_w = 0;
+            if (out_block_h) *out_block_h = 0;
+            if (out_bytes_per_block) *out_bytes_per_block = 0;
+            break;
+    }
+}
+
 static RhiCommandList* metal_begin_cmdlist(RhiDevice* device, RhiQueueType queue) {
     @autoreleasepool {
         RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(device);
@@ -876,11 +1020,27 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
         if (desc->depth_attachment) {
             RhiTextureImpl* dti = reinterpret_cast<RhiTextureImpl*>(desc->depth_attachment->texture);
             pd.depthAttachment.texture      = dti->tex;
-            pd.depthAttachment.loadAction   = MTLLoadActionClear;
-            pd.depthAttachment.storeAction  = MTLStoreActionStore;
+            switch (desc->depth_attachment->load_op) {
+                case RHI_LOAD_OP_CLEAR:    pd.depthAttachment.loadAction = MTLLoadActionClear; break;
+                case RHI_LOAD_OP_DISCARD:  pd.depthAttachment.loadAction = MTLLoadActionDontCare; break;
+                default:                   pd.depthAttachment.loadAction = MTLLoadActionLoad; break;
+            }
+            switch (desc->depth_attachment->store_op) {
+                case RHI_STORE_OP_DISCARD: pd.depthAttachment.storeAction = MTLStoreActionDontCare; break;
+                default:                   pd.depthAttachment.storeAction = MTLStoreActionStore; break;
+            }
             pd.depthAttachment.clearDepth   = 1.0;
         }
         id<MTLRenderCommandEncoder> enc = [cli->buf renderCommandEncoderWithDescriptor:pd];
+
+        // Apple docs: without a bound MTLDepthStencilState, depth test, read,
+        // and write are all disabled regardless of depthAttachmentPixelFormat
+        // on the pipeline. Bind the cached Less-compare / write-enabled
+        // state for every render pass that has a depth attachment.
+        if (desc->depth_attachment) {
+            id<MTLDepthStencilState> dss = GetOrCreateDepthStencilState(cli->buf.device);
+            if (dss) [enc setDepthStencilState:dss];
+        }
         RhiEncoderImpl* ri = new RhiEncoderImpl();
         ri->render  = enc;
         ri->compute = nil;
@@ -917,6 +1077,10 @@ static void metal_cmd_bind_pipeline(RhiEncoder* enc, RhiPipeline* p) {
     if (ri->render && pi->g)  {
         [ri->render  setRenderPipelineState:pi->g];
         ri->current_primitive_type = pi->primitive_type;
+        // The MTLDepthStencilState is bound at render-pass begin (in
+        // metal_begin_render_pass) and persists for the life of the
+        // encoder, so rebinding on every pipeline change would be wasted
+        // work. Nothing to do here.
     }
     if (ri->compute && pi->c) [ri->compute setComputePipelineState:pi->c];
 }
@@ -939,17 +1103,13 @@ static void metal_cmd_bind_uniform_buffer(RhiEncoder* enc, uint32_t slot, RhiBuf
     if (ri->compute) [ri->compute setBuffer:bi->buf offset:0 atIndex:slot];
 }
 
-static void metal_cmd_push_constants(RhiEncoder* enc, uint32_t size, const void* data) {
+static void metal_cmd_push_constants(RhiEncoder* enc, uint32_t slot, uint32_t size, const void* data) {
     RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
     if (ri->render) {
-        // We use slot 0 for push constants by convention in Slang for push blocks,
-        // or we can let Slang pick the slot, but typically Metal uses `[[buffer(0)]]` or similar for push constants.
-        // Actually, we should bind it to a reserved slot. Slang usually puts PushConstants in a dedicated slot,
-        // often the last slot or slot 0. Let's bind to slot 0 for now as Slang defaults.
-        [ri->render setVertexBytes:data length:size atIndex:0];
-        [ri->render setFragmentBytes:data length:size atIndex:0];
+        [ri->render setVertexBytes:data length:size atIndex:slot];
+        [ri->render setFragmentBytes:data length:size atIndex:slot];
     } else if (ri->compute) {
-        [ri->compute setBytes:data length:size atIndex:0];
+        [ri->compute setBytes:data length:size atIndex:slot];
     }
 }
 
@@ -1084,11 +1244,157 @@ static void metal_cmd_bind_sampler(RhiEncoder* enc, uint32_t slot, RhiSampler* s
     RhiSamplerImpl* si = reinterpret_cast<RhiSamplerImpl*>(samp);
     [ri->render setFragmentSamplerState:si->samp atIndex:slot];
 }
+static void metal_cmd_use_buffer(RhiEncoder* enc, RhiBuffer* buf, uint32_t usage) {
+    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
+    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
+    if (ri->render) {
+        [ri->render useResource:bi->buf usage:usage stages:MTLRenderStageVertex | MTLRenderStageFragment];
+    } else if (ri->compute) {
+        [ri->compute useResource:bi->buf usage:usage];
+    }
+}
 static void metal_cmd_dispatch(RhiEncoder* enc, uint32_t gx, uint32_t gy, uint32_t gz) {
     RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
     if (!ri->compute) return;
     [ri->compute dispatchThreadgroups:MTLSizeMake(gx, gy, gz)
-                threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+                threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+}
+
+// ----- Bindless heap impl -----
+
+static int32_t metal_create_bindless_heap(RhiDevice* d, const RhiBindlessHeapDesc* desc, RhiBindlessHeap** out) {
+    @autoreleasepool {
+        if (!d || !out) return -1;
+        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
+        uint32_t capacity = (desc && desc->capacity > 0) ? desc->capacity : 0;
+        if (capacity == 0) {
+            if (@available(macOS 13.0, iOS 17.0, *)) {
+                capacity = (uint32_t)di->device.maxArgumentBufferSamplerCount;
+            }
+            if (capacity == 0) capacity = 65536; // safe fallback
+        }
+        // One descriptor per slot, each a single texture (arrayLength=1, descriptor index = slot).
+        // This is the universal MTLArgumentEncoder pattern — setTexture:atIndex: works on every SDK
+        // that supports tier-2 argument buffers, without depending on the later
+        // setTexture:atIndex:arrayIndex: selector.
+        NSMutableArray<MTLArgumentDescriptor*>* descs = [NSMutableArray arrayWithCapacity:capacity];
+        for (uint32_t i = 0; i < capacity; ++i) {
+            MTLArgumentDescriptor* ad = [[MTLArgumentDescriptor alloc] init];
+            ad.dataType   = MTLDataTypeTexture;
+            ad.access     = MTLArgumentAccessReadOnly;
+            ad.index      = (NSUInteger)i;
+            ad.arrayLength = 1;
+            [descs addObject:ad];
+        }
+        id<MTLArgumentEncoder> encoder = [di->device newArgumentEncoderWithArguments:descs];
+        if (!encoder) {
+            ENGINE_LOG_ERROR("rhi_metal", "newArgumentEncoder returned nil");
+            return -2;
+        }
+        NSUInteger length = encoder.encodedLength;
+        id<MTLBuffer> buf = [di->device newBufferWithLength:length
+                                                    options:MTLResourceStorageModeShared];
+        if (!buf) return -3;
+        [buf setLabel:@"RhiBindlessHeap"];
+
+        auto* hi = new RhiBindlessHeapImpl();
+        hi->arg_encoder = encoder;
+        hi->arg_buffer  = buf;
+        hi->capacity    = capacity;
+        hi->slot_to_resource.assign(capacity, nil);
+        hi->slot_to_texture.assign(capacity, nullptr);
+        *out = reinterpret_cast<RhiBindlessHeap*>(hi);
+        ENGINE_LOG_INFO("rhi_metal", "bindless heap created capacity=%u bytes=%lu",
+                        capacity, (unsigned long)length);
+        return 0;
+    }
+}
+
+static void metal_destroy_bindless_heap(RhiBindlessHeap* h) {
+    if (!h) return;
+    auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
+    // Drop our strong refs to all resident textures so ARC releases them.
+    for (auto& res : hi->slot_to_resource) res = nil;
+    hi->arg_buffer  = nil;
+    hi->arg_encoder = nil;
+    delete hi;
+}
+
+static int32_t metal_bindless_register_texture(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot) {
+    if (!h || !tex || !out_slot) return -1;
+    auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
+    RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(tex);
+    if (!ti->tex) return -2;
+
+    // Stable map: same RhiTexture* always maps to same slot.
+    auto it = hi->texture_to_slot.find(tex);
+    if (it != hi->texture_to_slot.end()) {
+        *out_slot = it->second;
+        return 0;
+    }
+    uint32_t slot;
+    if (!hi->free_list.empty()) {
+        slot = hi->free_list.back();
+        hi->free_list.pop_back();
+    } else {
+        if (hi->next_unalloc >= hi->capacity) {
+            ENGINE_LOG_ERROR("rhi_metal", "bindless heap full (capacity=%u)", hi->capacity);
+            return -3;
+        }
+        slot = hi->next_unalloc++;
+    }
+    [hi->arg_encoder setArgumentBuffer:hi->arg_buffer offset:0];
+    [hi->arg_encoder setTexture:ti->tex atIndex:slot];
+    hi->slot_to_resource[slot] = ti->tex;
+    hi->slot_to_texture[slot]  = tex;
+    hi->texture_to_slot[tex]    = slot;
+    *out_slot = slot;
+    return 0;
+}
+
+static void metal_bindless_release_texture(RhiBindlessHeap* h, uint32_t slot) {
+    if (!h) return;
+    auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
+    if (slot >= hi->capacity) return;
+    [hi->arg_encoder setArgumentBuffer:hi->arg_buffer offset:0];
+    [hi->arg_encoder setTexture:nil atIndex:slot];
+    // O(1) reverse erase via parallel slot_to_texture vector.
+    RhiTexture* key = hi->slot_to_texture[slot];
+    if (key) hi->texture_to_slot.erase(key);
+    hi->slot_to_texture[slot]  = nullptr;
+    hi->slot_to_resource[slot] = nil;
+    hi->free_list.push_back(slot);
+}
+
+static int32_t metal_bindless_lookup_slot(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot) {
+    if (!h || !tex || !out_slot) return -1;
+    auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
+    auto it = hi->texture_to_slot.find(tex);
+    if (it == hi->texture_to_slot.end()) return -1;
+    *out_slot = it->second;
+    return 0;
+}
+
+static void metal_cmd_bind_bindless_heap(RhiEncoder* e, RhiBindlessHeap* h, uint32_t slot) {
+    @autoreleasepool {
+        if (!e || !h) return;
+        RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(e);
+        RhiBindlessHeapImpl* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
+        if (!ri->render) return; // compute encoders not supported yet for bind heaps
+        [ri->render setFragmentBuffer:hi->arg_buffer offset:0 atIndex:slot];
+        // Collect resident non-nil resources and declare residency.
+        std::vector<__unsafe_unretained id<MTLResource>> resident;
+        resident.reserve(hi->slot_to_resource.size());
+        for (auto& res : hi->slot_to_resource) {
+            if (res) resident.push_back(res);
+        }
+        if (!resident.empty()) {
+            [ri->render useResources:resident.data()
+                              count:resident.size()
+                              usage:MTLResourceUsageRead
+                            stages:MTLRenderStageFragment];
+        }
+    }
 }
 
 }  // anonymous namespace
@@ -1225,6 +1531,8 @@ extern "C" void rhi_metal_register(void) {
     b.buffer_upload              = metal_buffer_upload;
     b.texture_readback           = metal_texture_readback;
     b.texture_upload             = metal_texture_upload;
+    b.texture_upload_mip         = metal_texture_upload_mip;
+    b.format_block_info          = metal_format_block_info;
     b.get_buffer_device_address  = metal_get_buffer_device_address;
 
     b.begin_cmdlist              = metal_begin_cmdlist;
@@ -1249,7 +1557,16 @@ extern "C" void rhi_metal_register(void) {
     b.cmd_bind_index_buffer      = metal_cmd_bind_index_buffer;
     b.cmd_bind_texture           = metal_cmd_bind_texture;
     b.cmd_bind_texture_array     = metal_cmd_bind_texture_array;
+    b.cmd_bind_bindless_heap     = metal_cmd_bind_bindless_heap;
     b.cmd_bind_sampler           = metal_cmd_bind_sampler;
+    b.cmd_use_buffer             = metal_cmd_use_buffer;
     b.cmd_dispatch               = metal_cmd_dispatch;
+
+    b.create_bindless_heap       = metal_create_bindless_heap;
+    b.destroy_bindless_heap      = metal_destroy_bindless_heap;
+    b.bindless_register_texture  = metal_bindless_register_texture;
+    b.bindless_release_texture   = metal_bindless_release_texture;
+    b.bindless_lookup_slot       = metal_bindless_lookup_slot;
+
     rhi_backend_register(&b);
 }

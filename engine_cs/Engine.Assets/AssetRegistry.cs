@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: MIT
 using System.Collections.Generic;
+using Engine.RHI;
 
 namespace Engine.Assets;
+
+public sealed class AssetTextureEntry
+{
+    public ulong Id { get; init; }
+    public RhiTexture Texture { get; init; } = null!;
+    public uint HeapSlot { get; set; }
+    public int RefCount { get; set; }
+}
 
 public static class AssetRegistry
 {
@@ -54,5 +63,43 @@ public static class AssetRegistry
         if (_models.TryGetValue(id, out Model? model))
             return model;
         return null;
+    }
+
+    // Texture registry — stable IDs, heap-slot-stable, ref-counted so shared
+    // textures (e.g. one albedo used by many materials) are not double-allocated.
+
+    private static readonly Dictionary<ulong, AssetTextureEntry> _textures = new();
+    private static ulong _nextTextureId = 1;
+
+    /// <summary>Register a texture with the given pre-allocated heap slot.</summary>
+    public static ulong RegisterTexture(RhiTexture texture, uint heapSlot, int initialRefCount = 1)
+    {
+        ArgumentNullException.ThrowIfNull(texture);
+        ulong id = _nextTextureId++;
+        _textures[id] = new AssetTextureEntry
+        {
+            Id = id,
+            Texture = texture,
+            HeapSlot = heapSlot,
+            RefCount = initialRefCount,
+        };
+        return id;
+    }
+
+    public static AssetTextureEntry? GetTexture(ulong id) =>
+        _textures.TryGetValue(id, out var entry) ? entry : null;
+
+    public static void AddRefTexture(ulong id)
+    {
+        if (_textures.TryGetValue(id, out var entry)) entry.RefCount++;
+    }
+
+    public static void ReleaseTexture(ulong id)
+    {
+        if (!_textures.TryGetValue(id, out var entry)) return;
+        entry.RefCount--;
+        if (entry.RefCount > 0) return;
+        entry.Texture?.Dispose();
+        _textures.Remove(id);
     }
 }

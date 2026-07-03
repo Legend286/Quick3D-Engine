@@ -116,6 +116,31 @@ void rhi_destroy_pipeline(RhiPipeline* p) { if (g_active >= 0) g_backends[g_acti
 void rhi_destroy_heap(RhiHeap* h) { if (g_active >= 0) g_backends[g_active].destroy_heap(h); }
 void rhi_destroy_fence(RhiFence* f) { if (g_active >= 0) g_backends[g_active].destroy_fence(f); }
 
+/* ----- Bindless heap forwarders (additive — coexist with legacy texture array) ----- */
+
+int32_t rhi_create_bindless_heap(RhiDevice* d, const RhiBindlessHeapDesc* desc, RhiBindlessHeap** out) {
+    if (g_active < 0 || !g_backends[g_active].create_bindless_heap) return -1;
+    return g_backends[g_active].create_bindless_heap(d, desc, out);
+}
+void rhi_destroy_bindless_heap(RhiBindlessHeap* h) {
+    if (g_active >= 0 && g_backends[g_active].destroy_bindless_heap) {
+        g_backends[g_active].destroy_bindless_heap(h);
+    }
+}
+int32_t rhi_bindless_register_texture(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot) {
+    if (g_active < 0 || !g_backends[g_active].bindless_register_texture) return -1;
+    return g_backends[g_active].bindless_register_texture(h, tex, out_slot);
+}
+void rhi_bindless_release_texture(RhiBindlessHeap* h, uint32_t slot) {
+    if (g_active >= 0 && g_backends[g_active].bindless_release_texture) {
+        g_backends[g_active].bindless_release_texture(h, slot);
+    }
+}
+int32_t rhi_bindless_lookup_slot(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot) {
+    if (g_active < 0 || !g_backends[g_active].bindless_lookup_slot) return -1;
+    return g_backends[g_active].bindless_lookup_slot(h, tex, out_slot);
+}
+
 uint64_t rhi_get_buffer_device_address(RhiBuffer* buf) {
     if (g_active >= 0 && g_backends[g_active].get_buffer_device_address) {
         return g_backends[g_active].get_buffer_device_address(buf);
@@ -173,8 +198,8 @@ void rhi_cmd_set_scissor(RhiEncoder* e, uint32_t x, uint32_t y, uint32_t w, uint
 void rhi_cmd_set_clear_color(RhiEncoder* e, float r, float g, float b, float a) {
     g_backends[g_active].cmd_set_clear_color(e, r, g, b, a);
 }
-void rhi_cmd_push_constants(RhiEncoder* e, uint32_t size, const void* data) {
-    g_backends[g_active].cmd_push_constants(e, size, data);
+void rhi_cmd_push_constants(RhiEncoder* e, uint32_t slot, uint32_t size, const void* data) {
+    g_backends[g_active].cmd_push_constants(e, slot, size, data);
 }
 void rhi_cmd_draw(RhiEncoder* e, const RhiDrawArgs* a) {
     g_backends[g_active].cmd_draw(e, a);
@@ -199,9 +224,18 @@ void rhi_cmd_bind_texture(RhiEncoder* e, uint32_t slot, RhiTexture* tex) {
     g_backends[g_active].cmd_bind_texture(e, slot, tex);
 }
 void rhi_cmd_bind_texture_array(RhiEncoder* e, uint32_t slot, RhiTexture** texs, uint32_t count) {
-    if (g_backends[g_active].cmd_bind_texture_array) {
-        g_backends[g_active].cmd_bind_texture_array(e, slot, texs, count);
+    g_backends[g_active].cmd_bind_texture_array(e, slot, texs, count);
+}
+void rhi_cmd_bind_bindless_heap(RhiEncoder* e, RhiBindlessHeap* h, uint32_t slot) {
+    if (g_active >= 0 && g_backends[g_active].cmd_bind_bindless_heap) {
+        g_backends[g_active].cmd_bind_bindless_heap(e, h, slot);
     }
+}
+void rhi_cmd_bind_sampler(RhiEncoder* e, uint32_t slot, RhiSampler* samp) {
+    g_backends[g_active].cmd_bind_sampler(e, slot, samp);
+}
+void rhi_cmd_use_buffer(RhiEncoder* e, RhiBuffer* buf, uint32_t usage) {
+    g_backends[g_active].cmd_use_buffer(e, buf, usage);
 }
 void rhi_cmd_dispatch(RhiEncoder* e, uint32_t gx, uint32_t gy, uint32_t gz) {
     g_backends[g_active].cmd_dispatch(e, gx, gy, gz);
@@ -257,4 +291,22 @@ ENGINE_API RhiSampler* rhi_create_sampler(RhiDevice* dev) {
 }
 ENGINE_API void rhi_destroy_sampler(RhiSampler* samp) {
     g_backends[g_active].destroy_sampler(samp);
+}
+
+int32_t rhi_texture_upload_mip(RhiTexture* t, uint32_t mip_level,
+                                 const void* data, uint64_t size, uint32_t stride) {
+    if (g_active < 0 || !g_backends[g_active].texture_upload_mip) return -1;
+    return g_backends[g_active].texture_upload_mip(t, mip_level, data, size, stride);
+}
+
+void rhi_format_block_info(RhiTextureFormat fmt,
+                            uint32_t* out_block_w, uint32_t* out_block_h,
+                            uint32_t* out_bytes_per_block) {
+    if (g_active < 0 || !g_backends[g_active].format_block_info) {
+        if (out_block_w) *out_block_w = 0;
+        if (out_block_h) *out_block_h = 0;
+        if (out_bytes_per_block) *out_bytes_per_block = 0;
+        return;
+    }
+    g_backends[g_active].format_block_info(fmt, out_block_w, out_block_h, out_bytes_per_block);
 }
