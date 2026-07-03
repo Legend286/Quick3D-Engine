@@ -31,7 +31,14 @@ struct MeshHeader {
 };
 
 std::string ExecuteBasisu(const std::string& input_img, const std::string& out_dir, bool is_normal, bool is_linear, int width, int height, int channels, const std::string& type_name) {
-    std::string cmd = "./out/basisu -ktx2 \"" + input_img + "\" -output_path \"" + out_dir + "\"";
+    std::string tex_out_dir = (fs::path(out_dir) / "textures").string();
+    fs::create_directories(tex_out_dir);
+    // basisu defaults to ETC1S+BasisLZ (scheme=1, vkFormat=0), which the
+    // runtime Ktx2Loader cannot decode (Basis Universal transcoder is not
+    // wired in). -uastc forces ASTC_4x4_UNORM_BLOCK blocks (vkFormat=157)
+    // and Zstd supercompression by default (scheme=3), both of which the
+    // loader handles natively. See docs/asset-pipeline/ktx2.md.
+    std::string cmd = "./out/basisu -ktx2 -uastc \"" + input_img + "\" -output_path \"" + tex_out_dir + "\"";
     if (is_normal) cmd += " -normal_map";
     if (is_linear) cmd += " -linear";
     std::cout << "Running: " << cmd << "\n";
@@ -41,10 +48,10 @@ std::string ExecuteBasisu(const std::string& input_img, const std::string& out_d
     }
     fs::path p(input_img);
     std::string base_name = p.stem().string();
-    std::string ktx2_path = (fs::path(out_dir) / base_name).string() + ".ktx2";
+    std::string ktx2_path = (fs::path(tex_out_dir) / base_name).string() + ".ktx2";
     
     // Write out .tex metadata
-    std::string tex_meta_path = (fs::path(out_dir) / base_name).string() + ".tex";
+    std::string tex_meta_path = (fs::path(tex_out_dir) / base_name).string() + ".tex";
     std::ofstream tex_meta(tex_meta_path);
     tex_meta << "{\n";
     tex_meta << "  \"version\": 1,\n";
@@ -57,7 +64,7 @@ std::string ExecuteBasisu(const std::string& input_img, const std::string& out_d
     tex_meta.close();
 
     // Return the relative filename for serialization in materials
-    return base_name + ".ktx2";
+    return "../../textures/" + base_name + ".ktx2";
 }
 
 int main(int argc, char** argv) {
@@ -68,10 +75,23 @@ int main(int argc, char** argv) {
 
     std::string input_file = argv[1];
     fs::path in_path(input_file);
-    std::string out_dir = (argc >= 3) ? argv[2] : in_path.parent_path().string();
+    std::string out_dir = (argc >= 3 && argv[2][0] != '-') ? argv[2] : in_path.parent_path().string();
     if (out_dir.empty()) out_dir = ".";
     
-    fs::create_directories(out_dir);
+    float scale_x = 1.0f, scale_y = 1.0f, scale_z = 1.0f;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "-scale" && i + 3 < argc) {
+            scale_x = std::stof(argv[i+1]);
+            scale_y = std::stof(argv[i+2]);
+            scale_z = std::stof(argv[i+3]);
+            i += 3;
+        }
+    }
+    
+    fs::create_directories(fs::path(out_dir) / "models");
+    fs::create_directories(fs::path(out_dir) / "models" / "materials");
+    fs::create_directories(fs::path(out_dir) / "textures");
 
     std::string base_name = in_path.stem().string();
     std::string output_msh = (fs::path(out_dir) / (base_name + ".msh")).string();
@@ -173,8 +193,8 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < model.materials.size(); ++i) {
         auto& mat = model.materials[i];
         std::string mat_name = mat.name.empty() ? (base_name + "_mat_" + std::to_string(i)) : mat.name;
-        std::string output_mat = (fs::path(out_dir) / (mat_name + ".mat")).string();
-        cooked_materials.push_back(mat_name + ".mat");
+        std::string output_mat = (fs::path(out_dir) / "models" / "materials" / (mat_name + ".mat")).string();
+        cooked_materials.push_back("materials/" + mat_name + ".mat");
 
         std::ofstream mat_file(output_mat);
         mat_file << "{\n";
@@ -277,7 +297,8 @@ int main(int argc, char** argv) {
     int defaultScene = model.defaultScene > -1 ? model.defaultScene : 0;
     const tinygltf::Scene& scene = model.scenes[defaultScene];
 
-    std::string scene_path = (fs::path(out_dir) / (base_name + ".scene.json")).string();
+    fs::create_directories(fs::path(out_dir) / "scenes");
+    std::string scene_path = (fs::path(out_dir) / "scenes" / (base_name + ".scene.json")).string();
     std::ofstream scene_file(scene_path);
     scene_file << "{\n  \"version\": 1,\n";
     scene_file << "  \"passes\": [\n";
@@ -434,7 +455,14 @@ int main(int argc, char** argv) {
         };
 
         Mat4 identity;
+        if (scale_x != 1.0f || scale_y != 1.0f || scale_z != 1.0f) {
+            identity.m[0] = scale_x;
+            identity.m[5] = scale_y;
+            identity.m[10] = scale_z;
+        }
         traverse(root_idx, identity);
+        
+        bool flip_winding = (scale_x * scale_y * scale_z) < 0.0f;
 
         if (extracted.empty()) continue;
 
@@ -444,7 +472,7 @@ int main(int argc, char** argv) {
 
         size_t total_indices = 0;
         
-        std::string output_mdl = (fs::path(out_dir) / (obj_name + ".mdl")).string();
+        std::string output_mdl = (fs::path(out_dir) / "models" / (obj_name + ".mdl")).string();
         std::ofstream mdl_file(output_mdl);
         mdl_file << "{\n  \"version\": 2,\n  \"parts\": [\n";
 
@@ -460,7 +488,7 @@ int main(int argc, char** argv) {
             p.max_x -= pivot_x; p.max_y -= pivot_y; p.max_z -= pivot_z;
 
             std::string msh_name = obj_name + "_part_" + std::to_string(i) + ".msh";
-            std::string msh_path = (fs::path(out_dir) / msh_name).string();
+            std::string msh_path = (fs::path(out_dir) / "models" / msh_name).string();
             
             std::ofstream out_file(msh_path, std::ios::binary);
             if (out_file) {
@@ -472,10 +500,16 @@ int main(int argc, char** argv) {
                 out_file.write((char*)&v_count, 4);
                 out_file.write((char*)&i_count, 4);
                 out_file.write((char*)&index_format, 4);
-                out_file.write((char*)p.v.data(), v_count * sizeof(Vertex));
-                out_file.write((char*)p.i.data(), i_count * 4);
+            if (flip_winding) {
+                for (size_t j = 0; j < p.i.size(); j += 3) {
+                    std::swap(p.i[j+1], p.i[j+2]);
+                }
             }
-            total_indices += p.i.size();
+            
+            out_file.write((char*)p.v.data(), v_count * sizeof(Vertex));
+            out_file.write((char*)p.i.data(), i_count * 4);
+        }
+        total_indices += p.i.size();
 
             mdl_file << "    { \"mesh\": \"" << msh_name << "\"";
             if (p.material_idx >= 0 && p.material_idx < cooked_materials.size()) {
@@ -494,9 +528,9 @@ int main(int argc, char** argv) {
         first_entity = false;
         scene_file << "    {\n";
         scene_file << "      \"name\": \"" << obj_name << "\",\n";
-        scene_file << "      \"source\": \"" << obj_name + ".mdl" << "\",\n";
+        scene_file << "      \"source\": \"" << "models/" << obj_name + ".mdl" << "\",\n";
         scene_file << "      \"position\": [" << pivot_x << ", " << pivot_y << ", " << pivot_z << "],\n";
-        scene_file << "      \"rotation\": [0, 0, 0],\n";
+        scene_file << "      \"rotation\": [0, 0, 0, 1],\n";
         scene_file << "      \"scale\": [1, 1, 1]\n";
         scene_file << "    }\n";
         
