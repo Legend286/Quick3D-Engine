@@ -97,10 +97,19 @@ public partial class AssetImportWindow : Window
             return;
         }
 
+        // basisu ships next to engine_cook in the published .app bundle
+        // (`Engine.app/Contents/MacOS/basisu` next to
+        // `Engine.app/Contents/MacOS/engine_cook`, per scripts/build-mac-app.sh
+        // stage 3). The most reliable resolution is "same dir as cookExe".
+        // Pre-resolve and pass --basisu-path so Cook doesn't have to guess
+        // through a 4-level ancestor walk that doesn't match bundle layout.
+        string basisuPath = Path.Combine(Path.GetDirectoryName(cookExe) ?? string.Empty, "basisu");
+        string basisuFlag = File.Exists(basisuPath) ? $" --basisu-path \"{basisuPath}\"" : string.Empty;
+
         var processInfo = new ProcessStartInfo
         {
             FileName = cookExe,
-            Arguments = $"\"{vm.SourceFile}\" \"{targetDirectory}\" -scale {vm.ScaleX} {vm.ScaleY} {vm.ScaleZ}",
+            Arguments = $"\"{vm.SourceFile}\" \"{targetDirectory}\" -scale {vm.ScaleX} {vm.ScaleY} {vm.ScaleZ}{basisuFlag}",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
