@@ -37,7 +37,7 @@ public sealed class Ktx2LoaderTests
         byte[] uncomp = new byte[8]; // one solid-black BC1 block
 
         byte[] comp;
-        if (supercompressScheme == 3)
+        if (supercompressScheme == 2 || supercompressScheme == 3)
         {
             // Zstd compress via the explicit 2-arg Span overload that
             // returns int (bytes written). Verified to exist in
@@ -114,6 +114,28 @@ public sealed class Ktx2LoaderTests
         using var device = new RhiDevice();
         var path = Path.Combine(Path.GetTempPath(), $"forge_s0_{Guid.NewGuid():N}.ktx2");
         File.WriteAllBytes(path, ForgeBc14x4(supercompressScheme: 0));
+        try
+        {
+            using var tex = Ktx2Loader.Load(device, path);
+            Assert.NotNull(tex);
+            Assert.NotEqual(IntPtr.Zero, tex!.Handle);
+        }
+        finally { TryDeleteFile(path); }
+    }
+
+    [Fact]
+    public void Ktx2_ForgeScheme2ZstdAlias_LoadsIntoRhiTexture()
+    {
+        // Per the current Khronos KTX2 spec, supercompressionScheme=2 is a
+        // deprecated alias for scheme=3 (Zstandard). Real Cook output is
+        // currently scheme=2 because that is what `basisu -ktx2 -uastc`
+        // defaults to; the loader must accept it through the same Zstd
+        // decompression path as scheme=3.
+        if (!ProbeDevice()) return;
+
+        using var device = new RhiDevice();
+        var path = Path.Combine(Path.GetTempPath(), $"forge_s2_{Guid.NewGuid():N}.ktx2");
+        File.WriteAllBytes(path, ForgeBc14x4(supercompressScheme: 2));
         try
         {
             using var tex = Ktx2Loader.Load(device, path);

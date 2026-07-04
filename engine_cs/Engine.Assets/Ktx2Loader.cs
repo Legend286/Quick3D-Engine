@@ -18,11 +18,15 @@
 //
 // Supercompression support:
 //   scheme=0  → Uncompressed block data; uploaded directly via UploadMip.
-//   scheme=3  → Zstandard supercompression; each mip's level index entry
-//               holds its own compressed + uncompressed sizes, so we
-//               Zstd-decompress per mip before upload. This is what the
-//               `Cook` step emits when it runs `basisu -ktx2 -uastc`, which
-//               targets ASTC blocks and Zstd-supercompresses them by default.
+//   scheme=2  → Zstandard supercompression using the legacy Khronos identifier
+//               (the value that current `basisu -ktx2 -uastc` defaults to).
+//               Per the current Khronos KTX2 spec, scheme=2 is defined as a
+//               deprecated alias for scheme=3 and decoded identically. We
+//               route it through the same Zstd path as scheme=3.
+//   scheme=3  → Zstandard supercompression (current Khronos identifier).
+//               Each mip's level index entry holds its own compressed +
+//               uncompressed sizes, so we Zstd-decompress per mip before
+//               upload.
 //   scheme=1  → Basis Universal ETC1S transcodable. Not supported here; the
 //               Cook avoids this path via `-uastc` (which targets ASTC blocks
 //               directly instead of going through the ETC1S path).
@@ -85,18 +89,17 @@ public static class Ktx2Loader
         uint supercompress = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(44, 4));
         uint indexOffset   = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(48, 4));
 
-        if (supercompress != 0 && supercompress != 3)
+        if (supercompress != 0 && supercompress != 2 && supercompress != 3)
         {
             string schemeName = supercompress switch
             {
                 1 => "BasisLZ (ETC1S transcodable)",
-                2 => "Zstandard (Khronos deprecated alias)",
                 _ => $"unknown ({supercompress})",
             };
             Error(
                 $"KTX2 supercompression={schemeName} not supported by this loader. " +
-                $"Re-encode with `basisu -ktx2 -uastc` so vkFormat is real and scheme=3 (Zstd), " +
-                $"or `-no_zstd` for scheme=0. file={path}",
+                $"Re-encode with `basisu -ktx2 -uastc` so vkFormat is a known block " +
+                $"format and supercompression is 0 (none) or 2/3 (Zstd). file={path}",
                 "KTX2Loader");
             return null;
         }
@@ -186,9 +189,11 @@ public static class Ktx2Loader
             {
                 try
                 {
-                    if (supercompress == 3)
+                    if (supercompress == 2 || supercompress == 3)
                     {
-                        // Zstd-supercompressed mip: decompress before upload.
+                        // Zstd-supercompressed mip (scheme=2 legacy Khronos
+                        // identifier OR scheme=3 current identifier): decompress
+                        // before upload.
                         byte[] uncomp = uncompressedLength > 0
                             ? new byte[uncompressedLength]
                             : new byte[byteLength * 4]; // defensive fallback
