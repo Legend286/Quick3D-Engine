@@ -18,7 +18,7 @@ engine_cook <input.glb|gltf> [out_dir] [-scale x y z] [--basisu-path <abs>]
 | `<input.glb\|gltf>` | Source model (positional, required). |
 | `[out_dir]` | Where to dump models/textures/scenes/materials. Default = `<input>`'s parent. |
 | `-scale x y z` | Multiply all vertex positions. Negative-axis scales flip triangle winding automatically. |
-| `--basisu-path <abs>` | Override the `basisu` binary location; see *basisu resolution* below. |
+| `--basisu-path <abs>` | Override the `basisu` binary location. AssetImportWindow passes this automatically when basisu ships alongside engine_cook in the published bundle. |
 
 ## Exit codes
 
@@ -35,12 +35,13 @@ engine_cook <input.glb|gltf> [out_dir] [-scale x y z] [--basisu-path <abs>]
 
 `engine_cook` does **not** assume `./out/basisu` exists relative to its CWD — most invocations come from the editor, whose CWD is the user's home or `<project>/`. Resolution order:
 
-1. `--basisu-path <abs>` CLI override.
-2. Self-discovery: 4-level ancestor walk from `realpath(argv[0])`. At each level, accept the candidate `<dir>/out/basisu` if either `<dir>/engine_cs/` exists (engine-root marker) OR `<dir>` ends in `out/` (cook shipped directly inside an `out/` subdir of the engine root).
-3. `$QUICK3D_ENGINE_ROOT/out/basisu`.
-4. `./out/basisu` CWD-relative legacy fallback (kept for direct shell use from `<engine>/`).
+1. `--basisu-path <abs>` CLI override. AssetImportWindow passes this automatically when basisu ships alongside engine_cook in the published `.app` bundle (see *Integration*).
+2. **Sibling of `argv[0]`** — `dirname(realpath(argv[0])) / "basisu"`. This is the canonical location for the bundled-editor case (`Engine.app/Contents/MacOS/basisu` next to `Engine.app/Contents/MacOS/engine_cook`), which the ancestor walk cannot reach because the bundle layout intentionally does not mirror the engine source tree.
+3. **Ancestor walk** — up to 4 levels up from `realpath(argv[0])`. At each level, accept `<dir>/out/basisu` if either `<dir>/engine_cs/` exists (engine-root marker) OR `<dir>` ends in `out/` (cook shipped directly inside an engine-root `out/` subdir). Covers direct shell invocations from the engine source tree.
+4. `$QUICK3D_ENGINE_ROOT/out/basisu` (env hint; useful for CI / sandboxed packaging).
+5. `./out/basisu` CWD-relative legacy fallback (kept for direct shell use from `<engine>/`).
 
-If all four fail, `engine_cook` exits with status 2 and prints the resolution ladder to `stderr`. Note that `--basisu-path` is passed through `/bin/sh -c` by `std::system`, so shell metacharacters in the path are honored — it is a developer CLI trusting that input.
+If all five fail, `engine_cook` exits with status 2 and prints the resolution ladder to `stderr`. Note that `--basisu-path` is passed through `/bin/sh -c` by `std::system`, so shell metacharacters in the path are honored — it is a developer CLI trusting that input.
 
 ## Verify-before-sidecar
 
@@ -54,7 +55,12 @@ Every early-exit path in `main()` (status 1 GLTF load, status 2 basisu unresolva
 
 ## Integration
 
-Cook is invoked by the editor's `AssetImportWindow`. The editor does not need to know the basisu path — Cook self-discovers from where the editor's `engine_cook` binary lives in `<engine>/out/`.
+Cook is invoked by the editor's `AssetImportWindow`, which:
+
+1. Walks up from `AppDomain.BaseDirectory` looking for `engine_cook` (with or without an `out/` parent) until it finds the binary, **then** derives `basisuPath = Path.GetDirectoryName(cookExe) + "/basisu"`.
+2. Passes `--basisu-path "<absolute-derived-path>"` to Cook when that sibling exists. With this flag, Cook's resolution ladder returns at step 1 without further work. (If the sibling is absent in some custom deployment, Cook falls back to the ancestor walk + env var.)
+
+This is the canonical resolution path for the published `.app` bundle (per `scripts/build-mac-app.sh` stage 3, which copies both `engine_cook` and `basisu` into `Contents/MacOS/`). Cook's own resolution ladder remains authoritative so a developer running `engine_cook` directly from the editor source tree still gets a working import without the editor's help.
 
 ## Future
 
