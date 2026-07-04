@@ -77,7 +77,14 @@ public sealed class Ktx2LoaderTests
         BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(36, 4), 1);  // faceCount
         BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(40, 4), levelCount);
         BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(44, 4), supercompressScheme);
+        // Per Khronos spec offset 48 is keyValueByteOffset; offset 64 is
+        // firstLevelOffset. Write 80 to BOTH so the level-index path is
+        // exercised (legacy loader happened to read offset 48 as
+        // indexOffset; new loader reads offset 64 as firstLevelOffset; both
+        // happen to be 80 here so this fixture works across both code
+        // generations).
         BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(48, 4), indexOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(64, 4), indexOffset);
 
         BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan((int)indexOffset, 8), dataOffset);
         BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan((int)(indexOffset + 8), 8), (ulong)comp.Length);

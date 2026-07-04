@@ -90,12 +90,18 @@ public static class Ktx2Loader
         }
 
         var span = bytes.AsSpan();
-        uint vkFormat      = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(12, 4));
-        uint pixelWidth    = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(20, 4));
-        uint pixelHeight   = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(24, 4));
-        uint levelCount    = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(40, 4));
-        uint supercompress = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(44, 4));
-        uint indexOffset   = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(48, 4));
+        uint vkFormat        = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(12, 4));
+        uint pixelWidth      = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(20, 4));
+        uint pixelHeight     = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(24, 4));
+        uint levelCount      = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(40, 4));
+        uint supercompress   = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(44, 4));
+        uint kvByteOffset    = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(48, 4));
+        uint kvByteLength    = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(52, 4));
+        uint dfdByteOffset   = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(56, 4));
+        uint dfdByteLength   = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(60, 4));
+        uint firstLevelOffset = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(64, 4));
+        uint sgdByteOffset   = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(68, 4));
+        uint sgdByteLength   = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(72, 4));
 
         if (supercompress != 0 && supercompress != 2 && supercompress != 3)
         {
@@ -140,8 +146,6 @@ public static class Ktx2Loader
         //      Universal" substring anywhere in the first 64 bytes so
         //      arbitrary files that happen to contain 0xA6 elsewhere
         //      don't false-positive standard-conformance.
-        uint dfdByteOffset = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(56, 4));
-        uint dfdByteLength = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(60, 4));
         RhiNative.TextureFormat rhiFormat;
         string fmtName;
 
@@ -197,25 +201,46 @@ public static class Ktx2Loader
 
         // Level index entries are 24 bytes each
         // (byteOffset u64, byteLength u64, uncompressedByteLength u64).
-        // For supercompressionScheme=3 the level index is mandatory per the
-        // KTX2 spec; for scheme=0 it MAY be omitted.
-        ulong dataStart = 80;
-        bool hasIndexTable = indexOffset >= 80 && (indexOffset + levelCount * 24) <= (ulong)bytes.Length;
+        // Per Khronos spec the table starts at `firstLevelOffset` (header
+        // bytes 64-67). basisu v2.10 writes `firstLevelOffset=0` and omits
+        // the index entirely; in that case we compute `dataStart` as the
+        // first byte AFTER all metadata blocks (KVD, DFD, SGD) in
+        // writer-defined order and decode a single contiguous Zstd stream
+        // for the only mip basisu produces.
+        ulong kvEnd  = (ulong)kvByteOffset + kvByteLength;
+        ulong dfdEnd = (ulong)dfdByteOffset + dfdByteLength;
+        ulong sgdEnd = (ulong)sgdByteOffset + sgdByteLength;
+        ulong dataStart = Math.Max(80UL, Math.Max(Math.Max(kvEnd, dfdEnd), sgdEnd));
+        bool hasIndexTable = firstLevelOffset >= 80
+            && firstLevelOffset + (ulong)levelCount * 24 <= (ulong)bytes.Length;
 
         for (uint level = 0; level < levelCount; ++level)
         {
             ulong byteOffset = 0, byteLength = 0, uncompressedLength = 0;
             if (hasIndexTable)
             {
-                int entryOffset = (int)(indexOffset + level * 24);
+                int entryOffset = (int)(firstLevelOffset + level * 24);
                 byteOffset         = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(entryOffset, 8));
                 byteLength         = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(entryOffset + 8, 8));
                 uncompressedLength = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(entryOffset + 16, 8));
             }
             else
             {
+                // basisu v2.10 no-index fallback: assume single-mip
+                // (basisu does not write mip chains) and span the rest of
+                // the file as one Zstd stream. Multi-mip files without an
+                // explicit index can't safely be parsed — reject those.
+                if (levelCount > 1)
+                {
+                    Error(
+                        $"KTX2 firstLevelOffset=0 (no level index) but levelCount={levelCount}; multi-mip without explicit per-mip offsets cannot be parsed safely. The Cook invoked a writer that didn't emit a level index; bump `basis_universal` to a spec-conformant version. file={path}",
+                        "KTX2Loader");
+                    tex.Dispose();
+                    return null;
+                }
                 byteOffset = dataStart;
-                byteLength = ComputeLevelSize(
+                byteLength = (ulong)bytes.Length - dataStart;
+                uncompressedLength = ComputeLevelSize(
                     Math.Max(1, pixelWidth  >> (int)level),
                     Math.Max(1, pixelHeight >> (int)level),
                     blockInfo);
@@ -250,13 +275,24 @@ public static class Ktx2Loader
                     {
                         // Zstd-supercompressed mip (scheme=2 legacy Khronos
                         // identifier OR scheme=3 current identifier): decompress
-                        // before upload.
-                        byte[] uncomp = uncompressedLength > 0
-                            ? new byte[uncompressedLength]
-                            : new byte[byteLength * 4]; // defensive fallback
+                        // before upload. uncompressedByteLength is sourced
+                        // from the level index entry (standard path) or
+                        // computed via ComputeLevelSize (basisu fallback),
+                        // so it's always set when we get here. Reject
+                        // unrealised zero lengths loudly rather than
+                        // silently allocating a wrong-size buffer.
+                        if (uncompressedLength == 0)
+                        {
+                            Error(
+                                $"KTX2 Zstd level {level}: uncompressedByteLength=0; index entry or fallback math is wrong. file={path}",
+                                "KTX2Loader");
+                            tex.Dispose();
+                            return null;
+                        }
+                        byte[] uncomp = new byte[uncompressedLength];
                         using var dec = new Decompressor();
                         int written = dec.Unwrap(span.Slice((int)byteOffset, (int)byteLength), uncomp);
-                        if (uncompressedLength > 0 && (ulong)written != uncompressedLength)
+                        if ((ulong)written != uncompressedLength)
                         {
                             Error(
                                 $"KTX2 Zstd level {level}: decompressed size {written} ≠ expected {uncompressedLength}. file={path}",
