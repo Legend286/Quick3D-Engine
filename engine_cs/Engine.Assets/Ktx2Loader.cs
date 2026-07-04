@@ -102,16 +102,41 @@ public static class Ktx2Loader
             return null;
         }
 
+        // VK_FORMAT_UNDEFINED (vkFormat=0) + a DFD pointing at a UASTC
+        // colorModel is the Khronos KTX2 convention for Basis Universal
+        // transcodable UASTC. This is what `basisu -ktx2 -uastc` v2.10
+        // actually writes for our build: vkFormat=0 paired with a DFD
+        // containing colorModel=166 in DFDword2.byte0 (i.e. file byte
+        // offset dfdByteOffset + 8). The 16-byte UASTC blocks are
+        // ASTC_4x4-compatible on any GPU with ASTC support, so we route
+        // the format-id 157 (VK_FORMAT_ASTC_4x4_UNORM_BLOCK) through the
+        // canonical RhiTexture.FromKhronosFormat mapping — keeping the
+        // per-byte Khronos-format-registry table as the single source of
+        // truth — and rename fmtName so logs reflect the UASTC source.
+        // For everything else (no DFD, or colorModel indicating ETC1S /
+        // HDR / etc.) we reject with the actionable diagnostic.
+        uint dfdByteOffset = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(52, 4));
+        RhiNative.TextureFormat rhiFormat;
+        string fmtName;
+
         if (vkFormat == 0)
         {
-            string recipe = supercompress == 1
-                ? "vkFormat=0 + supercompression=1 (BasisLZ/ETC1S) means Cook most likely treated the source as ETC1S instead of UASTC. Re-import the source asset through the editor's Asset Import; if the same error returns, examine Cook/main.cpp::ExecuteBasisu to confirm `-uastc` is in the basisu invocation. Delete any stale .ktx2 / .tex on disk before re-importing so the new Cook writes fresh."
-                : "vkFormat=0 is the Khronos VK_FORMAT_UNDEFINED sentinel — no GPU API can decode it. Re-import the source asset through the editor's Asset Import; if the same error returns, examine Cook/main.cpp::ExecuteBasisu to confirm `-uastc` is in the basisu invocation. Delete any stale .ktx2 / .tex on disk before re-importing so the new Cook writes fresh.";
-            Error($"KTX2 vkFormat=VK_FORMAT_UNDEFINED (0) is not mappable to an RHI block format. {recipe} The single source of truth for supported Khronos ids is RhiTexture.FromKhronosFormat. file={path}", "KTX2Loader");
-            return null;
+            if (dfdByteOffset > 0 && dfdByteOffset + 8 < (ulong)bytes.Length
+                && bytes[(int)dfdByteOffset + 8] == 166) // KHR_DF_MODEL_UASTC
+            {
+                RhiTexture.FromKhronosFormat(157, out rhiFormat, out fmtName);
+                fmtName = "UASTC_4x4 (DFD colorModel=166)";
+            }
+            else
+            {
+                string recipe = supercompress == 1
+                    ? "vkFormat=0 + supercompression=1 (BasisLZ/ETC1S) means Cook most likely treated the source as ETC1S instead of UASTC. Re-import the source asset through the editor's Asset Import; if the same error returns, examine Cook/main.cpp::ExecuteBasisu to confirm `-uastc` is in the basisu invocation. Delete any stale .ktx2 / .tex on disk before re-importing so the new Cook writes fresh."
+                    : "vkFormat=0 with no DFD colorModel=166 UASTC marker means this is either an ETC1S transcodable file (rejected) or a malformed cook. The single source of truth for supported Khronos ids is RhiTexture.FromKhronosFormat (per-byte map); UASTC recovery is via the DFD colorModel=166 clause above. Re-import the source asset / delete stale sidecars before re-importing.";
+                Error($"KTX2 vkFormat=VK_FORMAT_UNDEFINED (0) is not mapped to an RHI block format. {recipe} file={path}", "KTX2Loader");
+                return null;
+            }
         }
-
-        if (!RhiTexture.FromKhronosFormat(vkFormat, out var rhiFormat, out string fmtName))
+        else if (!RhiTexture.FromKhronosFormat(vkFormat, out rhiFormat, out fmtName))
         {
             Error($"KTX2 has unsupported vkFormat={vkFormat} (file={path}). Add a mapping in RhiTexture.FromKhronosFormat.", "KTX2Loader");
             return null;

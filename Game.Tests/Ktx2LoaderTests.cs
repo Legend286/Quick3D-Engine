@@ -205,20 +205,122 @@ public sealed class Ktx2LoaderTests
     [Fact]
     public void Ktx2_VkFormatUndefined_ReturnsNull()
     {
-        // vkFormat=0 (VK_FORMAT_UNDEFINED) with supercompression=2 hits the
-        // loader's actionable diagnostic: it points the caller at the
-        // canonical mapping table RhiTexture.FromKhronosFormat and tells
-        // them to re-import through the editor's Asset Import (which runs
-        // `engine_cook` → `basisu -ktx2 -uastc`) so the file lands on a
-        // real block-format id, plus to delete any stale .ktx2 / .tex on
-        // disk so a fresh Cook writes clean. The Cook should not emit
-        // VK_FORMAT_UNDEFINED; if it does, the loader must refuse the file
-        // rather than silently rendering black/glitched texturing.
+        // vkFormat=0 with NO DFD colorModel=166 marker is rejected: the
+        // loader surfaces the actionable diagnostic that points the caller
+        // at RhiTexture.FromKhronosFormat and the Asset Import recipe.
         if (!ProbeDevice()) return;
 
         using var device = new RhiDevice();
         var path = Path.Combine(Path.GetTempPath(), $"vkfmt_undef_s2_{Guid.NewGuid():N}.ktx2");
         File.WriteAllBytes(path, ForgeBc14x4WithVkFormat(vkFormat: 0, supercompressScheme: 2));
+        try
+        {
+            Assert.Null(Ktx2Loader.Load(device, path));
+        }
+        finally { TryDeleteFile(path); }
+    }
+
+    /// <summary>
+    /// Forge a 4x4 KTX2 with vkFormat=0 (VK_FORMAT_UNDEFINED) and a DFD
+    /// payload at offset 80 whose colorModel byte (DFDword2.byte0) is the
+    /// given value. Mirrors what `basisu -ktx2 -uastc` actually writes in
+    /// our v2.10 build: vkFormat=0 paired with a real DFD that names the
+    /// block format by colorModel. Used to exercise the loader's DFD-driven
+    /// recovery path.
+    /// </summary>
+    private static byte[] ForgeDfdKtx2(uint supercompressScheme, byte colorModel)
+    {
+        const uint width = 4, height = 4, levelCount = 1;
+        const uint indexOffset = 0;
+        const uint dfdOffset = 80;
+        const uint dfdByteLength = 12;
+        const uint kvOffset = 0;
+        const uint kvLength = 0;
+        const uint vkFormat = 0; // VK_FORMAT_UNDEFINED — recovered via DFD
+
+        var dfd = new byte[]
+        {
+            0x00, 0x00, 0x00, 0x00, // DFDword0 (vendorId=0, descriptorType=KHR_DF=0)
+            0x00, 0x00, 0x00, 0x0C, // DFDword1 (version=0, descriptorBlockSize=12)
+            colorModel, 0x00, 0x00, 0x00, // DFDword2 (the byte our loader reads)
+        };
+
+        // ASTC 4x4 RGBA block = 16 bytes. Real UASTC-encoded blocks land here;
+        // for the test we just want the upload path to receive the right
+        // byte-length and stride; we don't inspect decoded pixel values.
+        byte[] uncomp = new byte[16];
+
+        byte[] comp;
+        if (supercompressScheme == 2 || supercompressScheme == 3)
+        {
+            byte[] dest = new byte[uncomp.Length + 64];
+            using var compressor = new Compressor();
+            int written = compressor.Wrap(uncomp.AsSpan(), dest.AsSpan());
+            Assert.True(written > 0, $"Zstd compressor wrote {written} bytes (expected > 0)");
+            comp = new byte[written];
+            Buffer.BlockCopy(dest, 0, comp, 0, written);
+        }
+        else
+        {
+            comp = uncomp;
+        }
+
+        ulong dataOffset = (ulong)(dfdOffset + dfdByteLength);
+        var result = new byte[(int)(dataOffset + (ulong)comp.Length)];
+
+        Buffer.BlockCopy(Ktx2Ident, 0, result, 0, 12);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(12, 4), vkFormat);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(16, 4), 1);  // typeSize
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(20, 4), width);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(24, 4), height);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(28, 4), 0);  // pixelDepth
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(32, 4), 0);  // layerCount
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(36, 4), 1);  // faceCount
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(40, 4), levelCount);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(44, 4), supercompressScheme);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(48, 4), indexOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(52, 4), dfdOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(56, 4), dfdByteLength);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(60, 4), kvOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(64, 4), kvLength);
+
+        Buffer.BlockCopy(dfd, 0, result, (int)dfdOffset, dfd.Length);
+        Buffer.BlockCopy(comp, 0, result, (int)dataOffset, comp.Length);
+        return result;
+    }
+
+    [Fact]
+    public void Ktx2_DfdUastcColorModel_LoadsIntoRhiTexture()
+    {
+        // Reproduces the basisu v2.10 cooked output: vkFormat=0 + a DFD with
+        // colorModel=166 (KHR_DF_MODEL_UASTC) + supercompression=2 (Zstd).
+        // Loader must recover to Astc4x4UnormBlock via the DFD clause and
+        // upload the (Zstd-decompressed) mip into a real RhiTexture.
+        if (!ProbeDevice()) return;
+
+        using var device = new RhiDevice();
+        var path = Path.Combine(Path.GetTempPath(), $"dfd_uastc_{Guid.NewGuid():N}.ktx2");
+        File.WriteAllBytes(path, ForgeDfdKtx2(supercompressScheme: 2, colorModel: 166));
+        try
+        {
+            using var tex = Ktx2Loader.Load(device, path);
+            Assert.NotNull(tex);
+            Assert.NotEqual(IntPtr.Zero, tex!.Handle);
+        }
+        finally { TryDeleteFile(path); }
+    }
+
+    [Fact]
+    public void Ktx2_DfdNonUastcColorModel_ReturnsNull()
+    {
+        // colorModel values other than 166 (e.g. 163 = ETC1S, 0 = unrecognised)
+        // must still be rejected — they require a Basis Universal transcoder
+        // the runtime does not implement.
+        if (!ProbeDevice()) return;
+
+        using var device = new RhiDevice();
+        var path = Path.Combine(Path.GetTempPath(), $"dfd_etc1s_{Guid.NewGuid():N}.ktx2");
+        File.WriteAllBytes(path, ForgeDfdKtx2(supercompressScheme: 2, colorModel: 163));
         try
         {
             Assert.Null(Ktx2Loader.Load(device, path));
