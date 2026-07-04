@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // KTX2 file parser for compressed GPU textures.
 //
-// KTX2 header (see Khronos KTX-Specification for full details):
+// KTX2 v2 header layout (per Khronos KTX-Specification):
 //   bytes 0-11  : Identifier (12 bytes)
 //   bytes 12-15 : vkFormat (uint32, Vulkan format enum)
 //   bytes 16-19 : typeSize  (always 1 for color images)
@@ -12,9 +12,19 @@
 //   bytes 36-39 : faceCount  (1 = cubemap face)
 //   bytes 40-43 : levelCount (mip levels)
 //   bytes 44-47 : supercompressionScheme (0=None, 1=BasisLZ, 3=Zstd)
-//   bytes 48-51 : index (byte offset to level index, often 80)
-//   ...
-//   bytes 80    : level index (levelCount entries, each 24 bytes: byteOffset, byteLength, uncompressedByteLength)
+//   bytes 48-51 : keyValueByteOffset      (0 when no key-value data)
+//   bytes 52-55 : keyValueByteLength
+//   bytes 56-59 : dataFormatDescriptorByteOffset (= 0 when no DFD)
+//   bytes 60-63 : dataFormatDescriptorByteLength
+//   bytes 64-67 : firstLevelOffset        (level index, 0 = extends past KVD/DFD/SGD)
+//   bytes 68-71 : supercompressionGlobalDataByteOffset
+//   bytes 72-75 : supercompressionGlobalDataByteLength
+//   bytes 76-79 : header padding
+//   bytes 80+   : KVD / DFD / level index / level data, in writer-defined order
+// See https://registry.khronos.org/KTX/specs/2.0/ktxspec.v2.html for the
+// full header spec. basisu's KTX writer conforms to the field positions
+// but uses a non-standard DFD payload (no KHR_DF colorModel byte, only a
+// vendor string) — see vkFormat==0 DFD recovery branch below.
 //
 // Supercompression support:
 //   scheme=0  → Uncompressed block data; uploaded directly via UploadMip.
@@ -102,27 +112,42 @@ public static class Ktx2Loader
             return null;
         }
 
-        // VK_FORMAT_UNDEFINED (vkFormat=0) + a DFD pointing at a UASTC
-        // colorModel is the Khronos KTX2 convention for Basis Universal
-        // transcodable UASTC. This is what `basisu -ktx2 -uastc` v2.10
-        // actually writes for our build: vkFormat=0 paired with a DFD
-        // containing colorModel=166 in DFDword2.byte0 (i.e. file byte
-        // offset dfdByteOffset + 8). The 16-byte UASTC blocks are
-        // ASTC_4x4-compatible on any GPU with ASTC support, so we route
-        // the format-id 157 (VK_FORMAT_ASTC_4x4_UNORM_BLOCK) through the
-        // canonical RhiTexture.FromKhronosFormat mapping — keeping the
-        // per-byte Khronos-format-registry table as the single source of
-        // truth — and rename fmtName so logs reflect the UASTC source.
-        // For everything else (no DFD, or colorModel indicating ETC1S /
-        // HDR / etc.) we reject with the actionable diagnostic.
-        uint dfdByteOffset = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(52, 4));
+        // VK_FORMAT_UNDEFINED (vkFormat=0) + a DFD that resolves to UASTC
+        // is the Khronos KTX2 convention for Basis Universal transcodable
+        // UASTC. `basisu -ktx2 -uastc` writes this shape because UASTC is
+        // fundamentally a transcoder container; the 16-byte UASTC blocks
+        // are ASTC 4x4-compatible on any GPU with ASTC support, so we
+        // recover to that physical block format (id 157,
+        // VK_FORMAT_ASTC_4x4_UNORM_BLOCK) rather than failing the load.
+        // The Khronos-format-registry table stays the single source of
+        // truth (RhiTexture.FromKhronosFormat maps id 157 to
+        // Astc4x4UnormBlock); we override fmtName so any downstream log
+        // identifies the UASTC source.
+        //
+        // DFD detection accepts both shapes the engine sees in practice:
+        //   1. Standard-conformant writers + future basisu — any byte
+        //      == 0xA6 (KHR_DF_MODEL_UASTC) anywhere in
+        //      [dfd_off, dfd_off+dfd_len). The Khronos spec puts
+        //      colorModel at DFD+8; basisu ≥ v2.10 emits additional
+        //      vendor-prefix bytes that shift this to DFD+12 (see the
+        //      pan::_kh_df instruction block). The DFD is small
+        //      (typ. 32-128 bytes) so scanning the whole block is free.
+        //   2. basisu v2.10's non-conformant DFD where the first 4 bytes
+        //      are `1f 00 00 00` (descriptorBlockSize-1 length prefix
+        //      per KHR_DF_BLOCK) immediately followed by the ASCII vendor
+        //      string "KTXwriter\0Basis Universal <version>\0". We
+        //      require BOTH the "KTXw" prefix at DFD+4 AND a "Basis
+        //      Universal" substring anywhere in the first 64 bytes so
+        //      arbitrary files that happen to contain 0xA6 elsewhere
+        //      don't false-positive standard-conformance.
+        uint dfdByteOffset = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(56, 4));
+        uint dfdByteLength = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(60, 4));
         RhiNative.TextureFormat rhiFormat;
         string fmtName;
 
         if (vkFormat == 0)
         {
-            if (dfdByteOffset > 0 && dfdByteOffset + 8 < (ulong)bytes.Length
-                && bytes[(int)dfdByteOffset + 8] == 166) // KHR_DF_MODEL_UASTC
+            if (IsUastcDfd(span, dfdByteOffset, dfdByteLength))
             {
                 RhiTexture.FromKhronosFormat(157, out rhiFormat, out fmtName);
                 fmtName = "UASTC_4x4 (DFD colorModel=166)";
@@ -131,7 +156,7 @@ public static class Ktx2Loader
             {
                 string recipe = supercompress == 1
                     ? "vkFormat=0 + supercompression=1 (BasisLZ/ETC1S) means Cook most likely treated the source as ETC1S instead of UASTC. Re-import the source asset through the editor's Asset Import; if the same error returns, examine Cook/main.cpp::ExecuteBasisu to confirm `-uastc` is in the basisu invocation. Delete any stale .ktx2 / .tex on disk before re-importing so the new Cook writes fresh."
-                    : "vkFormat=0 with no DFD colorModel=166 UASTC marker means this is either an ETC1S transcodable file (rejected) or a malformed cook. The single source of truth for supported Khronos ids is RhiTexture.FromKhronosFormat (per-byte map); UASTC recovery is via the DFD colorModel=166 clause above. Re-import the source asset / delete stale sidecars before re-importing.";
+                    : "vkFormat=0 with no DFD colorModel=166 (KHR_DF_MODEL_UASTC) marker and no basisu v2.10 'KTXwriter/Basis Universal' vendor identifier means the source is either an ETC1S transcodable file (rejected), a Basis Universal HDR / XUASTC variant not supported by the runtime, or a malformed cook. Re-import the source asset / delete stale sidecars before re-importing. The canonical Khronos-id table is Engine.RHI.RhiTexture.FromKhronosFormat.";
                 Error($"KTX2 vkFormat=VK_FORMAT_UNDEFINED (0) is not mapped to an RHI block format. {recipe} file={path}", "KTX2Loader");
                 return null;
             }
@@ -281,6 +306,51 @@ public static class Ktx2Loader
     {
         uint blocksW = Math.Max(1u, (levelW + block.BlockWidth - 1) / block.BlockWidth);
         return blocksW * block.BytesPerBlock;
+    }
+
+    private const byte KhronosModelUastc = 0xA6; // KHR_DF_MODEL_UASTC = 166
+
+    /// <summary>
+    /// Returns true if <paramref name="span"/>'s Data Format Descriptor
+    /// block at <c>[dfdByteOffset, dfdByteOffset+dfdByteLength)</c> names
+    /// the underlying texture as UASTC (a Basis Universal container
+    /// that transcodes to ASTC 4x4). The detection accepts both
+    /// standard-conformant writers and basisu v2.10+'s non-conformant
+    /// "KTXwriter\0Basis Universal" vendor string. See the format-detection
+    /// rationale in this loader's header block.
+    /// </summary>
+    private static bool IsUastcDfd(ReadOnlySpan<byte> span, uint dfdByteOffset, uint dfdByteLength)
+    {
+        if (dfdByteOffset == 0 || dfdByteLength == 0) return false;
+        if ((ulong)dfdByteOffset + dfdByteLength > (ulong)span.Length) return false;
+
+        var dfd = span.Slice((int)dfdByteOffset, (int)dfdByteLength);
+
+        // Path 1: Khronos-spec colorModel byte at any DFD offset.
+        foreach (var b in dfd)
+        {
+            if (b == KhronosModelUastc) return true;
+        }
+
+        // Path 2: basisu v2.10 non-conformant DFD — descriptorBlockSize-1
+        // length prefix immediately followed by ASCII "KTXwriter\0Basis
+        // Universal <ver>\0". Require both the "KTXw" 4-byte prefix at
+        // DFD+4 AND a "Basis Universal" substring in the first 64 bytes
+        // to avoid spurious acceptance of arbitrary files that happen to
+        // contain either pattern alone.
+        if (dfd.Length >= 8 &&
+            dfd[0] == 0x1F && dfd[1] == 0 && dfd[2] == 0 && dfd[3] == 0)
+        {
+            ReadOnlySpan<byte> ktxw = stackalloc byte[] { 0x4B, 0x54, 0x58, 0x77 }; // "KTXw"
+            if (dfd.Slice(4, 4).SequenceEqual(ktxw))
+            {
+                var head = dfd.Length > 64 ? dfd.Slice(0, 64) : dfd;
+                ReadOnlySpan<byte> basis = "Basis Universal"u8;
+                return head.IndexOf(basis) >= 0;
+            }
+        }
+
+        return false;
     }
 
 }

@@ -231,11 +231,14 @@ public sealed class Ktx2LoaderTests
     private static byte[] ForgeDfdKtx2(uint supercompressScheme, byte colorModel)
     {
         const uint width = 4, height = 4, levelCount = 1;
-        const uint indexOffset = 0;
-        const uint dfdOffset = 80;
-        const uint dfdByteLength = 12;
-        const uint kvOffset = 0;
-        const uint kvLength = 0;
+        // Place the level index at offset 80 (which the existing loader's
+        // legacy indexOffset field on header byte 48 happily reads) and put
+        // the DFD right after it at offset 104. This mirrors how a Khronos
+        // conformant writer partitions the metadata blocks while keeping
+        // the loader's existing index walk able to find the mip data.
+        uint indexOffset = 80;
+        uint dfdOffset = indexOffset + 24;
+        uint dfdByteLength = 12;
         const uint vkFormat = 0; // VK_FORMAT_UNDEFINED — recovered via DFD
 
         var dfd = new byte[]
@@ -278,11 +281,22 @@ public sealed class Ktx2LoaderTests
         BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(36, 4), 1);  // faceCount
         BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(40, 4), levelCount);
         BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(44, 4), supercompressScheme);
+        // Per Khronos spec offset 48 is keyValueByteOffset; the existing
+        // loader reads it as its legacy `indexOffset` field. Both happen
+        // to be 80 in this fixture so the loader's index lookup succeeds.
         BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(48, 4), indexOffset);
-        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(52, 4), dfdOffset);
-        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(56, 4), dfdByteLength);
-        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(60, 4), kvOffset);
-        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(64, 4), kvLength);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(52, 4), 0);  // keyValueByteLength
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(56, 4), dfdOffset); // dataFormatDescriptorByteOffset
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(60, 4), dfdByteLength);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(64, 4), 0);  // firstLevelOffset (no separate index per spec)
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(68, 4), 0);  // sgdByteOffset
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(72, 4), 0);  // sgdByteLength
+
+        // Level index entry for 1 mip at offset 80:
+        //   byteOffset u64, byteLength u64, uncompressedByteLength u64
+        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan((int)indexOffset, 8), dataOffset);
+        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan((int)(indexOffset + 8), 8), (ulong)comp.Length);
+        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan((int)(indexOffset + 16), 8), (ulong)uncomp.Length);
 
         Buffer.BlockCopy(dfd, 0, result, (int)dfdOffset, dfd.Length);
         Buffer.BlockCopy(comp, 0, result, (int)dataOffset, comp.Length);
@@ -292,15 +306,110 @@ public sealed class Ktx2LoaderTests
     [Fact]
     public void Ktx2_DfdUastcColorModel_LoadsIntoRhiTexture()
     {
-        // Reproduces the basisu v2.10 cooked output: vkFormat=0 + a DFD with
-        // colorModel=166 (KHR_DF_MODEL_UASTC) + supercompression=2 (Zstd).
-        // Loader must recover to Astc4x4UnormBlock via the DFD clause and
-        // upload the (Zstd-decompressed) mip into a real RhiTexture.
+        // Standard Khronos-conformant shape: vkFormat=0 + a DFD with
+        // colorModel=166 (KHR_DF_MODEL_UASTC) at DFD+8 + supercompression=2.
+        // Loader must recover via the colorModel-scan branch in IsUastcDfd.
         if (!ProbeDevice()) return;
 
         using var device = new RhiDevice();
         var path = Path.Combine(Path.GetTempPath(), $"dfd_uastc_{Guid.NewGuid():N}.ktx2");
         File.WriteAllBytes(path, ForgeDfdKtx2(supercompressScheme: 2, colorModel: 166));
+        try
+        {
+            using var tex = Ktx2Loader.Load(device, path);
+            Assert.NotNull(tex);
+            Assert.NotEqual(IntPtr.Zero, tex!.Handle);
+        }
+        finally { TryDeleteFile(path); }
+    }
+
+    /// <summary>
+    /// Forge a 4x4 KTX2 with vkFormat=0 and a basisu v2.10 non-conformant
+    /// DFD payload (length-prefix `1f 00 00 00` followed by ASCII
+    /// "KTXwriter\0Basis Universal 2.10\0"). Mirrors exactly what
+    /// `basisu -ktx2 -uastc` writes to disk in our current build, and
+    /// drives the vendor-string detection branch of IsUastcDfd. The
+    /// level index entry is placed at offset 80 followed by the DFD
+    /// block (right after) so the loader's existing level-index walk
+    /// can find it.
+    /// </summary>
+    private static byte[] ForgeBasisuV210Ktx2(uint supercompressScheme)
+    {
+        const uint width = 4, height = 4, levelCount = 1;
+        const uint indexOffset = 80;
+        const uint dfdOffset = 80 + 24;
+        const string writerString = "KTXwriter\0Basis Universal 2.10\0";
+        var dfd = new List<byte>();
+        dfd.Add(0x1F); dfd.Add(0); dfd.Add(0); dfd.Add(0); // basisu descriptorBlockSize-1 prefix
+        foreach (var c in writerString) dfd.Add((byte)c);
+        dfd.Add(0); dfd.Add(0); // pad to 4-byte alignment — basisu writes 36-byte DFD total
+        var dfdBytes = dfd.ToArray();
+
+        // ASTC 4x4 block = 16 bytes. For the test we just need the upload
+        // path to receive some bytes; we don't inspect decoded pixels.
+        byte[] uncomp = new byte[16];
+        byte[] comp;
+        if (supercompressScheme == 2 || supercompressScheme == 3)
+        {
+            byte[] dest = new byte[uncomp.Length + 64];
+            using var compressor = new Compressor();
+            int written = compressor.Wrap(uncomp.AsSpan(), dest.AsSpan());
+            Assert.True(written > 0, $"Zstd compressor wrote {written} bytes (expected > 0)");
+            comp = new byte[written];
+            Buffer.BlockCopy(dest, 0, comp, 0, written);
+        }
+        else { comp = uncomp; }
+
+        ulong dataOffset = (ulong)(dfdOffset + dfdBytes.Length);
+        var result = new byte[(int)(dataOffset + (ulong)comp.Length)];
+
+        Buffer.BlockCopy(Ktx2Ident, 0, result, 0, 12);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(12, 4), 0);                 // vkFormat = VK_FORMAT_UNDEFINED
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(16, 4), 1);                 // typeSize
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(20, 4), width);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(24, 4), height);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(28, 4), 0);                 // pixelDepth
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(32, 4), 0);                 // layerCount
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(36, 4), 1);                 // faceCount
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(40, 4), levelCount);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(44, 4), supercompressScheme);
+        // Per Khronos spec offset 48 is keyValueByteOffset; the existing
+        // loader reads it as its legacy `indexOffset` field. Both happen
+        // to be 80 in this fixture so the loader's index lookup succeeds.
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(48, 4), indexOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(52, 4), 0);                 // kvByteLength
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(56, 4), dfdOffset);         // dataFormatDescriptorByteOffset
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(60, 4), (uint)dfdBytes.Length); // dataFormatDescriptorByteLength
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(64, 4), 0);                 // firstLevelOffset (legacy path: not used)
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(68, 4), 0);                 // sgdByteOffset
+        BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(72, 4), 0);                 // sgdByteLength
+
+        // Level index entry for 1 mip at offset 80 (24 bytes total):
+        //   byteOffset u64, byteLength u64, uncompressedByteLength u64
+        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan((int)indexOffset, 8), dataOffset);
+        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan((int)(indexOffset + 8), 8), (ulong)comp.Length);
+        BinaryPrimitives.WriteUInt64LittleEndian(result.AsSpan((int)(indexOffset + 16), 8), (ulong)uncomp.Length);
+
+        Buffer.BlockCopy(dfdBytes, 0, result, (int)dfdOffset, dfdBytes.Length);
+        Buffer.BlockCopy(comp, 0, result, (int)dataOffset, comp.Length);
+        return result;
+    }
+
+    [Fact]
+    public void Ktx2_DfdBasisuV210Writer_LoadsIntoRhiTexture()
+    {
+        // Reproduces the user's exact symptom: freshly-cooked .ktx2 from
+        // `basisu -ktx2 -uastc` v2.10, which writes the DFD slot with the
+        // vendor string "KTXwriter\0Basis Universal 2.10\0" rather than a
+        // Khronos KHR_DF colorModel byte. Loader must accept via the
+        // vendor-string detection branch in IsUastcDfd and route to
+        // Astc4x4UnormBlock via the canonical RhiTexture.FromKhronosFormat
+        // mapping.
+        if (!ProbeDevice()) return;
+
+        using var device = new RhiDevice();
+        var path = Path.Combine(Path.GetTempPath(), $"dfd_basisu210_{Guid.NewGuid():N}.ktx2");
+        File.WriteAllBytes(path, ForgeBasisuV210Ktx2(supercompressScheme: 2));
         try
         {
             using var tex = Ktx2Loader.Load(device, path);
