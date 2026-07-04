@@ -35,9 +35,10 @@ public sealed class Ktx2LoaderTests
     /// <summary>
     /// Generic KTX2 forge used by tests that need to pin an arbitrary
     /// Khronos format-registry id (vkFormat) AND a supercompression scheme.
-    /// The synthetic mip data is one solid-black BC1 block (8 bytes) — fine
-    /// when the test exercises a rejection path that never reaches upload
-    /// (e.g. vkFormat=0 → loader refuses before reading mip data).
+    /// — see Engine.RHI.RhiTexture.FromKhronosFormat for the full
+    /// supported-id set. The synthetic mip data is one solid-black BC1
+    /// block (8 bytes), fine for rejection-path tests (e.g. vkFormat=0 →
+    /// loader refuses before reading mip data).
     /// </summary>
     private static byte[] ForgeBc14x4WithVkFormat(uint vkFormat, uint supercompressScheme)
     {
@@ -205,12 +206,14 @@ public sealed class Ktx2LoaderTests
     public void Ktx2_VkFormatUndefined_ReturnsNull()
     {
         // vkFormat=0 (VK_FORMAT_UNDEFINED) with supercompression=2 hits the
-        // loader's actionable diagnostic: it points the caller at
-        // RhiTexture.FromKhronosVkFormat and tells them to re-cook with
-        // `basisu -ktx2 -uastc` so the file lands on a real block-format id.
-        // The Cook should not emit VK_FORMAT_UNDEFINED; if it does, the
-        // loader must refuse the file rather than silently rendering
-        // black/glitched texturing.
+        // loader's actionable diagnostic: it points the caller at the
+        // canonical mapping table RhiTexture.FromKhronosFormat and tells
+        // them to re-import through the editor's Asset Import (which runs
+        // `engine_cook` → `basisu -ktx2 -uastc`) so the file lands on a
+        // real block-format id, plus to delete any stale .ktx2 / .tex on
+        // disk so a fresh Cook writes clean. The Cook should not emit
+        // VK_FORMAT_UNDEFINED; if it does, the loader must refuse the file
+        // rather than silently rendering black/glitched texturing.
         if (!ProbeDevice()) return;
 
         using var device = new RhiDevice();

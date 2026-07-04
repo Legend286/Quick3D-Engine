@@ -85,6 +85,45 @@ public sealed class RhiTexture : IDisposable
         return new BlockInfo(w, h, b);
     }
 
+    /// <summary>
+    /// Translate a Khronos format-registry id (the integer used inside
+    /// KTX2, BASIS, and DDS file headers) into the engine's RHI-neutral
+    /// <see cref="RhiNative.TextureFormat"/> enum. Returns false when the
+    /// registry id has no RHI equivalent yet — caller decides whether to
+    /// log, fail the load, or fall back to a placeholder texture.
+    /// </summary>
+    /// <remarks>
+    /// Cross-platform note: the Khronos format-registry id space is the
+    /// universal file-format id across KTX2, BASIS, and DDS regardless of
+    /// which GPU API is in use at runtime (Metal/Vulkan/DX12). The table
+    /// below is the project's supported-id list. New formats are added
+    /// here when a backend implements them — backends and the file-loader
+    /// couple on this single switch rather than duplicating knowledge in
+    /// the loader. Master registry:
+    /// https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkFormat.html
+    /// (the registry is named after the Vulkan spec but applies uniformly
+    /// to every compatible backend).
+    /// </remarks>
+    public static bool FromKhronosFormat(uint formatId,
+                                         out RhiNative.TextureFormat rhiFormat,
+                                         out string name)
+    {
+        switch (formatId)
+        {
+            case 12:  rhiFormat = RhiNative.TextureFormat.Bc1RgbUnormBlock;   name = "BC1_RGB_UNORM";   return true;
+            case 14:  rhiFormat = RhiNative.TextureFormat.Bc1RgbaUnormBlock;  name = "BC1_RGBA_UNORM";  return true;
+            case 23:  rhiFormat = RhiNative.TextureFormat.Bc3UnormBlock;      name = "BC3_UNORM";       return true;
+            case 27:  rhiFormat = RhiNative.TextureFormat.Bc5UnormBlock;      name = "BC5_UNORM";       return true;
+            case 42:  rhiFormat = RhiNative.TextureFormat.Bc7UnormBlock;      name = "BC7_UNORM";       return true;
+            case 60:  rhiFormat = RhiNative.TextureFormat.Etc2Rgb8UnormBlock; name = "ETC2_RGB8_UNORM"; return true;
+            case 157: rhiFormat = RhiNative.TextureFormat.Astc4x4UnormBlock;  name = "ASTC_4x4_UNORM";  return true;
+            default:
+                rhiFormat = RhiNative.TextureFormat.Undefined;
+                name = "?";
+                return false;
+        }
+    }
+
     public static RhiTexture CreateDepth(RhiDevice device, uint w, uint h)
     {
         var desc = new RhiNative.TextureDesc

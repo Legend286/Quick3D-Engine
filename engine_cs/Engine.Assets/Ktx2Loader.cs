@@ -31,9 +31,9 @@
 //               Cook avoids this path via `-uastc` (which targets ASTC blocks
 //               directly instead of going through the ETC1S path).
 //
-// Format-registry mapping (Khronos VkFormat integers used as the KTX2/BASIS
-// file header identifier) is owned by the RHI module — see
-// Engine.RHI.RhiTexture.FromKhronosVkFormat. The loader does not duplicate
+// Format-registry mapping (Khronos format-registry ids used as the
+// KTX2/BASIS/DDS file-header identifier) is owned by the RHI module — see
+// Engine.RHI.RhiTexture.FromKhronosFormat. The loader does not duplicate
 // the table on purpose: the same Khronos registry applies to every GPU API
 // (Metal/Vulkan/DX12), so the mapping belongs in the RHI abstraction layer
 // rather than alongside any single backend's decode path.
@@ -107,13 +107,13 @@ public static class Ktx2Loader
             string recipe = supercompress == 1
                 ? "vkFormat=0 + supercompression=1 (BasisLZ/ETC1S) means Cook most likely treated the source as ETC1S instead of UASTC. Re-import the source asset through the editor's Asset Import; if the same error returns, examine Cook/main.cpp::ExecuteBasisu to confirm `-uastc` is in the basisu invocation. Delete any stale .ktx2 / .tex on disk before re-importing so the new Cook writes fresh."
                 : "vkFormat=0 is the Khronos VK_FORMAT_UNDEFINED sentinel — no GPU API can decode it. Re-import the source asset through the editor's Asset Import; if the same error returns, examine Cook/main.cpp::ExecuteBasisu to confirm `-uastc` is in the basisu invocation. Delete any stale .ktx2 / .tex on disk before re-importing so the new Cook writes fresh.";
-            Error($"KTX2 vkFormat=VK_FORMAT_UNDEFINED (0) is not mappable to an RHI block format. {recipe} The single source of truth for supported Khronos ids is RhiTexture.FromKhronosVkFormat. file={path}", "KTX2Loader");
+            Error($"KTX2 vkFormat=VK_FORMAT_UNDEFINED (0) is not mappable to an RHI block format. {recipe} The single source of truth for supported Khronos ids is RhiTexture.FromKhronosFormat. file={path}", "KTX2Loader");
             return null;
         }
 
-        if (!RhiTexture.FromKhronosVkFormat(vkFormat, out var rhiFormat, out string fmtName))
+        if (!RhiTexture.FromKhronosFormat(vkFormat, out var rhiFormat, out string fmtName))
         {
-            Error($"KTX2 has unsupported vkFormat={vkFormat} (file={path}). Add a mapping in RhiTexture.FromKhronosVkFormat.", "KTX2Loader");
+            Error($"KTX2 has unsupported vkFormat={vkFormat} (file={path}). Add a mapping in RhiTexture.FromKhronosFormat.", "KTX2Loader");
             return null;
         }
 
