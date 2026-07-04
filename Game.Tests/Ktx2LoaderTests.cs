@@ -29,9 +29,18 @@ public sealed class Ktx2LoaderTests
     ///   [80, 104) level-0 index entry (byteOffset, byteLength, uncompressedByteLength)
     ///   [104, end) level-0 data (raw or Zstd-compressed)
     /// </summary>
-    private static byte[] ForgeBc14x4(uint supercompressScheme)
+    private static byte[] ForgeBc14x4(uint supercompressScheme) =>
+        ForgeBc14x4WithVkFormat(vkFormat: 12, supercompressScheme: supercompressScheme);
+
+    /// <summary>
+    /// Generic KTX2 forge used by tests that need to pin an arbitrary
+    /// Khronos format-registry id (vkFormat) AND a supercompression scheme.
+    /// The synthetic mip data is one solid-black BC1 block (8 bytes) — fine
+    /// when the test exercises a rejection path that never reaches upload
+    /// (e.g. vkFormat=0 → loader refuses before reading mip data).
+    /// </summary>
+    private static byte[] ForgeBc14x4WithVkFormat(uint vkFormat, uint supercompressScheme)
     {
-        const uint vkFormat = 12; // VK_FORMAT_BC1_RGB_UNORM_BLOCK
         const uint width = 4, height = 4, levelCount = 1;
         const uint indexOffset = 80;
         byte[] uncomp = new byte[8]; // one solid-black BC1 block
@@ -185,6 +194,28 @@ public sealed class Ktx2LoaderTests
         using var device = new RhiDevice();
         var path = Path.Combine(Path.GetTempPath(), $"bad_s1_{Guid.NewGuid():N}.ktx2");
         File.WriteAllBytes(path, ForgeBc14x4(supercompressScheme: 1));
+        try
+        {
+            Assert.Null(Ktx2Loader.Load(device, path));
+        }
+        finally { TryDeleteFile(path); }
+    }
+
+    [Fact]
+    public void Ktx2_VkFormatUndefined_ReturnsNull()
+    {
+        // vkFormat=0 (VK_FORMAT_UNDEFINED) with supercompression=2 hits the
+        // loader's actionable diagnostic: it points the caller at
+        // RhiTexture.FromKhronosVkFormat and tells them to re-cook with
+        // `basisu -ktx2 -uastc` so the file lands on a real block-format id.
+        // The Cook should not emit VK_FORMAT_UNDEFINED; if it does, the
+        // loader must refuse the file rather than silently rendering
+        // black/glitched texturing.
+        if (!ProbeDevice()) return;
+
+        using var device = new RhiDevice();
+        var path = Path.Combine(Path.GetTempPath(), $"vkfmt_undef_s2_{Guid.NewGuid():N}.ktx2");
+        File.WriteAllBytes(path, ForgeBc14x4WithVkFormat(vkFormat: 0, supercompressScheme: 2));
         try
         {
             Assert.Null(Ktx2Loader.Load(device, path));

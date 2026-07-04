@@ -31,15 +31,13 @@
 //               Cook avoids this path via `-uastc` (which targets ASTC blocks
 //               directly instead of going through the ETC1S path).
 //
-// VkFormat mapping (per Khronos Vulkan format registry):
-//    12 = VK_FORMAT_BC1_RGB_UNORM_BLOCK
-//    14 = VK_FORMAT_BC1_RGBA_UNORM_BLOCK
-//    23 = VK_FORMAT_BC3_UNORM_BLOCK
-//    27 = VK_FORMAT_BC5_UNORM_BLOCK
-//    42 = VK_FORMAT_BC7_UNORM_BLOCK
-//    60 = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK
-//   157 = VK_FORMAT_ASTC_4x4_UNORM_BLOCK
-
+// Format-registry mapping (Khronos VkFormat integers used as the KTX2/BASIS
+// file header identifier) is owned by the RHI module — see
+// Engine.RHI.RhiTexture.FromKhronosVkFormat. The loader does not duplicate
+// the table on purpose: the same Khronos registry applies to every GPU API
+// (Metal/Vulkan/DX12), so the mapping belongs in the RHI abstraction layer
+// rather than alongside any single backend's decode path.
+//
 using System;
 using System.Buffers.Binary;
 using System.IO;
@@ -104,9 +102,18 @@ public static class Ktx2Loader
             return null;
         }
 
-        if (!TryMapVkFormat(vkFormat, out var rhiFormat, out string fmtName))
+        if (vkFormat == 0)
         {
-            Error($"KTX2 has unsupported vkFormat={vkFormat} (file={path}). Add a mapping in Ktx2Loader.TryMapVkFormat.", "KTX2Loader");
+            string recipe = supercompress == 1
+                ? "vkFormat=0 + supercompression=1 (BasisLZ/ETC1S) means Cook most likely treated the source as ETC1S instead of UASTC. Re-import the source asset through the editor's Asset Import; if the same error returns, examine Cook/main.cpp::ExecuteBasisu to confirm `-uastc` is in the basisu invocation. Delete any stale .ktx2 / .tex on disk before re-importing so the new Cook writes fresh."
+                : "vkFormat=0 is the Khronos VK_FORMAT_UNDEFINED sentinel — no GPU API can decode it. Re-import the source asset through the editor's Asset Import; if the same error returns, examine Cook/main.cpp::ExecuteBasisu to confirm `-uastc` is in the basisu invocation. Delete any stale .ktx2 / .tex on disk before re-importing so the new Cook writes fresh.";
+            Error($"KTX2 vkFormat=VK_FORMAT_UNDEFINED (0) is not mappable to an RHI block format. {recipe} The single source of truth for supported Khronos ids is RhiTexture.FromKhronosVkFormat. file={path}", "KTX2Loader");
+            return null;
+        }
+
+        if (!RhiTexture.FromKhronosVkFormat(vkFormat, out var rhiFormat, out string fmtName))
+        {
+            Error($"KTX2 has unsupported vkFormat={vkFormat} (file={path}). Add a mapping in RhiTexture.FromKhronosVkFormat.", "KTX2Loader");
             return null;
         }
 
@@ -251,23 +258,4 @@ public static class Ktx2Loader
         return blocksW * block.BytesPerBlock;
     }
 
-    private static bool TryMapVkFormat(uint vkFormat,
-                                        out RhiNative.TextureFormat rhiFormat,
-                                        out string name)
-    {
-        switch (vkFormat)
-        {
-            case 12:  rhiFormat = RhiNative.TextureFormat.Bc1RgbUnormBlock;       name = "BC1_RGB_UNORM";   return true;
-            case 14:  rhiFormat = RhiNative.TextureFormat.Bc1RgbaUnormBlock;      name = "BC1_RGBA_UNORM";  return true;
-            case 23:  rhiFormat = RhiNative.TextureFormat.Bc3UnormBlock;          name = "BC3_UNORM";       return true;
-            case 27:  rhiFormat = RhiNative.TextureFormat.Bc5UnormBlock;          name = "BC5_UNORM";       return true;
-            case 42:  rhiFormat = RhiNative.TextureFormat.Bc7UnormBlock;          name = "BC7_UNORM";       return true;
-            case 60:  rhiFormat = RhiNative.TextureFormat.Etc2Rgb8UnormBlock;     name = "ETC2_RGB8_UNORM"; return true;
-            case 157: rhiFormat = RhiNative.TextureFormat.Astc4x4UnormBlock;      name = "ASTC_4x4_UNORM";  return true;
-            default:
-                rhiFormat = RhiNative.TextureFormat.Undefined;
-                name = "?";
-                return false;
-        }
-    }
 }
