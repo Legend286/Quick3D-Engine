@@ -7,6 +7,12 @@
 - **Basis Universal via `basisu`** — encodes every texture into `-ktx2 -uastc` form (vkFormat 157 / ASTC_4x4 + Zstd scheme=3), directly loadable by `Ktx2Loader`. Earlier `-ktx2` defaults to ETC1S+BasisLZ (scheme=1) which the runtime cannot decode; this cook forces the UASTC path.
 - **Output layout** — `<out>/models/` (`.mdl` + named `_part_N.msh`), `<out>/models/materials/` (`.mat` JSON), `<out>/textures/` (`.ktx2` + `.tex` sidecar), `<out>/scenes/` (`.scene.json`).
 
+## Concurrency & Temp Files
+
+To prevent unbounded thread spawning and OOM crashes on models with hundreds of textures or mesh parts, the cooker uses bounded thread pools (limited by `std::thread::hardware_concurrency()`) for both texture compression and mesh part extraction. 
+
+Temporary raw images extracted for `basisu` compression are generated in the OS-provided temp directory (`std::filesystem::temp_directory_path()`) rather than the target content directory. This guarantees that imported `/content/models/` directories remain free of raw PNGs even if a crash occurs mid-cook.
+
 ## CLI
 
 ```
