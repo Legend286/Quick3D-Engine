@@ -270,7 +270,33 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    int total_tasks = (int)model.images.size();
+    int defaultScene = model.defaultScene > -1 ? model.defaultScene : 0;
+    if (defaultScene >= 0 && defaultScene < model.scenes.size()) {
+        const tinygltf::Scene& scene = model.scenes[defaultScene];
+        std::function<void(int)> count_traverse = [&](int node_idx) {
+            if (node_idx < 0 || node_idx >= model.nodes.size()) return;
+            const tinygltf::Node& node = model.nodes[node_idx];
+            if (node.mesh >= 0 && node.mesh < model.meshes.size()) {
+                total_tasks += model.meshes[node.mesh].primitives.size();
+            }
+            for (int child_idx : node.children) {
+                count_traverse(child_idx);
+            }
+        };
+        for (int root_idx : scene.nodes) {
+            count_traverse(root_idx);
+        }
+    }
     
+    std::atomic<int> g_progress_current{0};
+    std::mutex g_progress_mutex;
+    
+    auto report_progress = [&]() {
+        int current = g_progress_current.fetch_add(1, std::memory_order_relaxed) + 1;
+        std::lock_guard<std::mutex> lock(g_progress_mutex);
+        std::cout << "[PROGRESS] " << current << "/" << total_tasks << std::endl;
+    };    
     // 0. Discover texture types
     enum class TexType { Albedo, Normal, RMA };
     std::vector<TexType> tex_types(model.images.size(), TexType::Albedo); // Default Albedo
@@ -363,6 +389,7 @@ int main(int argc, char** argv) {
                     out_ktx2 = "";
                 }
                 cooked_textures[i] = out_ktx2;
+                report_progress();
             }
         }));
     }
@@ -497,7 +524,6 @@ int main(int argc, char** argv) {
         }
     };
 
-    int defaultScene = model.defaultScene > -1 ? model.defaultScene : 0;
     const tinygltf::Scene& scene = model.scenes[defaultScene];
 
     fs::create_directories(fs::path(out_dir) / "scenes");
@@ -721,6 +747,7 @@ int main(int argc, char** argv) {
                         out_file.write((char*)p.i.data(), i_count * 4);
                     }
                     total_indices.fetch_add(p.i.size(), std::memory_order_relaxed);
+                    report_progress();
                 }
             }));
         }

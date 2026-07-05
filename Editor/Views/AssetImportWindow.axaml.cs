@@ -118,15 +118,53 @@ public partial class AssetImportWindow : Window
             CreateNoWindow = true
         };
 
+        vm.CookProgress = 0;
+        vm.IsIndeterminate = true;
+        
+        System.Text.StringBuilder outputBuilder = new();
+        System.Text.StringBuilder errorBuilder = new();
+
         try
         {
             var process = Process.Start(processInfo);
             if (process != null)
             {
+                process.OutputDataReceived += (s, args) =>
+                {
+                    if (args.Data != null)
+                    {
+                        outputBuilder.AppendLine(args.Data);
+                        if (args.Data.StartsWith("[PROGRESS]"))
+                        {
+                            var parts = args.Data.Substring(10).Trim().Split('/');
+                            if (parts.Length == 2 && double.TryParse(parts[0], out double current) && double.TryParse(parts[1], out double max))
+                            {
+                                Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+                                {
+                                    vm.IsIndeterminate = false;
+                                    vm.CookProgress = current;
+                                    vm.CookProgressMax = max;
+                                });
+                            }
+                        }
+                    }
+                };
+                
+                process.ErrorDataReceived += (s, args) =>
+                {
+                    if (args.Data != null)
+                    {
+                        errorBuilder.AppendLine(args.Data);
+                    }
+                };
+
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+
                 await process.WaitForExitAsync();
                 
-                string error = await process.StandardError.ReadToEndAsync();
-                string output = await process.StandardOutput.ReadToEndAsync();
+                string error = errorBuilder.ToString();
+                string output = outputBuilder.ToString();
                 
                 if (process.ExitCode != 0)
                 {

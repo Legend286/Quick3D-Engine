@@ -63,7 +63,7 @@
                     </StackPanel>
                 </Border>
                 
-                <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsCooking}" Margin="0,4,0,0" Height="4" Foreground="#32cd32" Background="#1c1f24" />
+                <ProgressBar IsIndeterminate="{Binding IsIndeterminate}" Value="{Binding CookProgress}" Maximum="{Binding CookProgressMax}" IsVisible="{Binding IsCooking}" Margin="0,4,0,0" Height="4" Foreground="#32cd32" Background="#1c1f24" />
             </StackPanel>
 
             <!-- Footer -->
