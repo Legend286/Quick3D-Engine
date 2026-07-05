@@ -61,6 +61,7 @@ public partial class AssetImportWindow : Window
             Directory.CreateDirectory(targetDirectory);
 
         vm.StatusMessage = "Cooking asset... Please wait.";
+        vm.IsCooking = true;
 
         // Run engine_cook
         var tcs = new TaskCompletionSource<bool>();
@@ -93,6 +94,7 @@ public partial class AssetImportWindow : Window
         {
             string err = $"Error: engine_cook executable not found! Searched up from {AppDomain.CurrentDomain.BaseDirectory}";
             vm.StatusMessage = err;
+            vm.IsCooking = false;
             Error(err, "Editor");
             return;
         }
@@ -130,11 +132,13 @@ public partial class AssetImportWindow : Window
                 {
                     string failMsg = $"Import failed (code {process.ExitCode}): {error}";
                     vm.StatusMessage = failMsg;
+                    vm.IsCooking = false;
                     Error(failMsg, "Editor");
                 }
                 else
                 {
                     vm.StatusMessage = "Import completed successfully!";
+                    vm.IsCooking = false;
                     vm.ImportSucceeded = true;
                     vm.ImportedSceneName = Path.GetFileNameWithoutExtension(vm.SourceFile);
                     Info($"Import succeeded:\n{output}", "Editor");
@@ -148,6 +152,7 @@ public partial class AssetImportWindow : Window
         {
             string exMsg = $"Exception during import: {ex.Message}";
             vm.StatusMessage = exMsg;
+            vm.IsCooking = false;
             Error(exMsg, "Editor");
         }
     }

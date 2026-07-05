@@ -37,6 +37,9 @@ public partial class AssetImportViewModel : ObservableObject
     [ObservableProperty]
     private string _statusMessage = "Ready";
 
+    [ObservableProperty]
+    private bool _isCooking = false;
+
     public bool ImportSucceeded { get; set; }
     public string ImportedSceneName { get; set; } = string.Empty;
 }
