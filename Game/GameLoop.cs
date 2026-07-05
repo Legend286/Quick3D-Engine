@@ -54,7 +54,7 @@ public sealed class GameLoop : IGameLoop
         });
         _world.Set(_editorCameraEnt, Transform.Default with 
         {
-            Position = new Vector3(0, 0, -5) // stepped back a bit
+            Position = new Vector3(0, 5, -15) // stepped back a bit
         });
     }
 

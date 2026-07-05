@@ -183,6 +183,9 @@ public sealed class CommandRecorder : IDisposable
         RhiNative.RhiCmdBindTextureArray(CurrentEncoder, slot, ref handles[0], (uint)texs.Length);
     }
 
+    public void BindHeap(uint slot, RhiBindlessHeap heap)
+        => RhiNative.RhiCmdBindBindlessHeap(CurrentEncoder, heap.Handle, slot);
+
     public void BindSampler(uint slot, RhiSampler samp)
         => RhiNative.RhiCmdBindSampler(CurrentEncoder, slot, samp.Handle);
 

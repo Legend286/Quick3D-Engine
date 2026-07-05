@@ -122,8 +122,7 @@ public class PbrPass : RenderPass
     private List<PartData> _parts = new();
     private List<MaterialData> _materials = new();
 
-    private List<RhiTexture> _bindlessTextures = new();
-    private Dictionary<IntPtr, uint> _textureMap = new();
+    private RhiBindlessHeap _bindlessHeap;
 
     public unsafe PbrPass(RhiDevice device, IEntityStore world,
                               SceneGraph scene, ScenePass scenePass, string contentRoot)
@@ -160,6 +159,8 @@ public class PbrPass : RenderPass
         // Indirect struct is 16 bytes
         _drawCmdBuffer = RhiBuffer.Create(_device, 4096 * 16, RhiNative.BufferUsage.Storage | RhiNative.BufferUsage.Indirect);
         _drawCountBuffer = RhiBuffer.Create(_device, 16, RhiNative.BufferUsage.Storage);
+        
+        _bindlessHeap = new RhiBindlessHeap(_device, 4096);
     }
 
     public override void Setup(RenderGraphBuilder builder)
@@ -257,19 +258,14 @@ public class PbrPass : RenderPass
         _instances.Clear();
         _parts.Clear();
         _materials.Clear();
-        _bindlessTextures.Clear();
-        _textureMap.Clear();
         
         HashSet<Engine.Assets.Mesh> uniqueMeshes = new HashSet<Engine.Assets.Mesh>();
 
         uint GetTexIndex(RhiTexture? tex)
         {
             if (tex == null) return 0xFFFFFFFF;
-            if (_textureMap.TryGetValue(tex.Handle, out uint idx)) return idx;
-            idx = (uint)_bindlessTextures.Count;
-            _bindlessTextures.Add(tex);
-            _textureMap[tex.Handle] = idx;
-            return idx;
+            if (_bindlessHeap.TryLookup(tex, out uint idx)) return idx;
+            return _bindlessHeap.Register(tex);
         }
 
         foreach (var id in _world.Entities)
@@ -424,12 +420,12 @@ public class PbrPass : RenderPass
             sink.PushConstants(0, (uint)sizeof(PbrPushData), (IntPtr)(&pbrPush));
             
             // Bind bindless textures
-            if (_bindlessTextures.Count > 0)
+            if (_bindlessHeap.IsInitialized)
             {
-                // Slot 2 for textures (slot 0 is push constants)
-                sink.BindTextureArray(2, _bindlessTextures.ToArray());
-                // Slot 1 for sampler
-                sink.BindSampler(1, _sampler);
+                // Slot 1 for textures (auto-assigned buffer(1) by Slang Metal)
+                sink.BindHeap(1, _bindlessHeap);
+                // Slot 0 for sampler (auto-assigned sampler(0) by Slang Metal)
+                sink.BindSampler(0, _sampler);
             }
 
             // Perform multidraw!
@@ -479,5 +475,6 @@ public class PbrPass : RenderPass
         _lightBuffer?.Dispose();
         _drawCmdBuffer?.Dispose();
         _drawCountBuffer?.Dispose();
+        _bindlessHeap?.Dispose();
     }
 }

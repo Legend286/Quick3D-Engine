@@ -45,6 +45,7 @@ public interface ICommandSink
     public void SetScissor(uint x, uint y, uint w, uint h);
     public void BindTexture(uint slot, RhiTexture tex);
     public void BindTextureArray(uint slot, RhiTexture[] texs);
+    public void BindHeap(uint slot, RhiBindlessHeap heap);
     public void BindSampler(uint slot, RhiSampler samp);
     public void UseBuffer(RhiBuffer buf, uint usage = 1);
     public void BindIndexBuffer(RhiBuffer buf, bool is32Bit = false, ulong offset = 0);

@@ -170,6 +170,9 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     public void BindTextureArray(uint slot, RhiTexture[] texs)
         => _rec.BindTextureArray(slot, texs);
 
+    public void BindHeap(uint slot, RhiBindlessHeap heap)
+        => _rec.BindHeap(slot, heap);
+
     public void BindSampler(uint slot, RhiSampler samp)
         => _rec.BindSampler(slot, samp);
 

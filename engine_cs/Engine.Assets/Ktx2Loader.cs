@@ -50,6 +50,14 @@ namespace Engine.Assets;
 
 public static class Ktx2Loader
 {
+    private static bool _transcoderInitialized = false;
+
+    [System.Runtime.InteropServices.DllImport("EngineC")]
+    private static extern void engine_transcoder_init();
+
+    [System.Runtime.InteropServices.DllImport("EngineC")]
+    private static extern bool engine_transcode_uastc_to_astc(IntPtr uastc_data, IntPtr out_astc_data, uint block_count);
+
     private static ReadOnlySpan<byte> KTX2Identifier =>
         new byte[] { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
 
@@ -85,8 +93,7 @@ public static class Ktx2Loader
         uint pixelHeight   = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(24, 4));
         uint levelCount    = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(40, 4));
         uint supercompress = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(44, 4));
-        uint indexOffset   = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(48, 4));
-
+        uint indexOffset   = 80; // Level Index array immediately follows the 80-byte header
         if (supercompress != 0 && supercompress != 2 && supercompress != 3)
         {
             string schemeName = supercompress switch
@@ -102,13 +109,19 @@ public static class Ktx2Loader
             return null;
         }
 
+        bool isUastc = false;
         if (vkFormat == 0)
         {
-            string recipe = supercompress == 1
-                ? "vkFormat=0 + supercompression=1 (BasisLZ/ETC1S) means Cook most likely treated the source as ETC1S instead of UASTC. Re-import the source asset through the editor's Asset Import; if the same error returns, examine Cook/main.cpp::ExecuteBasisu to confirm `-uastc` is in the basisu invocation. Delete any stale .ktx2 / .tex on disk before re-importing so the new Cook writes fresh."
-                : "vkFormat=0 is the Khronos VK_FORMAT_UNDEFINED sentinel — no GPU API can decode it. Re-import the source asset through the editor's Asset Import; if the same error returns, examine Cook/main.cpp::ExecuteBasisu to confirm `-uastc` is in the basisu invocation. Delete any stale .ktx2 / .tex on disk before re-importing so the new Cook writes fresh.";
-            Error($"KTX2 vkFormat=VK_FORMAT_UNDEFINED (0) is not mappable to an RHI block format. {recipe} The single source of truth for supported Khronos ids is RhiTexture.FromKhronosFormat. file={path}", "KTX2Loader");
-            return null;
+            // basisu correctly outputs vkFormat=VK_FORMAT_UNDEFINED (0) for universal formats
+            // like UASTC. Since we already rejected supercompress == 1 (BasisLZ / ETC1S),
+            // this must be UASTC. The engine treats UASTC as ASTC_4x4_UNORM_BLOCK (157).
+            vkFormat = 157;
+            isUastc = true;
+            if (!_transcoderInitialized)
+            {
+                engine_transcoder_init();
+                _transcoderInitialized = true;
+            }
         }
 
         if (!RhiTexture.FromKhronosFormat(vkFormat, out var rhiFormat, out string fmtName))
@@ -216,7 +229,37 @@ public static class Ktx2Loader
                         }
                         fixed (byte* p = uncomp)
                         {
-                            tex.UploadMip(level, (IntPtr)p, (ulong)uncomp.Length, stride);
+                            if (isUastc)
+                            {
+                                byte[] astc = new byte[uncomp.Length];
+                                fixed (byte* pAstc = astc)
+                                {
+                                    if (!engine_transcode_uastc_to_astc((IntPtr)p, (IntPtr)pAstc, (uint)(uncomp.Length / 16)))
+                                    {
+                                        Error($"UASTC to ASTC transcode failed for level {level}. file={path}", "KTX2Loader");
+                                        tex.Dispose();
+                                        return null;
+                                    }
+                                    
+                                    if (level == 0) {
+                                        string uastcHex = BitConverter.ToString(uncomp, 0, Math.Min(16, uncomp.Length));
+                                        string astcHex = BitConverter.ToString(astc, 0, Math.Min(16, astc.Length));
+                                        Info($"KTX2 Level 0 First Block: UASTC={uastcHex} -> ASTC={astcHex}", "KTX2Loader");
+                                        
+                                        // Check if entirely black (all zeros)
+                                        bool allZero = true;
+                                        for(int i = 0; i < astc.Length; i++) if (astc[i] != 0) { allZero = false; break; }
+                                        if (allZero) {
+                                            Error("Transcoded ASTC buffer is entirely zero!", "KTX2Loader");
+                                        }
+                                    }
+                                    tex.UploadMip(level, (IntPtr)pAstc, (ulong)astc.Length, stride);
+                                }
+                            }
+                            else
+                            {
+                                tex.UploadMip(level, (IntPtr)p, (ulong)uncomp.Length, stride);
+                            }
                         }
                     }
                     else
@@ -224,7 +267,24 @@ public static class Ktx2Loader
                         // scheme=0 uncompressed
                         fixed (byte* p = &bytes[(int)byteOffset])
                         {
-                            tex.UploadMip(level, (IntPtr)p, byteLength, stride);
+                            if (isUastc)
+                            {
+                                byte[] astc = new byte[byteLength];
+                                fixed (byte* pAstc = astc)
+                                {
+                                    if (!engine_transcode_uastc_to_astc((IntPtr)p, (IntPtr)pAstc, (uint)(byteLength / 16)))
+                                    {
+                                        Error($"UASTC to ASTC transcode failed for level {level}. file={path}", "KTX2Loader");
+                                        tex.Dispose();
+                                        return null;
+                                    }
+                                    tex.UploadMip(level, (IntPtr)pAstc, byteLength, stride);
+                                }
+                            }
+                            else
+                            {
+                                tex.UploadMip(level, (IntPtr)p, byteLength, stride);
+                            }
                         }
                     }
                 }
