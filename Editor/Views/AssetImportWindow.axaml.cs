@@ -136,14 +136,16 @@ public partial class AssetImportWindow : Window
                         outputBuilder.AppendLine(args.Data);
                         if (args.Data.StartsWith("[PROGRESS]"))
                         {
-                            var parts = args.Data.Substring(10).Trim().Split('/');
-                            if (parts.Length == 2 && double.TryParse(parts[0], out double current) && double.TryParse(parts[1], out double max))
+                            var parts = args.Data.Substring(10).Trim().Split('|');
+                            if (parts.Length == 3 && double.TryParse(parts[1], out double current) && double.TryParse(parts[2], out double max))
                             {
+                                string stageName = parts[0];
                                 Avalonia.Threading.Dispatcher.UIThread.Post(() =>
                                 {
                                     vm.IsIndeterminate = false;
                                     vm.CookProgress = current;
                                     vm.CookProgressMax = max;
+                                    vm.StatusMessage = $"Stage: {stageName} ({current} out of {max})";
                                 });
                             }
                         }
