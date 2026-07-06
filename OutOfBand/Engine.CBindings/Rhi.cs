@@ -13,6 +13,19 @@ public static partial class RhiNative
 
     // ---- enums (mirror C) ----
 
+    public enum AccelStructType : uint
+    {
+        Blas = 0,
+        Tlas = 1,
+    }
+
+    public enum VertexFormat : uint
+    {
+        Undefined = 0,
+        Float3 = 1,
+        Float2 = 2,
+    }
+
     public enum TextureFormat
     {
         Undefined = 0,
@@ -77,6 +90,7 @@ public static partial class RhiNative
     public const uint TextureShaderRead = 1u << 1;
     public const uint TextureCopySrc = 1u << 2;
     public const uint TextureCopyDst = 1u << 3;
+    public const uint TextureStorage = 1u << 4;
 
     // ---- structs (mirror C layouts; abi first, then fields) ----
 
@@ -108,6 +122,7 @@ public static partial class RhiNative
                                     // length comes from SourceLen.
         public uint SourceLen;
         public IntPtr EntryPoint;   // char*; "main0" or similar.
+        public IntPtr IncludePath;  // char*; optional base include path.
     }
 
     public enum PrimitiveTopology : uint
@@ -314,6 +329,64 @@ public static partial class RhiNative
     // falling back to 65536 on legacy OS).
 
     [StructLayout(LayoutKind.Sequential)]
+    public struct BlasGeometryDesc
+    {
+        public IntPtr VertexBuffer;
+        public ulong VertexBufferOffset;
+        public uint VertexStride;
+        public uint VertexCount;
+        public VertexFormat VertexFormat;
+        public IntPtr IndexBuffer;
+        public ulong IndexBufferOffset;
+        public uint IndexCount;
+        public int Is32BitIndex;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public unsafe struct TlasInstanceDesc
+    {
+        public fixed float Transform[12];
+        public uint InstanceId;
+        public uint Mask;
+        public uint InstanceOffset;
+        public uint Flags;
+        public IntPtr Blas;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct AccelStructDesc
+    {
+        public uint Abi;
+        public AccelStructType Type;
+        
+        // For BLAS
+        public IntPtr Geometries; // RhiBlasGeometryDesc*
+        public uint GeometryCount;
+        
+        // For TLAS
+        public IntPtr Instances; // RhiTlasInstanceDesc*
+        public uint InstanceCount;
+    }
+
+    [LibraryImport(Library, EntryPoint = "rhi_create_accel_struct")]
+    public static partial int RhiCreateAccelStruct(IntPtr device, in AccelStructDesc desc, out IntPtr outAs);
+
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_accel_struct")]
+    public static partial void RhiDestroyAccelStruct(IntPtr accelStruct);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_build_accel_structs")]
+    public static partial void RhiCmdBuildAccelStructs(IntPtr cmdList, IntPtr accelStructsArray, uint count);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_compact_accel_structs")]
+    public static partial void RhiCmdCompactAccelStructs(IntPtr cmdList, IntPtr accelStructsArray, uint count);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_bind_accel_struct")]
+    public static partial void RhiCmdBindAccelStruct(IntPtr encoder, uint slot, IntPtr accelStruct);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_use_accel_struct")]
+    public static partial void RhiCmdUseAccelStruct(IntPtr encoder, IntPtr accelStruct, uint usage);
+
+    [StructLayout(LayoutKind.Sequential)]
     public struct BindlessHeapDesc
     {
         public uint Abi;
@@ -483,5 +556,6 @@ public static partial class RhiNative
 
     [LibraryImport(Library, EntryPoint = "rhi_cmd_dispatch")]
     public static partial void RhiCmdDispatch(IntPtr encoder,
-                                               uint gx, uint gy, uint gz);
+                                               uint gx, uint gy, uint gz,
+                                               uint tg_x, uint tg_y, uint tg_z);
 }

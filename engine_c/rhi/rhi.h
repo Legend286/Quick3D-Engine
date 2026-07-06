@@ -29,7 +29,7 @@ extern "C" {
 #  endif
 #endif
 
-#define ENGINE_ABI_VERSION_RHI 4
+#define ENGINE_ABI_VERSION_RHI 6
 
 typedef struct RhiDevice         RhiDevice;
 typedef struct RhiSwapchain      RhiSwapchain;
@@ -43,6 +43,7 @@ typedef struct RhiEncoder        RhiEncoder;
 typedef struct RhiHeap           RhiHeap;
 typedef struct RhiFence          RhiFence;
 typedef struct RhiBindlessHeap   RhiBindlessHeap;
+typedef struct RhiAccelStruct    RhiAccelStruct;
 
 /** Stable resource handle used by the C# render graph. u64 = (generation << 32) | slot_index. */
 typedef uint64_t RhiResourceHandle;
@@ -134,6 +135,7 @@ typedef struct RhiTextureDesc {
 #define RHI_TEXTURE_SHADER_READ    (1u << 1)
 #define RHI_TEXTURE_COPY_SRC       (1u << 2)
 #define RHI_TEXTURE_COPY_DST       (1u << 3)
+#define RHI_TEXTURE_STORAGE        (1u << 4)
 
 typedef struct RhiBufferDesc {
     uint32_t abi;
@@ -147,6 +149,7 @@ typedef struct RhiShaderDesc {
     const char*       source;
     uint32_t          source_len;
     const char*       entry_point;
+    const char*       include_path;
 } RhiShaderDesc;
 
 typedef struct RhiGraphicsPipelineDesc {
@@ -178,6 +181,52 @@ typedef struct RhiBindlessHeapDesc {
     uint32_t abi;
     uint32_t capacity;
 } RhiBindlessHeapDesc;
+
+typedef enum RhiAccelStructType {
+    RHI_ACCEL_STRUCT_TYPE_BLAS = 0,
+    RHI_ACCEL_STRUCT_TYPE_TLAS = 1,
+} RhiAccelStructType;
+
+typedef enum RhiVertexFormat {
+    RHI_VERTEX_FORMAT_UNDEFINED = 0,
+    RHI_VERTEX_FORMAT_FLOAT3 = 1,
+    RHI_VERTEX_FORMAT_FLOAT2 = 2,
+} RhiVertexFormat;
+
+typedef struct RhiBlasGeometryDesc {
+    RhiBuffer* vertex_buffer;
+    uint64_t   vertex_buffer_offset;
+    uint32_t   vertex_stride;
+    uint32_t   vertex_count;
+    RhiVertexFormat vertex_format; 
+    
+    RhiBuffer* index_buffer;
+    uint64_t   index_buffer_offset;
+    uint32_t   index_count;
+    int32_t    is_32bit_index; 
+} RhiBlasGeometryDesc;
+
+typedef struct RhiTlasInstanceDesc {
+    float           transform[12];     // 3x4 row-major matrix
+    uint32_t        instance_id;       // 24-bit instance ID
+    uint32_t        mask;              // 8-bit mask
+    uint32_t        instance_offset;   // SBT offset (typically 0 for pure bindless)
+    uint32_t        flags;             // Geometry flags
+    RhiAccelStruct* blas;              // Pointer to the BLAS handle
+} RhiTlasInstanceDesc;
+
+typedef struct RhiAccelStructDesc {
+    uint32_t abi;
+    RhiAccelStructType type;
+    
+    // For BLAS
+    const RhiBlasGeometryDesc* geometries;
+    uint32_t geometry_count;
+    
+    // For TLAS
+    const RhiTlasInstanceDesc* instances;
+    uint32_t instance_count;
+} RhiAccelStructDesc;
 
 #define RHI_HEAP_USAGE_RENDER_TARGET (1u << 0)
 #define RHI_HEAP_USAGE_SHADER_READ    (1u << 1)
@@ -334,6 +383,30 @@ ENGINE_API void rhi_destroy_fence(RhiFence* fence);
  *
  * Coexists with the legacy `rhi_cmd_bind_texture_array` API — bindless heaps
  * are additive and do not break existing callers. */
+
+/* ----- Acceleration Structures (Hardware Raytracing) ----- */
+ENGINE_API int32_t rhi_create_accel_struct(RhiDevice* device,
+                                           const RhiAccelStructDesc* desc,
+                                           RhiAccelStruct** out_as);
+ENGINE_API void    rhi_destroy_accel_struct(RhiAccelStruct* as);
+ENGINE_API void    rhi_cmd_build_accel_structs(RhiCommandList* cl,
+                                               RhiAccelStruct** accel_structs,
+                                               uint32_t count);
+ENGINE_API void    rhi_cmd_compact_accel_structs(RhiCommandList* cl,
+                                                 RhiAccelStruct** accel_structs,
+                                                 uint32_t count);
+ENGINE_API void    rhi_cmd_bind_accel_struct(RhiEncoder* enc, uint32_t slot, RhiAccelStruct* as);
+
+/** Declare residency for an acceleration structure without binding it at a
+ * specific shader slot. Required for every BLAS reachable through a TLAS that
+ * the active compute/render encoder will ray-trace: Metal does NOT
+ * automatically infer residency for ASes referenced inside a TLAS instance
+ * descriptor, and traversing into a non-resident AS silently faults the
+ * command buffer. usage follows the same convention as rhi_cmd_use_buffer:
+ * 1 = read, 2 = write.
+ */
+ENGINE_API void    rhi_cmd_use_accel_struct(RhiEncoder* enc, RhiAccelStruct* as, uint32_t usage);
+
 ENGINE_API int32_t rhi_create_bindless_heap(RhiDevice* device,
                                             const RhiBindlessHeapDesc* desc,
                                             RhiBindlessHeap** out_heap);
@@ -432,7 +505,8 @@ ENGINE_API void rhi_cmd_bind_texture_array(RhiEncoder* enc, uint32_t slot, RhiTe
 ENGINE_API void rhi_cmd_bind_bindless_heap(RhiEncoder* enc, RhiBindlessHeap* heap, uint32_t slot);
 ENGINE_API void rhi_cmd_dispatch(RhiEncoder* enc,
                                  uint32_t groups_x, uint32_t groups_y,
-                                 uint32_t groups_z);
+                                 uint32_t groups_z,
+                                 uint32_t tg_x, uint32_t tg_y, uint32_t tg_z);
 
 #ifdef __cplusplus
 } /* extern "C" */

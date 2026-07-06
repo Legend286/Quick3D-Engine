@@ -85,9 +85,17 @@ typedef struct RhiBackend {
     void (*cmd_bind_bindless_heap)(RhiEncoder *enc, RhiBindlessHeap *heap, uint32_t slot);
     void (*cmd_bind_sampler)(RhiEncoder *enc, uint32_t slot, RhiSampler *samp);
     void (*cmd_use_buffer)(RhiEncoder *enc, RhiBuffer *buf, uint32_t usage);
-    void (*cmd_dispatch)(RhiEncoder *enc, uint32_t gx, uint32_t gy, uint32_t gz);
+    void (*cmd_dispatch)(RhiEncoder *enc, uint32_t gx, uint32_t gy, uint32_t gz,
+                         uint32_t tg_x, uint32_t tg_y, uint32_t tg_z);
 
     /* Bindless heap — additive to rhi_cmd_bind_texture_array; not breaking. */
+    int32_t (*create_accel_struct)(RhiDevice* d, const RhiAccelStructDesc* desc, RhiAccelStruct** out);
+    void    (*destroy_accel_struct)(RhiAccelStruct* as);
+    void    (*cmd_build_accel_structs)(RhiCommandList* cl, RhiAccelStruct** accel_structs, uint32_t count);
+    void    (*cmd_compact_accel_structs)(RhiCommandList* cl, RhiAccelStruct** accel_structs, uint32_t count);
+    void    (*cmd_bind_accel_struct)(RhiEncoder* enc, uint32_t slot, RhiAccelStruct* as);
+    void    (*cmd_use_accel_struct)(RhiEncoder* enc, RhiAccelStruct* as, uint32_t usage);
+
     int32_t (*create_bindless_heap)(RhiDevice *d, const RhiBindlessHeapDesc *desc, RhiBindlessHeap **out);
     void (*destroy_bindless_heap)(RhiBindlessHeap *heap);
     int32_t (*bindless_register_texture)(RhiBindlessHeap *heap, RhiTexture *tex, uint32_t *out_slot);

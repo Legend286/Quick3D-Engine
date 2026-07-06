@@ -116,6 +116,38 @@ void rhi_destroy_pipeline(RhiPipeline* p) { if (g_active >= 0) g_backends[g_acti
 void rhi_destroy_heap(RhiHeap* h) { if (g_active >= 0) g_backends[g_active].destroy_heap(h); }
 void rhi_destroy_fence(RhiFence* f) { if (g_active >= 0) g_backends[g_active].destroy_fence(f); }
 
+/* ----- Acceleration Structures forwarders ----- */
+
+int32_t rhi_create_accel_struct(RhiDevice* d, const RhiAccelStructDesc* desc, RhiAccelStruct** out) {
+    if (g_active < 0 || !g_backends[g_active].create_accel_struct) return -1;
+    return g_backends[g_active].create_accel_struct(d, desc, out);
+}
+void rhi_destroy_accel_struct(RhiAccelStruct* as) {
+    if (g_active >= 0 && g_backends[g_active].destroy_accel_struct) {
+        g_backends[g_active].destroy_accel_struct(as);
+    }
+}
+void rhi_cmd_build_accel_structs(RhiCommandList* cl, RhiAccelStruct** accel_structs, uint32_t count) {
+    if (g_active >= 0 && g_backends[g_active].cmd_build_accel_structs) {
+        g_backends[g_active].cmd_build_accel_structs(cl, accel_structs, count);
+    }
+}
+void rhi_cmd_compact_accel_structs(RhiCommandList* cl, RhiAccelStruct** accel_structs, uint32_t count) {
+    if (g_active >= 0 && g_backends[g_active].cmd_compact_accel_structs) {
+        g_backends[g_active].cmd_compact_accel_structs(cl, accel_structs, count);
+    }
+}
+void rhi_cmd_bind_accel_struct(RhiEncoder* enc, uint32_t slot, RhiAccelStruct* as) {
+    if (g_active >= 0 && g_backends[g_active].cmd_bind_accel_struct) {
+        g_backends[g_active].cmd_bind_accel_struct(enc, slot, as);
+    }
+}
+void rhi_cmd_use_accel_struct(RhiEncoder* enc, RhiAccelStruct* as, uint32_t usage) {
+    if (g_active >= 0 && g_backends[g_active].cmd_use_accel_struct) {
+        g_backends[g_active].cmd_use_accel_struct(enc, as, usage);
+    }
+}
+
 /* ----- Bindless heap forwarders (additive — coexist with legacy texture array) ----- */
 
 int32_t rhi_create_bindless_heap(RhiDevice* d, const RhiBindlessHeapDesc* desc, RhiBindlessHeap** out) {
@@ -237,8 +269,9 @@ void rhi_cmd_bind_sampler(RhiEncoder* e, uint32_t slot, RhiSampler* samp) {
 void rhi_cmd_use_buffer(RhiEncoder* e, RhiBuffer* buf, uint32_t usage) {
     g_backends[g_active].cmd_use_buffer(e, buf, usage);
 }
-void rhi_cmd_dispatch(RhiEncoder* e, uint32_t gx, uint32_t gy, uint32_t gz) {
-    g_backends[g_active].cmd_dispatch(e, gx, gy, gz);
+void rhi_cmd_dispatch(RhiEncoder* e, uint32_t gx, uint32_t gy, uint32_t gz,
+                      uint32_t tg_x, uint32_t tg_y, uint32_t tg_z) {
+    g_backends[g_active].cmd_dispatch(e, gx, gy, gz, tg_x, tg_y, tg_z);
 }
 
 extern void rhi_metal_register(void);
