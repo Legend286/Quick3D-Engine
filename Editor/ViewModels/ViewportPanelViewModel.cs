@@ -532,6 +532,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
                 KeyA = _keyA,
                 KeyS = _keyS,
                 KeyD = _keyD,
+                KeyP = _keyP,
                 Events = frameEvents
             };
 
@@ -560,7 +561,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     private bool _leftDown;
     private bool _rightDown;
     private bool _middleDown;
-    private bool _keyW, _keyA, _keyS, _keyD;
+    private bool _keyW, _keyA, _keyS, _keyD, _keyP;
 
     public void AddPointerDelta(float dx, float dy)
     {
@@ -630,6 +631,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             case Avalonia.Input.Key.A: _keyA = isDown; break;
             case Avalonia.Input.Key.S: _keyS = isDown; break;
             case Avalonia.Input.Key.D: _keyD = isDown; break;
+            case Avalonia.Input.Key.P: _keyP = isDown; break;
         }
 
         var ek = MapAvaloniaKey(key);
