@@ -15,15 +15,17 @@ public sealed class RhiShader : IDisposable
     // Keep source + entry alive for the shader's lifetime.
     private GCHandle _sourcePin;
     private GCHandle _entryPin;
+    private GCHandle _includePin;
 
-    internal RhiShader(IntPtr handle, GCHandle source, GCHandle entry)
+    internal RhiShader(IntPtr handle, GCHandle source, GCHandle entry, GCHandle includeHandle)
     {
         Handle = handle;
         _sourcePin = source;
         _entryPin = entry;
+        _includePin = includeHandle;
     }
 
-    public static RhiShader FromSource(RhiDevice device, string source, string entry, RhiNative.ShaderStage stage)
+    public static RhiShader FromSource(RhiDevice device, string source, string entry, RhiNative.ShaderStage stage, string? includePath = null)
     {
         if (string.IsNullOrEmpty(source))
             throw new ArgumentNullException(nameof(source));
@@ -32,6 +34,7 @@ public sealed class RhiShader : IDisposable
 
         byte[] srcBytes = Encoding.UTF8.GetBytes(source + "\0");
         byte[] entryBytes = Encoding.UTF8.GetBytes(entry + "\0");
+        byte[]? includeBytes = includePath != null ? Encoding.UTF8.GetBytes(includePath + "\0") : null;
 
         // Wrap both GCHandle.Alloc calls + native interop in try/catch so a
         // single OOM or P/Invoke exception mid-construction cannot leak a
@@ -39,9 +42,12 @@ public sealed class RhiShader : IDisposable
         // a local that went out of scope on failure - a real leak path.
         GCHandle sourceHandle = GCHandle.Alloc(srcBytes, GCHandleType.Pinned);
         GCHandle entryHandle = default;
+        GCHandle includeHandle = default;
         try
         {
             entryHandle = GCHandle.Alloc(entryBytes, GCHandleType.Pinned);
+            if (includeBytes != null)
+                includeHandle = GCHandle.Alloc(includeBytes, GCHandleType.Pinned);
 
             var desc = new RhiNative.ShaderDesc
             {
@@ -50,6 +56,7 @@ public sealed class RhiShader : IDisposable
                 Source = sourceHandle.AddrOfPinnedObject(),
                 SourceLen = (uint)srcBytes.Length,
                 EntryPoint = entryHandle.AddrOfPinnedObject(),
+                IncludePath = includeBytes != null ? includeHandle.AddrOfPinnedObject() : IntPtr.Zero,
             };
 
             int rc = RhiNative.RhiCreateShader(device.Handle, in desc, out IntPtr sh);
@@ -61,17 +68,18 @@ public sealed class RhiShader : IDisposable
                     $"rhi_create_shader rc={rc} (entry={entry})");
             }
 
-            // Hand BOTH handles to the new instance so the instance's
+            // Hand ALL handles to the new instance so the instance's
             // finalizer owns them. C# cannot throw between `new` and
             // `return`, so the catch block (which runs on any exception
-            // inside the try) sees both handles as still allocated.
-            return new RhiShader(sh, sourceHandle, entryHandle);
+            // inside the try) sees all handles as still allocated.
+            return new RhiShader(sh, sourceHandle, entryHandle, includeHandle);
         }
         catch
         {
             // Free in reverse order of allocation. If we successfully
             // returned an instance above, both locals were reset to
             // `default` and IsAllocated is false, so this is a no-op.
+            if (includeHandle.IsAllocated) includeHandle.Free();
             if (entryHandle.IsAllocated) entryHandle.Free();
             if (sourceHandle.IsAllocated) sourceHandle.Free();
             throw;
@@ -80,7 +88,7 @@ public sealed class RhiShader : IDisposable
 
     public void Dispose()
     {
-        if (Handle == IntPtr.Zero && !_sourcePin.IsAllocated && !_entryPin.IsAllocated) return;
+        if (Handle == IntPtr.Zero && !_sourcePin.IsAllocated && !_entryPin.IsAllocated && !_includePin.IsAllocated) return;
 
         // Zero the managed handle BEFORE invoking the native destroy. If the
         // C-side destroy ever threw (assertion failure or free() failure),
@@ -93,6 +101,7 @@ public sealed class RhiShader : IDisposable
 
         if (_sourcePin.IsAllocated) _sourcePin.Free();
         if (_entryPin.IsAllocated) _entryPin.Free();
+        if (_includePin.IsAllocated) _includePin.Free();
         GC.SuppressFinalize(this);
     }
 

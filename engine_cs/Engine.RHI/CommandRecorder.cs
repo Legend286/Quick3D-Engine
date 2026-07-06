@@ -192,6 +192,45 @@ public sealed class CommandRecorder : IDisposable
     public void UseBuffer(RhiBuffer buf, uint usage = 1 /* Read */)
         => RhiNative.RhiCmdUseBuffer(CurrentEncoder, buf.Handle, usage);
 
+    public void BindAccelStruct(uint slot, RhiAccelStruct as_handle)
+    {
+        if (CurrentEncoder == IntPtr.Zero) throw new InvalidOperationException("Must be in a pass");
+        RhiNative.RhiCmdBindAccelStruct(CurrentEncoder, slot, as_handle.Handle);
+    }
+
+    /// <summary>Declare residency for an acceleration structure without binding
+    /// it at a shader slot. Required for every BLAS reachable through a TLAS
+    /// the active encoder will ray-trace: Metal does NOT auto-infer residency
+    /// for ASes referenced inside a TLAS instance descriptor, and traversing
+    /// into a non-resident AS silently faults the command buffer.</summary>
+    public void UseAccelStruct(RhiAccelStruct as_handle, uint usage = 1 /* Read */)
+    {
+        if (CurrentEncoder == IntPtr.Zero) throw new InvalidOperationException("Must be in a pass");
+        RhiNative.RhiCmdUseAccelStruct(CurrentEncoder, as_handle.Handle, usage);
+    }
+
+    public unsafe void BuildAccelStructs(ReadOnlySpan<RhiAccelStruct> accelStructs)
+    {
+        if (CurrentEncoder != IntPtr.Zero) throw new InvalidOperationException("Cannot build accel structs inside a pass");
+        IntPtr* handles = stackalloc IntPtr[accelStructs.Length];
+        for (int i = 0; i < accelStructs.Length; i++)
+        {
+            handles[i] = accelStructs[i].Handle;
+        }
+        RhiNative.RhiCmdBuildAccelStructs(CmdList, (IntPtr)handles, (uint)accelStructs.Length);
+    }
+
+    public unsafe void CompactAccelStructs(ReadOnlySpan<RhiAccelStruct> accelStructs)
+    {
+        if (CurrentEncoder != IntPtr.Zero) throw new InvalidOperationException("Cannot compact accel structs inside a pass");
+        IntPtr* handles = stackalloc IntPtr[accelStructs.Length];
+        for (int i = 0; i < accelStructs.Length; i++)
+        {
+            handles[i] = accelStructs[i].Handle;
+        }
+        RhiNative.RhiCmdCompactAccelStructs(CmdList, (IntPtr)handles, (uint)accelStructs.Length);
+    }
+
     public void SetScissor(uint x, uint y, uint w, uint h)
         => RhiNative.RhiCmdSetScissor(CurrentEncoder, x, y, w, h);
 
@@ -269,10 +308,12 @@ public sealed class CommandRecorder : IDisposable
     /// command buffers linger without commit.</summary>
     ~CommandRecorder() => Dispose();
 
-    public void Dispatch(uint groupsX, uint groupsY, uint groupsZ)
+    public void Dispatch(uint groupsX, uint groupsY, uint groupsZ,
+                          uint threadsX = 64, uint threadsY = 1, uint threadsZ = 1)
     {
         if (CurrentEncoder == IntPtr.Zero)
             throw new InvalidOperationException("No active pass");
-        RhiNative.RhiCmdDispatch(CurrentEncoder, groupsX, groupsY, groupsZ);
+        RhiNative.RhiCmdDispatch(CurrentEncoder, groupsX, groupsY, groupsZ,
+                                  threadsX, threadsY, threadsZ);
     }
 }
