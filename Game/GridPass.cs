@@ -86,7 +86,7 @@ public sealed class GridPass : RenderPass, IDisposable
     public override void Setup(RenderGraphBuilder builder)
     {
         builder.Write(Renderer.BackBufferHandle, ResourceState.RenderTarget);
-        builder.Read(Renderer.DepthBufferHandle, ResourceState.DepthStencil);
+        builder.Write(Renderer.DepthBufferHandle, ResourceState.DepthStencil);
     }
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext context)

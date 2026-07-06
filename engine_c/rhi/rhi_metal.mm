@@ -486,6 +486,12 @@ static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, Rh
 
         if (desc->usage_flags & RHI_TEXTURE_RENDER_TARGET) {
             td.storageMode = MTLStorageModePrivate;
+        } else if (desc->usage_flags & RHI_TEXTURE_STORAGE) {
+            // Storage textures (compute read/write) never need CPU access;
+            // Private mode keeps a single GPU-side copy, avoiding the
+            // dual-copy coherency issue of Managed mode where a blit pass
+            // reads the stale zero-initialised CPU copy after compute writes.
+            td.storageMode = MTLStorageModePrivate;
         } else {
 #if TARGET_OS_OSX
             // Compressed formats stay Managed on macOS: the CPU-side
@@ -622,6 +628,15 @@ static int32_t metal_create_shader(RhiDevice* d, const RhiShaderDesc* desc, RhiS
         }
 
         NSString* mslSrc = [[NSString alloc] initWithBytes:codePtr length:codeSize encoding:NSUTF8StringEncoding];
+
+        // Diagnostic: dump generated MSL to /tmp so we can verify Slang binding
+        // mapping regardless of process working directory.
+        {
+            NSString* dumpPath = [NSString stringWithFormat:@"/tmp/msl_%s.metal", desc->entry_point];
+            [[mslSrc dataUsingEncoding:NSUTF8StringEncoding] writeToFile:dumpPath atomically:YES];
+            fprintf(stderr, "MSL dump: %s -> %s (%zu bytes)\n",
+                    desc->entry_point, [dumpPath UTF8String], (size_t)codeSize);
+        }
 
         NSError* error = nil;
         MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
@@ -1277,7 +1292,11 @@ static void metal_cmd_bind_texture(RhiEncoder* enc, uint32_t slot, RhiTexture* t
     if (ri->render) {
         [ri->render setFragmentTexture:ti->tex atIndex:slot];
     } else if (ri->compute) {
+        // setTexture:atIndex: only declares MTLResourceUsageRead.
+        // RWTexture2D needs write usage too; without it Metal silently
+        // drops writes, leaving the texture uninitialised (black).
         [ri->compute setTexture:ti->tex atIndex:slot];
+        [ri->compute useResource:ti->tex usage:MTLResourceUsageRead | MTLResourceUsageWrite];
     }
 }
 static void metal_cmd_bind_texture_array(RhiEncoder* enc, uint32_t slot, RhiTexture** texs, uint32_t count) {
@@ -1409,10 +1428,20 @@ static int32_t metal_create_accel_struct(RhiDevice* d, const RhiAccelStructDesc*
         
         MTLAccelerationStructureSizes sizes = [di->device accelerationStructureSizesWithDescriptor:mtl_desc];
         
-        id<MTLAccelerationStructure> as = [di->device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
+        // Guard against zero-size allocations (e.g. empty TLAS with 0 instances).
+        // Metal may return 0 for both accelerationStructureSize and
+        // buildScratchBufferSize on degenerate descriptors; minimum 256-byte
+        // allocations keep the AS and scratch buffer handles alive and valid
+        // for binding/build even though the AS will never return any hits.
+        NSUInteger asSize = sizes.accelerationStructureSize;
+        if (asSize < 256) asSize = 256;
+        NSUInteger scratchSize = sizes.buildScratchBufferSize;
+        if (scratchSize < 256) scratchSize = 256;
+        
+        id<MTLAccelerationStructure> as = [di->device newAccelerationStructureWithSize:asSize];
         if (!as) return -2;
         
-        id<MTLBuffer> scratch = [di->device newBufferWithLength:sizes.buildScratchBufferSize options:MTLResourceStorageModePrivate];
+        id<MTLBuffer> scratch = [di->device newBufferWithLength:scratchSize options:MTLResourceStorageModePrivate];
         
         RhiAccelStructImpl* asi = new RhiAccelStructImpl();
         asi->as = as;

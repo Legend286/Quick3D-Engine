@@ -2,6 +2,7 @@
 
 #include "scene_data.slang"
 #include "disney_bsdf.slang"
+#include "nishita_sky.slang"
 
 [push_constant]
 ConstantBuffer<ScenePushData> push;
@@ -12,8 +13,8 @@ struct BindlessHeap {
 [binding(1, 0)] ParameterBlock<BindlessHeap> bindless;
 [binding(2, 0)] SamplerState tex_sampler;
 
-[binding(3, 0)] RWTexture2D<float4> accumulationBuffer;
-[binding(4, 0)] RWTexture2D<float4> outputBuffer;
+RWTexture2D<float4> accumulationBuffer : register(u3);
+RWTexture2D<float4> outputBuffer : register(u4);
 [binding(5, 0)] RaytracingAccelerationStructure tlas;
 
 // RNG based on PCG
@@ -123,6 +124,29 @@ DisneyMaterial GetMaterial(uint instanceId, uint primitiveId, float2 barycentric
 void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     if (dispatchThreadID.x >= uint(push.resolution.x) || dispatchThreadID.y >= uint(push.resolution.y)) return;
 
+    // ---- No-geometry fast path: pure sky, no ray tracing at all ----
+    if (push.hasGeometry == 0u) {
+        float2 inUV = (float2(dispatchThreadID.xy) + 0.5) / push.resolution;
+        float2 ndc = inUV * 2.0 - 1.0;
+        ndc.y = -ndc.y;
+
+        float3 rayOrigin = push.camera->cameraPosition.xyz;
+        float4 target = mul(push.camera->invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
+        float3 worldPos = target.xyz / target.w;
+        float3 rayDir = normalize(worldPos - rayOrigin);
+
+        float3 skyColor = GetSkyRadiance(rayDir, push.sky.sunDirection, push.sky);
+
+        // Diagnostic: tint top-left 16x16 quadrant magenta to prove dispatch works
+        if (dispatchThreadID.x < 16u && dispatchThreadID.y < 16u) {
+            skyColor = float3(1.0, 0.0, 1.0); // bright magenta
+        }
+
+        outputBuffer[dispatchThreadID.xy] = float4(skyColor, 1.0);
+        return;
+    }
+    // ---- End no-geometry fast path ----
+
     // ---- Debug mode: hit-distance visualization (fast, no BSDF) ----
     if ((push.debugFlags & 1u) != 0u) {
         float2 inUV = (float2(dispatchThreadID.xy) + 0.5) / push.resolution;
@@ -154,7 +178,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
             if ((instId & 1u) != 0u) dbgColor.rb *= 0.8;
             if ((instId & 2u) != 0u) dbgColor.gb *= 0.8;
         } else {
-            dbgColor = float3(0.05, 0.05, 0.08); // sky miss = dark blue
+            dbgColor = GetSkyRadiance(rayDir, push.sky.sunDirection, push.sky);
         }
         outputBuffer[dispatchThreadID.xy] = float4(dbgColor, 1.0);
         return;
@@ -280,8 +304,8 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
             ray.Direction = nextDir;
             ray.TMax = 10000.0;
         } else {
-            // Sky
-            radiance += throughput * float3(0.05, 0.05, 0.05); // Simple ambient sky
+            // Nishita physically-based sky
+            radiance += throughput * GetSkyRadiance(rayDir, push.sky.sunDirection, push.sky);
             break;
         }
     }

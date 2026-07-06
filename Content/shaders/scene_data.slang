@@ -55,6 +55,15 @@ struct LightData {
     float4 spotParams; // x = innerCone, y = outerCone
 };
 
+struct SkyParams {
+    float3 sunDirection;
+    float sunAngularRadius;   // radians, ~0.00465 for real sun
+    float sunIntensity;
+    float turbidity;          // 2-6 typical, 2=clear, 6=hazy
+    float groundAlbedo;       // 0-1, typical 0.1
+    float3 pad_sky;
+};
+
 struct ScenePushData {
     PartData* parts;
     InstanceData* instances;
@@ -65,5 +74,6 @@ struct ScenePushData {
     uint frameCount;
     float2 resolution;
     uint debugFlags;
-    uint pad_debug;
+    uint hasGeometry;
+    SkyParams sky;
 };

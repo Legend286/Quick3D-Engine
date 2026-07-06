@@ -50,6 +50,16 @@ public struct LightData {
 }
 
 [StructLayout(LayoutKind.Sequential)]
+public struct SkyParams {
+    public Vector3 SunDirection;
+    public float SunAngularRadius;   // radians, ~0.00465 for real sun
+    public float SunIntensity;
+    public float Turbidity;          // 2-6 typical, 2=clear
+    public float GroundAlbedo;       // 0-1, typical 0.1
+    public Vector3 pad_sky;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 public struct ScenePushData {
     public ulong Parts;
     public ulong Instances;
@@ -60,7 +70,8 @@ public struct ScenePushData {
     public uint FrameCount;
     public Vector2 Resolution;
     public uint DebugFlags;
-    public uint pad_debug;
+    public uint hasGeometry;
+    public SkyParams Sky;
 }
 
 [StructLayout(LayoutKind.Sequential)]
