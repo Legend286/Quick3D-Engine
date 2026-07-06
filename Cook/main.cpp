@@ -290,12 +290,21 @@ int main(int argc, char** argv) {
     }
     
     std::atomic<int> g_progress_current{0};
+    std::string g_progress_stage = "";
+    int g_progress_total = 0;
     std::mutex g_progress_mutex;
     
+    auto set_progress_stage = [&](const std::string& stage, int total) {
+        std::lock_guard<std::mutex> lock(g_progress_mutex);
+        g_progress_stage = stage;
+        g_progress_total = total;
+        g_progress_current.store(0, std::memory_order_relaxed);
+    };
+
     auto report_progress = [&]() {
         int current = g_progress_current.fetch_add(1, std::memory_order_relaxed) + 1;
         std::lock_guard<std::mutex> lock(g_progress_mutex);
-        std::cout << "[PROGRESS] " << current << "/" << total_tasks << std::endl;
+        std::cout << "[PROGRESS] " << g_progress_stage << "|" << current << "|" << g_progress_total << std::endl;
     };    
     // 0. Discover texture types
     enum class TexType { Albedo, Normal, RMA };
@@ -326,6 +335,8 @@ int main(int argc, char** argv) {
 
     std::mutex tex_job_mutex;
     size_t current_tex = 0;
+    
+    set_progress_stage("Importing Textures", model.images.size());
 
     for (unsigned int t = 0; t < num_threads; ++t) {
         texture_futures.push_back(std::async(std::launch::async, [&]() {
@@ -704,6 +715,8 @@ int main(int argc, char** argv) {
         std::mutex mesh_job_mutex;
         size_t current_part = 0;
         std::vector<std::future<void>> mesh_futures;
+        
+        set_progress_stage("Importing Mesh: " + obj_name, extracted.size());
         
         for (unsigned int t = 0; t < num_threads; ++t) {
             mesh_futures.push_back(std::async(std::launch::async, [&]() {
