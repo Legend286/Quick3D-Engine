@@ -16,6 +16,10 @@ public static class TextureLoader
     /// - all other extensions fall through to StbImageSharp (PNG/JPEG/BMP/TGA/HDR)
     /// uncompressed uploads go through RhiTexture.Upload.
     /// </summary>
+    private static readonly System.Collections.Generic.Dictionary<string, RhiTexture> _cache = new();
+
+    public static void ClearCache() => _cache.Clear();
+
     public static RhiTexture? LoadTexture(RhiDevice device, string path)
     {
         if (!File.Exists(path))
@@ -24,9 +28,14 @@ public static class TextureLoader
             return null;
         }
 
+        string fullPath = Path.GetFullPath(path);
+        if (_cache.TryGetValue(fullPath, out var cached)) return cached;
+
         if (IsKtx2(path))
         {
-            return Ktx2Loader.Load(device, path);
+            var tex = Ktx2Loader.Load(device, path);
+            if (tex != null) _cache[fullPath] = tex;
+            return tex;
         }
 
         try
@@ -44,6 +53,7 @@ public static class TextureLoader
                 }
             }
 
+            if (tex != null) _cache[fullPath] = tex;
             return tex;
         }
         catch (Exception ex)

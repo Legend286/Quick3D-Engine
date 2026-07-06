@@ -44,10 +44,17 @@ public class Material
 
 public static class MaterialLoader
 {
+    private static readonly System.Collections.Generic.Dictionary<string, Material> _cache = new();
+
+    public static void ClearCache() => _cache.Clear();
+
     public static Material LoadMat(RhiDevice device, string path)
     {
         if (!File.Exists(path))
             throw new FileNotFoundException($"Material file not found: {path}");
+
+        string fullPath = Path.GetFullPath(path);
+        if (_cache.TryGetValue(fullPath, out var cached)) return cached;
 
         string json = File.ReadAllText(path);
         var def = JsonSerializer.Deserialize<MaterialDefinition>(json);
@@ -78,6 +85,7 @@ public static class MaterialLoader
             mat.RmaTexture = TextureLoader.LoadTexture(device, Path.Combine(dir, def.RmaTexture));
         }
 
+        _cache[fullPath] = mat;
         return mat;
     }
 }
