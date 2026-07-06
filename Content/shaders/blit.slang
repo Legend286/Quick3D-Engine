@@ -6,8 +6,8 @@ struct VSOut {
     float2 uv : TEXCOORD0;
 };
 
-[binding(1, 0)] Texture2D<float4> sourceTexture;
-[binding(2, 0)] SamplerState blitSampler;
+[[vk::binding(1, 0)]] Texture2D<float4> sourceTexture;
+[[vk::binding(2, 0)]] SamplerState blitSampler;
 
 [shader("vertex")]
 VSOut vertexMain(uint vid : SV_VertexID) {

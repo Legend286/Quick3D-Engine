@@ -8,10 +8,10 @@ struct CameraData {
 };
 
 struct Vertex {
-    float3 position;
-    float3 normal;
-    float2 uv;
-    float4 tangent;
+    float px, py, pz;
+    float nx, ny, nz;
+    float u, v;
+    float tx, ty, tz, tw;
 };
 
 struct PartData {
@@ -22,7 +22,7 @@ struct PartData {
     uint indexCount;
     uint materialIdx;
     uint instanceIdx;
-    uint pad0;
+    uint flags;
 };
 
 struct InstanceData {
@@ -44,8 +44,10 @@ struct MaterialData {
     uint normalTexIndex;
     uint rmaTexIndex;
     uint emissiveTexIndex;
+    float subsurface;        // 0-1 blend weight for random-walk SSS
     uint _pad0;
-    uint _pad1;
+    float4 subsurfaceRadius; // xyz = per-channel mean free path in world units
+    float4 subsurfaceColor;  // xyz = scattering albedo that tints the SSS lobe
 };
 
 struct LightData {
@@ -56,12 +58,8 @@ struct LightData {
 };
 
 struct SkyParams {
-    float3 sunDirection;
-    float sunAngularRadius;   // radians, ~0.00465 for real sun
-    float sunIntensity;
-    float turbidity;          // 2-6 typical, 2=clear, 6=hazy
-    float groundAlbedo;       // 0-1, typical 0.1
-    float3 pad_sky;
+    float4 sunDirAndRadius;
+    float4 intensityTurbidityAlbedoPad;
 };
 
 struct ScenePushData {

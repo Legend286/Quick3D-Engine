@@ -1,5 +1,5 @@
 // minimal_test.slang — absolute minimal compute shader to validate pipeline
-RWTexture2D<float4> outputBuffer : register(u4);
+[[vk::binding(4, 0)]] RWTexture2D<float4> outputBuffer;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]

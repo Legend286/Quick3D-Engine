@@ -29,6 +29,15 @@ public class MaterialDefinition
 
     [JsonPropertyName("roughness")]
     public float Roughness { get; set; } = 1.0f;
+
+    [JsonPropertyName("subsurface")]
+    public float Subsurface { get; set; } = 0.0f;
+
+    [JsonPropertyName("subsurface_radius")]
+    public float[] SubsurfaceRadius { get; set; } = { 1.0f, 0.2f, 0.1f };
+
+    [JsonPropertyName("subsurface_color")]
+    public float[] SubsurfaceColor { get; set; } = { 1.0f, 1.0f, 1.0f };
 }
 
 public class Material
@@ -40,6 +49,9 @@ public class Material
     public RhiTexture? RmaTexture { get; set; }
     public float Metallic { get; set; }
     public float Roughness { get; set; }
+    public float Subsurface { get; set; } = 0.0f;
+    public float[] SubsurfaceRadius { get; set; } = { 1.0f, 0.2f, 0.1f };
+    public float[] SubsurfaceColor  { get; set; } = { 1.0f, 1.0f, 1.0f };
 }
 
 public static class MaterialLoader
@@ -64,8 +76,11 @@ public static class MaterialLoader
         var mat = new Material
         {
             AlbedoColor = def.AlbedoColor,
-            Metallic = def.Metallic,
-            Roughness = def.Roughness
+            Metallic    = def.Metallic,
+            Roughness   = def.Roughness,
+            Subsurface       = def.Subsurface,
+            SubsurfaceRadius = def.SubsurfaceRadius,
+            SubsurfaceColor  = def.SubsurfaceColor,
         };
 
         var dir = Path.GetDirectoryName(path) ?? "";

@@ -15,8 +15,8 @@ struct TriangleVOut {
 // `[ri->render setVertexBytes:data length:size atIndex:0];`
 // So we should register our buffers to t1 and t2 to avoid collision with push constants!
 
-StructuredBuffer<float3> positions : register(t1);
-StructuredBuffer<float3> colors    : register(t2);
+[[vk::binding(1, 0)]] StructuredBuffer<float3> positions;
+[[vk::binding(2, 0)]] StructuredBuffer<float3> colors;
 
 [push_constant]
 ConstantBuffer<CameraData> cam;

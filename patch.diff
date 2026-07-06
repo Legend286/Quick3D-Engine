@@ -1,0 +1,295 @@
+--- a/Game/PathTracerPass.cs
++++ b/Game/PathTracerPass.cs
+@@ -29,6 +29,8 @@
+     private RhiShader _blitFs;
+     private RhiPipeline _blitPipeline;
+     private RhiPipeline _blitPipelineWithDepth;
++    private RhiSampler _blitSampler;
++    private RhiSampler _computeSampler;
+ 
+     private RhiTexture _outputBuffer;
+     private RhiTexture _accumulationBuffer;
+@@ -41,12 +43,15 @@
+     private RhiBuffer _materialBuffer;
+     private RhiBuffer _cameraBuffer;
+     private RhiBuffer _lightBuffer;
+ 
+     private uint _lastWidth;
+     private uint _lastHeight;
++    private uint _frameCount;
+     private int _lastInstanceHash;
+ 
+     public PathTracerPass(RhiDevice device, World world, SceneGraph scene, ScenePass scenePass, string contentRoot, BindlessHeap sharedHeap)
+@@ -100,24 +105,45 @@
+         uint w = ctx.Width > 0 ? ctx.Width : 1280;
+         uint h = ctx.Height > 0 ? ctx.Height : 720;
+ 
+         if (_outputBuffer == null || _lastWidth != w || _lastHeight != h)
+         {
+             _outputBuffer?.Dispose();
++            _accumulationBuffer?.Dispose();
+             _outputBuffer = RhiTexture.CreateStorage(_device, w, h, RhiNative.TextureFormat.Rgba16Float);
++            _accumulationBuffer = RhiTexture.CreateStorage(_device, w, h, RhiNative.TextureFormat.Rgba16Float);
+             _lastWidth = w;
+             _lastHeight = h;
++            _frameCount = 0;
+         }
+ 
+-        // DIAGNOSTIC: compute writes magenta → blit samples from _outputBuffer
+-        sink.BeginComputePass("Test Compute");
++        var uniqueMeshes = new HashSet<Engine.Assets.Mesh>();
++        var _instances = new List<InstanceData>();
++        var _parts = new List<PartData>();
++        var _materials = new List<MaterialData>();
++        
++        uint instanceId = 0;
++        Vector3 instAabbMin = new Vector3(float.MaxValue);
++        Vector3 instAabbMax = new Vector3(float.MinValue);
++        
++        foreach (var id in _world.Entities)
++        {
++            if (_world.TryGet<ModelComponent>(id, out var mc))
++            {
++                var tc = _world.TryGet<Transform>(id, out var t) ? t : Transform.Default;
++                
++                var model = AssetRegistry.GetModel(mc.ModelId);
++                if (model == null || model.Parts == null) continue;
++                
++                foreach (var p in model.Parts)
++                {
++                    var mesh = AssetRegistry.GetMesh(p.MeshId);
++                    if (mesh == null) continue;
++                    uniqueMeshes.Add(mesh);
++                    
++                    var modelMatrix = Matrix4x4.CreateScale(tc.Scale) * 
++                                      Matrix4x4.CreateFromQuaternion(tc.Rotation) * 
++                                      Matrix4x4.CreateTranslation(tc.Position);
++                                      
++                    uint firstPart = (uint)_parts.Count;
++                    
++                    foreach (var part in model.Parts)
++                    {
++                        uint matIdx = (uint)_materials.Count;
++                        uint instIdx = (uint)_instances.Count;
++                        
++                        var material = AssetRegistry.GetMaterial(part.MaterialId);
++                        Vector4 baseColor = new Vector4(1.0f);
++                        Vector4 emissiveColor = new Vector4(0.0f);
++                        uint albedoTex = 0xFFFFFFFF;
++                        uint normalTex = 0xFFFFFFFF;
++                        uint rmaTex = 0xFFFFFFFF;
++                        uint emissiveTex = 0xFFFFFFFF;
++                        
++                        if (material != null)
++                        {
++                            baseColor = new Vector4(material.BaseColor, 1.0f);
++                            emissiveColor = new Vector4(material.EmissiveColor, 1.0f);
++                            albedoTex = GetTexIndex(material.AlbedoTexture);
++                            normalTex = GetTexIndex(material.NormalTexture);
++                            rmaTex = GetTexIndex(material.RmaTexture);
++                            emissiveTex = 0xFFFFFFFF;
++                        }
++                        else
++                        {
++                            // Hardcoded fallback material (pink emissive)
++                            baseColor = new Vector4(1.0f, 0.0f, 1.0f, 1.0f);
++                            emissiveColor = new Vector4(1.0f, 0.0f, 1.0f, 1.0f);
++                        }
++
++                        _materials.Add(new MaterialData {
++                            BaseColor = baseColor,
++                            EmissiveColor = emissiveColor,
++                            Metallic = material?.Metallic ?? 0.0f,
++                            Roughness = material?.Roughness ?? 1.0f,
++                            AlbedoTexIndex = albedoTex,
++                            NormalTexIndex = normalTex,
++                            RmaTexIndex = rmaTex,
++                            EmissiveTexIndex = emissiveTex
++                        });
++
++                        Vector3 partMin = p.BoundsMin;
++                        Vector3 partMax = p.BoundsMax;
++                        
++                        instAabbMin = Vector3.Min(instAabbMin, partMin);
++                        instAabbMax = Vector3.Max(instAabbMax, partMax);
++
++                        _parts.Add(new PartData {
++                            AabbMin = new Vector4(partMin, 1.0f),
++                            AabbMax = new Vector4(partMax, 1.0f),
++                            Vertices = mesh.VertexBuffer.DeviceAddress,
++                            Indices = mesh.IndexBuffer.DeviceAddress,
++                            IndexCount = mesh.IndexCount,
++                            MaterialIdx = matIdx,
++                            InstanceIdx = instIdx,
++                            Flags = mesh.IndexFormat == 32 ? 1u : 0u
++                        });
++                    }
++
++                    if (_parts.Count > firstPart)
++                    {
++                        _instances.Add(new InstanceData {
++                            ModelMatrix = modelMatrix,
++                            AabbMin = new Vector4(instAabbMin, 1.0f),
++                            AabbMax = new Vector4(instAabbMax, 1.0f),
++                            PartCount = (uint)(_parts.Count - firstPart),
++                            FirstPartIndex = firstPart
++                        });
++                    }
++                }
++            }
+         }
+ 
+-        // DIAGNOSTIC: compute writes magenta → blit samples from _outputBuffer
+-        sink.BeginComputePass("Test Compute");
++        if (_instances.Count > 0)
++        {
++            _instanceBuffer.Upload(CollectionsMarshal.AsSpan(_instances));
++            _partBuffer.Upload(CollectionsMarshal.AsSpan(_parts));
++            _materialBuffer.Upload(CollectionsMarshal.AsSpan(_materials));
++        }
++
++        var lights = new List<LightData>();
++        lights.Add(new LightData {
++            Position = new Vector4(0, 0, 0, 10.0f),
++            Direction = new Vector4(Vector3.Normalize(new Vector3(-0.5f, -1.0f, -0.5f)), 0.0f), // Dir Light
++            Color = new Vector4(1, 1, 1, 2.0f),
++            SpotParams = Vector4.Zero
++        });
++        _lightBuffer.Upload(CollectionsMarshal.AsSpan(lights));
++
++        CameraData camData = default;
++        camData.ViewProj = Matrix4x4.Identity;
++        camData.CameraPosition = new Vector4(0, 0, 0, 1.0f); // 1.0f exposure default
++
++        foreach (var id in _world.Entities)
++        {
++            if (_world.TryGet<Engine.Scene.Components.Camera>(id, out var cam))
++            {
++                var transform = _world.TryGet<Transform>(id, out var t) ? t : Transform.Default;
++                var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
++                var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, _lastAspect, cam.NearClip, cam.FarClip);
++                camData.ViewProj = view * proj;
++                Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
++                camData.InvViewProj = invVP;
++                camData.CameraPosition = new Vector4(transform.Position, 1.0f);
++                break;
++            }
++        }
++
++        if (camData.ViewProj == Matrix4x4.Identity)
++        {
++            camData.CameraPosition = new Vector4(0, 0, -5, 1.0f);
++            var view = Matrix4x4.CreateLookAt(new Vector3(0, 0, -5), Vector3.Zero, Vector3.UnitY);
++            var proj = Matrix4x4.CreatePerspectiveFieldOfView(60.0f * (MathF.PI / 180.0f), _lastAspect, 0.1f, 100.0f);
++            camData.ViewProj = view * proj;
++            Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP2);
++            camData.InvViewProj = invVP2;
++        }
++        _cameraBuffer.Upload(new ReadOnlySpan<CameraData>(ref camData));
++
++        bool hasGeometry = UpdateTlas(sink);
++
++        ScenePushData pushData = new ScenePushData {
++            Parts = _partBuffer.DeviceAddress,
++            Instances = _instanceBuffer.DeviceAddress,
++            Materials = _materialBuffer.DeviceAddress,
++            Camera = _cameraBuffer.DeviceAddress,
++            Lights = _lightBuffer.DeviceAddress,
++            LightCount = (uint)lights.Count,
++            FrameCount = _frameCount,
++            Resolution = new Vector2(w, h),
++            DebugFlags = DebugMode ? 1u : 0u,
++            HasGeometry = hasGeometry ? 1u : 0u,
++            Sky = new SkyParams {
++                SunDirAndRadius = new Vector4(Vector3.Normalize(new Vector3(0.5f, 1.0f, 0.5f)), 0.00465f),
++                IntensityTurbidityAlbedoPad = new Vector4(1.0f, 2.0f, 0.1f, 0.0f)
++            }
++        };
++
++        _frameCount++;
++
++        // --- PATH TRACING COMPUTE PASS ---
++        sink.BeginComputePass("Path Tracer Compute");
+         sink.BindPipeline(_computePipeline);
+-        sink.BindTexture(4, _outputBuffer);
++        
++        sink.UseBuffer(_instanceBuffer, 1);
++        sink.UseBuffer(_partBuffer, 1);
++        sink.UseBuffer(_materialBuffer, 1);
++        sink.UseBuffer(_cameraBuffer, 1);
++        sink.UseBuffer(_lightBuffer, 1);
++        foreach (var mesh in uniqueMeshes) {
++            sink.UseBuffer(mesh.VertexBuffer, 1);
++            sink.UseBuffer(mesh.IndexBuffer, 1);
++        }
++
++        if (_bindlessHeap.IsInitialized)
++        {
++            sink.BindHeap(1, _bindlessHeap);
++            sink.BindSampler(2, _computeSampler); // Match vk::binding(2, 0)
++        }
++
++        sink.BindTexture(3, _accumulationBuffer); // Match vk::binding(3, 0)
++        sink.BindTexture(4, _outputBuffer); // Match vk::binding(4, 0)
++
++        if (_tlas != null)
++        {
++            sink.BindAccelStruct(5, _tlas); // Match vk::binding(5, 0)
++            sink.UseAccelStruct(_tlas, 1);
++        }
++        
++        sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pushData));
+         sink.Dispatch((w + 63) / 64, h, 1, 64, 1, 1);
+         sink.EndComputePass();
+ 
++        // --- BLIT TO SCREEN ---
+         ctx.TryGetTexture(Engine.Game.Renderer.DepthBufferHandle, out RhiTexture depthTarget);
+         sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store,
+                               depthTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store);
+         sink.SetViewport(0, 0, w, h);
+-        sink.BindPipeline(_blitPipelineWithDepth);
+-        sink.BindTexture(1, _outputBuffer);
+-        sink.BindSampler(2, _blitSampler);
++        sink.BindPipeline(_blitPipeline);
++        sink.BindTexture(0, _outputBuffer);
++        sink.BindSampler(0, _blitSampler);
+         sink.Draw(3);
+         sink.EndPass();
+     }
+@@ -181,7 +497,7 @@
+                         InstanceId = instanceId,
+                         Mask = 0xFF,
+                         InstanceOffset = 0,
+-                        Flags = 0,
++                        Flags = 5u, // 1 (DisableTriangleCulling) | 4 (Opaque)
+                         Blas = mesh.Blas.Handle
+                     };
+ 
+@@ -195,7 +511,6 @@
+             }
+         }
+ 
+-        // Build any new BLASes first (only needed once per mesh)
+         if (blasesToBuild.Count > 0)
+         {
+             Log.Info($"[PathTracer] Building {blasesToBuild.Count} BLAS(es)", "PT");
+@@ -203,7 +518,6 @@
+             sink.BuildAccelStructs(span);
+         }
+ 
+-        // Compute a quick hash of the instance list to skip redundant TLAS rebuilds
+         foreach (var inst in instances)
+             hash = HashCode.Combine(hash, inst.InstanceId, inst.Blas.GetHashCode());
+ 
+@@ -213,11 +527,6 @@
+ 
+         _lastInstanceHash = hash;
+ 
+-        // Always create a TLAS even when there are zero instances.
+-        // A zero-instance TLAS never returns hits but keeps the Metal
+-        // command buffer valid — without a bound acceleration structure,
+-        // Slang's TraceRayInline silently faults the GPU, leaving the
+-        // output texture uninitialized (black).
+         if (_tlas != null)
+         {
+             _tlas.Dispose();

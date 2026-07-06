@@ -130,15 +130,20 @@ public static class SceneDataExtractor
                         uint matIdx = (uint)materials.Count;
                         if (material != null)
                         {
+                            var sr = material.SubsurfaceRadius;
+                            var sc = material.SubsurfaceColor;
                             materials.Add(new MaterialData {
-                                BaseColor = new Vector4(material.AlbedoColor[0], material.AlbedoColor[1], material.AlbedoColor[2], material.AlbedoColor[3]),
-                                EmissiveColor = new Vector4(material.EmissiveColor[0], material.EmissiveColor[1], material.EmissiveColor[2], 1.0f),
-                                Metallic = material.Metallic,
-                                Roughness = material.Roughness,
-                                AlbedoTexIndex = GetTexIndex(material.AlbedoTexture),
-                                NormalTexIndex = GetTexIndex(material.NormalTexture),
-                                RmaTexIndex = GetTexIndex(material.RmaTexture),
-                                EmissiveTexIndex = 0xFFFFFFFF
+                                BaseColor        = new Vector4(material.AlbedoColor[0], material.AlbedoColor[1], material.AlbedoColor[2], material.AlbedoColor[3]),
+                                EmissiveColor    = new Vector4(material.EmissiveColor[0], material.EmissiveColor[1], material.EmissiveColor[2], 1.0f),
+                                Metallic         = material.Metallic,
+                                Roughness        = material.Roughness,
+                                AlbedoTexIndex   = GetTexIndex(material.AlbedoTexture),
+                                NormalTexIndex   = GetTexIndex(material.NormalTexture),
+                                RmaTexIndex      = GetTexIndex(material.RmaTexture),
+                                EmissiveTexIndex = 0xFFFFFFFF,
+                                Subsurface       = material.Subsurface,
+                                SubsurfaceRadius = new Vector4(sr.Length > 2 ? sr[0] : 1f, sr.Length > 2 ? sr[1] : 0.2f, sr.Length > 2 ? sr[2] : 0.1f, 0f),
+                                SubsurfaceColor  = new Vector4(sc.Length > 2 ? sc[0] : 1f, sc.Length > 2 ? sc[1] : 1f,   sc.Length > 2 ? sc[2] : 1f,   0f),
                             });
                         }
                         else

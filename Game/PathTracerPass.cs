@@ -15,6 +15,81 @@ namespace Engine.Game;
 
 public class PathTracerPass : RenderPass
 {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PartData {
+        public Vector4 AabbMin;
+        public Vector4 AabbMax;
+        public ulong Vertices;
+        public ulong Indices;
+        public uint IndexCount;
+        public uint MaterialIdx;
+        public uint InstanceIdx;
+        public uint Flags; // 1 = 32-bit indices, 0 = 16-bit indices
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct InstanceData {
+        public Matrix4x4 ModelMatrix;
+        public Vector4 AabbMin;
+        public Vector4 AabbMax;
+        public uint PartCount;
+        public uint FirstPartIndex;
+        public uint pad1;
+        public uint pad2;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MaterialData {
+        public Vector4 BaseColor;
+        public Vector4 EmissiveColor;
+        public float Metallic;
+        public float Roughness;
+        public uint AlbedoTexIndex;
+        public uint NormalTexIndex;
+        public uint RmaTexIndex;
+        public uint EmissiveTexIndex;
+        public float Subsurface;
+        public uint _pad0;
+        public Vector4 SubsurfaceRadius;
+        public Vector4 SubsurfaceColor;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LightData {
+        public Vector4 Position;   // w = range
+        public Vector4 Direction;  // w = type (0=Dir, 1=Point, 2=Spot)
+        public Vector4 Color;      // w = intensity
+        public Vector4 SpotParams; // x = innerCone, y = outerCone
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CameraData {
+        public Matrix4x4 ViewProj;
+        public Matrix4x4 InvViewProj;
+        public Vector4 CameraPosition; // w = exposure
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct SkyParams {
+        public Vector4 SunDirAndRadius;
+        public Vector4 IntensityTurbidityAlbedoPad;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ScenePushData {
+        public ulong Parts;
+        public ulong Instances;
+        public ulong Materials;
+        public ulong Camera;
+        public ulong Lights;
+        public uint LightCount;
+        public uint FrameCount;
+        public Vector2 Resolution;
+        public uint DebugFlags;
+        public uint HasGeometry;
+        public SkyParams Sky;
+    }
+
     private RhiPipeline _computePipeline;
     private RhiShader _computeShader;
     private RhiPipeline _blitPipeline;
@@ -29,6 +104,7 @@ public class PathTracerPass : RenderPass
     private RhiAccelStruct _tlas;
     private uint _frameCount;
     private int _lastInstanceHash;
+    private Matrix4x4 _lastViewProj;
     private bool _hasGeometry;
     
     private readonly RhiDevice _device;
@@ -38,6 +114,7 @@ public class PathTracerPass : RenderPass
     
     private uint _lastWidth = 0;
     private uint _lastHeight = 0;
+    private float _lastAspect = 1.0f;
 
     private RhiBuffer _cameraBuffer;
     private RhiBuffer _lightBuffer;
@@ -45,12 +122,16 @@ public class PathTracerPass : RenderPass
     private RhiBuffer _partBuffer;
     private RhiBuffer _materialBuffer;
     
+    private List<InstanceData> _instances = new();
+    private List<PartData> _parts = new();
+    private List<MaterialData> _materials = new();
+    
     private RhiBindlessHeap _bindlessHeap;
 
     /// <summary>When true, renders hit distance as grayscale instead of full path tracing.</summary>
     public static bool DebugMode = false;
 
-    public PathTracerPass(RhiDevice device, IEntityStore world, SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap)
+    public unsafe PathTracerPass(RhiDevice device, IEntityStore world, SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap)
     {
         Name = scenePass.Name;
         _device = device;
@@ -61,12 +142,10 @@ public class PathTracerPass : RenderPass
         
         string shaderDir = Path.Combine(_contentRoot, "shaders");
         
-        // DIAGNOSTIC: minimal test shader to validate compute pipeline
-        string ptSrc = LoadShaderSource("shaders/minimal_test.slang");
+        string ptSrc = LoadShaderSource("shaders/path_tracer.slang");
         _computeShader = RhiShader.FromSource(_device, ptSrc, "computeMain", RhiNative.ShaderStage.Compute, shaderDir);
         _computePipeline = RhiPipeline.CreateCompute(_device, _computeShader);
         
-        // DIAGNOSTIC: test blit shader that samples from a texture
         string blitSrc = LoadShaderSource("shaders/blit.slang");
         _blitVs = RhiShader.FromSource(_device, blitSrc, "vertexMain", RhiNative.ShaderStage.Vertex, shaderDir);
         _blitFs = RhiShader.FromSource(_device, blitSrc, "fragmentMain", RhiNative.ShaderStage.Fragment, shaderDir);
@@ -74,6 +153,12 @@ public class PathTracerPass : RenderPass
         _blitPipelineWithDepth = RhiPipeline.CreateGraphics(_device, _blitVs, _blitFs, RhiNative.TextureFormat.Bgra8Unorm, enableDepth: true);
         _blitSampler = RhiSampler.Create(_device);
         _computeSampler = RhiSampler.Create(_device);
+
+        _instanceBuffer = RhiBuffer.Create(_device, 16384 * (ulong)sizeof(InstanceData), RhiNative.BufferUsage.Storage);
+        _partBuffer = RhiBuffer.Create(_device, 16384 * (ulong)sizeof(PartData), RhiNative.BufferUsage.Storage);
+        _materialBuffer = RhiBuffer.Create(_device, 16384 * (ulong)sizeof(MaterialData), RhiNative.BufferUsage.Storage);
+        _cameraBuffer = RhiBuffer.Create(_device, (ulong)sizeof(CameraData), RhiNative.BufferUsage.Storage);
+        _lightBuffer = RhiBuffer.Create(_device, 16384 * (ulong)sizeof(LightData), RhiNative.BufferUsage.Storage);
     }
 
     private string LoadShaderSource(string relPath)
@@ -96,32 +181,274 @@ public class PathTracerPass : RenderPass
 
         uint w = ctx.Width > 0 ? ctx.Width : 1280;
         uint h = ctx.Height > 0 ? ctx.Height : 720;
+        _lastAspect = (float)w / h;
 
         if (_outputBuffer == null || _lastWidth != w || _lastHeight != h)
         {
             _outputBuffer?.Dispose();
+            _accumulationBuffer?.Dispose();
+            
             _outputBuffer = RhiTexture.CreateStorage(_device, w, h, RhiNative.TextureFormat.Rgba16Float);
+            _accumulationBuffer = RhiTexture.CreateStorage(_device, w, h, RhiNative.TextureFormat.Rgba16Float);
+            
             _lastWidth = w;
             _lastHeight = h;
+            _frameCount = 0;
         }
 
-        // DIAGNOSTIC: compute writes magenta → blit samples from _outputBuffer
-        sink.BeginComputePass("Test Compute");
+        // --- POPULATE BUFFERS ---
+        CameraData camData = default;
+        camData.ViewProj = Matrix4x4.Identity;
+        camData.CameraPosition = new Vector4(0, 0, 0, 1.0f); // 1.0f exposure default
+
+        foreach (var id in _world.Entities)
+        {
+            if (_world.TryGet<Engine.Scene.Components.Camera>(id, out var cam))
+            {
+                var transform = _world.TryGet<Transform>(id, out var t) ? t : Transform.Default;
+                var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
+                var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, _lastAspect, cam.NearClip, cam.FarClip);
+                camData.ViewProj = view * proj;
+                Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
+                camData.InvViewProj = invVP;
+                camData.CameraPosition = new Vector4(transform.Position, 1.0f);
+                break;
+            }
+        }
+
+        if (camData.ViewProj == Matrix4x4.Identity)
+        {
+            camData.CameraPosition = new Vector4(0, 0, -5, 1.0f);
+            var view = Matrix4x4.CreateLookAt(new Vector3(0, 0, -5), Vector3.Zero, Vector3.UnitY);
+            var proj = Matrix4x4.CreatePerspectiveFieldOfView(60.0f * (MathF.PI / 180.0f), _lastAspect, 0.1f, 100.0f);
+            camData.ViewProj = view * proj;
+            Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP2);
+            camData.InvViewProj = invVP2;
+        }
+
+        if (camData.ViewProj != _lastViewProj)
+        {
+            _frameCount = 0;
+            _lastViewProj = camData.ViewProj;
+        }
+        
+        _cameraBuffer.Upload(new ReadOnlySpan<CameraData>(ref camData));
+
+        var lights = new List<LightData>();
+        foreach (var l in _scene.Lights)
+        {
+            float type = 0.0f;
+            if (l.Type == "point") type = 1.0f;
+            else if (l.Type == "spot") type = 2.0f;
+            
+            lights.Add(new LightData {
+                Position = new Vector4(l.Position[0], l.Position[1], l.Position[2], l.Range),
+                Direction = new Vector4(l.Direction[0], l.Direction[1], l.Direction[2], type),
+                Color = new Vector4(l.Color[0], l.Color[1], l.Color[2], l.Intensity),
+                SpotParams = new Vector4(l.InnerCone, l.OuterCone, 0, 0)
+            });
+        }
+        if (lights.Count == 0)
+        {
+            lights.Add(new LightData {
+                Position = new Vector4(0, 0, 0, 10.0f),
+                Direction = new Vector4(Vector3.Normalize(new Vector3(-1, 1, -1)), 0.0f), // Dir Light
+                Color = new Vector4(1, 1, 1, 2.0f),
+                SpotParams = Vector4.Zero
+            });
+        }
+        _lightBuffer.Upload(CollectionsMarshal.AsSpan(lights));
+
+        _instances.Clear();
+        _parts.Clear();
+        _materials.Clear();
+        
+        HashSet<Engine.Assets.Mesh> uniqueMeshes = new HashSet<Engine.Assets.Mesh>();
+
+        uint GetTexIndex(RhiTexture tex)
+        {
+            if (tex == null) return 0xFFFFFFFF;
+            if (_bindlessHeap.TryLookup(tex, out uint idx)) return idx;
+            return _bindlessHeap.Register(tex);
+        }
+
+        var sortedEntities = new List<ulong>(_world.Entities);
+        sortedEntities.Sort();
+
+        foreach (var id in sortedEntities)
+        {
+            if (_world.TryGet<ModelComponent>(id, out var modelComp))
+            {
+                var transform = _world.TryGet<Transform>(id, out var t) ? t : Transform.Default;
+                var modelMatrix = Matrix4x4.CreateScale(transform.Scale) * 
+                                  Matrix4x4.CreateFromQuaternion(transform.Rotation) * 
+                                  Matrix4x4.CreateTranslation(transform.Position);
+
+                var model = AssetRegistry.GetModel(modelComp.ModelId);
+                if (model != null && model.Parts != null)
+                {
+                    uint instIdx = (uint)_instances.Count;
+                    uint firstPart = (uint)_parts.Count;
+                    
+                    Vector3 instAabbMin = new Vector3(float.MaxValue);
+                    Vector3 instAabbMax = new Vector3(float.MinValue);
+
+                    foreach (var p in model.Parts)
+                    {
+                        var mesh = AssetRegistry.GetMesh(p.MeshId);
+                        var material = AssetRegistry.GetMaterial(p.MaterialId);
+                        
+                        if (mesh == null) continue;
+                        uniqueMeshes.Add(mesh);
+                        
+                        uint matIdx = (uint)_materials.Count;
+                        Vector4 baseColor = new Vector4(1, 1, 1, 1);
+                        Vector4 emissiveColor = new Vector4(0, 0, 0, 1);
+                        uint albedoTex = 0xFFFFFFFF;
+                        uint normalTex = 0xFFFFFFFF;
+                        uint rmaTex = 0xFFFFFFFF;
+                        uint emissiveTex = 0xFFFFFFFF;
+
+                        if (material != null)
+                        {
+                            if (material.AlbedoColor != null && material.AlbedoColor.Length >= 4) {
+                                baseColor = new Vector4(material.AlbedoColor[0], material.AlbedoColor[1], material.AlbedoColor[2], material.AlbedoColor[3]);
+                            }
+                            if (material.EmissiveColor != null && material.EmissiveColor.Length >= 4) {
+                                emissiveColor = new Vector4(material.EmissiveColor[0], material.EmissiveColor[1], material.EmissiveColor[2], material.EmissiveColor[3]);
+                            }
+                            albedoTex = GetTexIndex(material.AlbedoTexture);
+                            normalTex = GetTexIndex(material.NormalTexture);
+                            rmaTex = GetTexIndex(material.RmaTexture);
+                            emissiveTex = 0xFFFFFFFF;
+                        }
+                        else
+                        {
+                            // Hardcoded fallback material (pink emissive)
+                            baseColor = new Vector4(1.0f, 0.0f, 1.0f, 1.0f);
+                            emissiveColor = new Vector4(1.0f, 0.0f, 1.0f, 1.0f);
+                        }
+
+                        _materials.Add(new MaterialData {
+                            BaseColor = baseColor,
+                            EmissiveColor = emissiveColor,
+                            Metallic = material?.Metallic ?? 0.0f,
+                            Roughness = material?.Roughness ?? 1.0f,
+                            AlbedoTexIndex = albedoTex,
+                            NormalTexIndex = normalTex,
+                            RmaTexIndex = rmaTex,
+                            EmissiveTexIndex = emissiveTex
+                        });
+
+                        Vector3 partMin = p.BoundsMin;
+                        Vector3 partMax = p.BoundsMax;
+                        
+                        instAabbMin = Vector3.Min(instAabbMin, partMin);
+                        instAabbMax = Vector3.Max(instAabbMax, partMax);
+
+                        _parts.Add(new PartData {
+                            AabbMin = new Vector4(partMin, 1.0f),
+                            AabbMax = new Vector4(partMax, 1.0f),
+                            Vertices = mesh.VertexBuffer.DeviceAddress,
+                            Indices = mesh.IndexBuffer.DeviceAddress,
+                            IndexCount = mesh.IndexCount,
+                            MaterialIdx = matIdx,
+                            InstanceIdx = instIdx,
+                            Flags = mesh.IndexFormat == 32 ? 1u : 0u
+                        });
+                    }
+
+                    if (_parts.Count > firstPart)
+                    {
+                        _instances.Add(new InstanceData {
+                            ModelMatrix = modelMatrix,
+                            AabbMin = new Vector4(instAabbMin, 1.0f),
+                            AabbMax = new Vector4(instAabbMax, 1.0f),
+                            PartCount = (uint)(_parts.Count - firstPart),
+                            FirstPartIndex = firstPart
+                        });
+                    }
+                }
+            }
+        }
+
+        if (_instances.Count > 0)
+        {
+            _instanceBuffer.Upload(CollectionsMarshal.AsSpan(_instances));
+            _partBuffer.Upload(CollectionsMarshal.AsSpan(_parts));
+            _materialBuffer.Upload(CollectionsMarshal.AsSpan(_materials));
+        }
+
+        bool hasGeometry = UpdateTlas(sink);
+
+        ScenePushData pushData = new ScenePushData {
+            Parts = _partBuffer.DeviceAddress,
+            Instances = _instanceBuffer.DeviceAddress,
+            Materials = _materialBuffer.DeviceAddress,
+            Camera = _cameraBuffer.DeviceAddress,
+            Lights = _lightBuffer.DeviceAddress,
+            LightCount = (uint)lights.Count,
+            FrameCount = _frameCount,
+            Resolution = new Vector2(w, h),
+            DebugFlags = DebugMode ? 1u : 0u,
+            HasGeometry = hasGeometry ? 1u : 0u,
+            Sky = new SkyParams {
+                SunDirAndRadius = new Vector4(Vector3.Normalize(new Vector3(0.5f, 1.0f, 0.5f)), 0.00465f),
+                IntensityTurbidityAlbedoPad = new Vector4(1.0f, 2.0f, 0.1f, 0.0f)
+            }
+        };
+
+        _frameCount++;
+
+        // --- PATH TRACING COMPUTE PASS ---
+        sink.BeginComputePass("Path Tracer Compute");
         sink.BindPipeline(_computePipeline);
-        sink.BindTexture(4, _outputBuffer);
+        
+        sink.UseBuffer(_instanceBuffer, 1);
+        sink.UseBuffer(_partBuffer, 1);
+        sink.UseBuffer(_materialBuffer, 1);
+        sink.UseBuffer(_cameraBuffer, 1);
+        sink.UseBuffer(_lightBuffer, 1);
+        foreach (var mesh in uniqueMeshes) {
+            sink.UseBuffer(mesh.VertexBuffer, 1);
+            sink.UseBuffer(mesh.IndexBuffer, 1);
+            if (mesh.Blas != null) {
+                sink.UseAccelStruct(mesh.Blas, 1);
+            }
+        }
+
+        if (_bindlessHeap.IsInitialized)
+        {
+            sink.BindHeap(1, _bindlessHeap);
+            sink.BindSampler(0, _computeSampler);
+        }
+
+        sink.BindTexture(0, _accumulationBuffer);
+        sink.BindTexture(1, _outputBuffer);
+
+        if (_tlas != null)
+        {
+            sink.BindAccelStruct(2, _tlas);
+            sink.UseAccelStruct(_tlas, 1);
+        }
+        
+        sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pushData));
         sink.Dispatch((w + 63) / 64, h, 1, 64, 1, 1);
         sink.EndComputePass();
 
+        // --- BLIT TO SCREEN ---
         ctx.TryGetTexture(Engine.Game.Renderer.DepthBufferHandle, out RhiTexture depthTarget);
         sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store,
                               depthTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store);
         sink.SetViewport(0, 0, w, h);
-        sink.BindPipeline(_blitPipelineWithDepth);
-        sink.BindTexture(1, _outputBuffer);
-        sink.BindSampler(2, _blitSampler);
+        sink.BindPipeline(_blitPipeline);
+        sink.BindTexture(0, _outputBuffer);
+        sink.BindSampler(0, _blitSampler);
         sink.Draw(3);
         sink.EndPass();
     }
+
+    private Queue<RhiAccelStruct> _oldTlasQueue = new Queue<RhiAccelStruct>();
 
     private unsafe bool UpdateTlas(ICommandSink sink)
     {
@@ -130,7 +457,11 @@ public class PathTracerPass : RenderPass
 
         uint instanceId = 0;
         int hash = 0;
-        foreach (var id in _world.Entities)
+        
+        var validEntities = new List<ulong>(_world.Entities);
+        validEntities.Sort();
+        
+        foreach (var id in validEntities)
         {
             if (_world.TryGet<ModelComponent>(id, out var mc))
             {
@@ -181,7 +512,7 @@ public class PathTracerPass : RenderPass
                         InstanceId = instanceId,
                         Mask = 0xFF,
                         InstanceOffset = 0,
-                        Flags = 0,
+                        Flags = 5u, // 1 (DisableTriangleCulling) | 4 (Opaque)
                         Blas = mesh.Blas.Handle
                     };
 
@@ -195,7 +526,6 @@ public class PathTracerPass : RenderPass
             }
         }
 
-        // Build any new BLASes first (only needed once per mesh)
         if (blasesToBuild.Count > 0)
         {
             Log.Info($"[PathTracer] Building {blasesToBuild.Count} BLAS(es)", "PT");
@@ -203,32 +533,59 @@ public class PathTracerPass : RenderPass
             sink.BuildAccelStructs(span);
         }
 
-        // Compute a quick hash of the instance list to skip redundant TLAS rebuilds
         foreach (var inst in instances)
+        {
             hash = HashCode.Combine(hash, inst.InstanceId, inst.Blas.GetHashCode());
+            for (int i = 0; i < 12; i++)
+                hash = HashCode.Combine(hash, inst.Transform[i].GetHashCode());
+        }
 
         bool hasAny = instances.Count > 0;
         if (hash == _lastInstanceHash && _tlas != null)
+        {
+            // Keep queue cleaned up even when not rebuilding
+            if (_oldTlasQueue.Count > 3) _oldTlasQueue.Dequeue().Dispose();
             return hasAny;
+        }
 
         _lastInstanceHash = hash;
+        _frameCount = 0; // Reset accumulation when geometry or transforms change
 
-        // Always create a TLAS even when there are zero instances.
-        // A zero-instance TLAS never returns hits but keeps the Metal
-        // command buffer valid — without a bound acceleration structure,
-        // Slang's TraceRayInline silently faults the GPU, leaving the
-        // output texture uninitialized (black).
         if (_tlas != null)
         {
-            _tlas.Dispose();
+            _oldTlasQueue.Enqueue(_tlas);
+            if (_oldTlasQueue.Count > 3) _oldTlasQueue.Dequeue().Dispose();
             _tlas = null;
         }
 
-        Log.Info($"[PathTracer] TLAS: {instances.Count} instances", "PT");
-        var instArr = instances.ToArray();
-        _tlas = RhiAccelStruct.CreateTlas(_device, new ReadOnlySpan<RhiNative.TlasInstanceDesc>(instArr));
-        var tlasArr = new RhiAccelStruct[] { _tlas };
-        sink.BuildAccelStructs(new ReadOnlySpan<RhiAccelStruct>(tlasArr));
+        if (hasAny)
+        {
+            Log.Info($"[PathTracer] TLAS: {instances.Count} instances", "PT");
+            var instArr = instances.ToArray();
+            _tlas = RhiAccelStruct.CreateTlas(_device, new ReadOnlySpan<RhiNative.TlasInstanceDesc>(instArr));
+            var tlasArr = new RhiAccelStruct[] { _tlas };
+            sink.BuildAccelStructs(new ReadOnlySpan<RhiAccelStruct>(tlasArr));
+        }
         return hasAny;
+    }
+
+    public void Dispose()
+    {
+        _computePipeline?.Dispose();
+        _computeShader?.Dispose();
+        _blitPipeline?.Dispose();
+        _blitPipelineWithDepth?.Dispose();
+        _blitVs?.Dispose();
+        _blitFs?.Dispose();
+        _blitSampler?.Dispose();
+        _computeSampler?.Dispose();
+        _accumulationBuffer?.Dispose();
+        _outputBuffer?.Dispose();
+        _tlas?.Dispose();
+        _instanceBuffer?.Dispose();
+        _partBuffer?.Dispose();
+        _materialBuffer?.Dispose();
+        _cameraBuffer?.Dispose();
+        _lightBuffer?.Dispose();
     }
 }

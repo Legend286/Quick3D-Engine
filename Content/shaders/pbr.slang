@@ -8,8 +8,8 @@ ConstantBuffer<ScenePushData> push;
 struct BindlessHeap {
     Texture2D textures[4096];
 };
-[binding(2, 0)] ParameterBlock<BindlessHeap> bindless;
-[binding(1, 0)] SamplerState tex_sampler;
+[[vk::binding(2, 0)]] ParameterBlock<BindlessHeap> bindless;
+[[vk::binding(1, 0)]] SamplerState tex_sampler;
 
 struct VertexOutput {
     float4 position : SV_Position;
@@ -32,12 +32,16 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     
     Vertex v = part.vertices[index];
     
-    float4 worldPos = mul(inst.modelMatrix, float4(v.position, 1.0));
+    float3 vPos = float3(v.px, v.py, v.pz);
+    float3 vNorm = float3(v.nx, v.ny, v.nz);
+    float4 vTang = float4(v.tx, v.ty, v.tz, v.tw);
+    
+    float4 worldPos = mul(inst.modelMatrix, float4(vPos, 1.0));
     output.worldPos = worldPos.xyz;
     output.position = mul(push.camera->viewProj, worldPos);
-    output.normal = normalize(mul((float3x3)inst.modelMatrix, v.normal));
-    output.tangent = float4(normalize(mul((float3x3)inst.modelMatrix, v.tangent.xyz)), v.tangent.w);
-    output.uv = v.uv;
+    output.normal = normalize(mul((float3x3)inst.modelMatrix, vNorm));
+    output.tangent = float4(normalize(mul((float3x3)inst.modelMatrix, vTang.xyz)), vTang.w);
+    output.uv = float2(v.u, v.v);
     output.materialIdx = part.materialIdx;
     
     return output;

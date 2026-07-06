@@ -50,8 +50,10 @@ public class PbrPass : RenderPass
         public uint NormalTexIndex;
         public uint RmaTexIndex;
         public uint EmissiveTexIndex;
+        public float Subsurface;
         public uint _pad0;
-        public uint _pad1;
+        public Vector4 SubsurfaceRadius;
+        public Vector4 SubsurfaceColor;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -331,14 +333,17 @@ public class PbrPass : RenderPass
                         }
 
                         _materials.Add(new MaterialData {
-                            BaseColor = baseColor,
-                            EmissiveColor = emissiveColor,
-                            Metallic = material?.Metallic ?? 0.0f,
-                            Roughness = material?.Roughness ?? 1.0f,
-                            AlbedoTexIndex = albedoTex,
-                            NormalTexIndex = normalTex,
-                            RmaTexIndex = rmaTex,
-                            EmissiveTexIndex = 0xFFFFFFFF
+                            BaseColor        = baseColor,
+                            EmissiveColor    = emissiveColor,
+                            Metallic         = material?.Metallic ?? 0.0f,
+                            Roughness        = material?.Roughness ?? 1.0f,
+                            AlbedoTexIndex   = albedoTex,
+                            NormalTexIndex   = normalTex,
+                            RmaTexIndex      = rmaTex,
+                            EmissiveTexIndex = 0xFFFFFFFF,
+                            Subsurface       = material?.Subsurface ?? 0.0f,
+                            SubsurfaceRadius = Vector4.Zero,
+                            SubsurfaceColor  = Vector4.Zero,
                         });
 
                         // Use bounds loaded from the model

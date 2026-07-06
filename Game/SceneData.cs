@@ -37,8 +37,10 @@ public struct MaterialData {
     public uint NormalTexIndex;
     public uint RmaTexIndex;
     public uint EmissiveTexIndex;
+    public float Subsurface;         // 0-1: blend weight between diffuse and random-walk SSS
     public uint _pad0;
-    public uint _pad1;
+    public Vector4 SubsurfaceRadius; // xyz = per-channel mean free path (world units), w = unused
+    public Vector4 SubsurfaceColor;  // xyz = scattering albedo (tints the subsurface response)
 }
 
 [StructLayout(LayoutKind.Sequential)]
