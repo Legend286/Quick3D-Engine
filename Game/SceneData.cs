@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: MIT
+using System.Numerics;
+using System.Runtime.InteropServices;
+
+namespace Engine.Game;
+
+[StructLayout(LayoutKind.Sequential)]
+public struct PartData {
+    public Vector4 AabbMin;
+    public Vector4 AabbMax;
+    public ulong Vertices;
+    public ulong Indices;
+    public uint IndexCount;
+    public uint MaterialIdx;
+    public uint InstanceIdx;
+    public uint pad0;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct InstanceData {
+    public Matrix4x4 ModelMatrix;
+    public Vector4 AabbMin;
+    public Vector4 AabbMax;
+    public uint PartCount;
+    public uint FirstPartIndex;
+    public uint pad1;
+    public uint pad2;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct MaterialData {
+    public Vector4 BaseColor;
+    public Vector4 EmissiveColor;
+    public float Metallic;
+    public float Roughness;
+    public uint AlbedoTexIndex;
+    public uint NormalTexIndex;
+    public uint RmaTexIndex;
+    public uint EmissiveTexIndex;
+    public uint _pad0;
+    public uint _pad1;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct LightData {
+    public Vector4 Position;   // w = range
+    public Vector4 Direction;  // w = type (0=Dir, 1=Point, 2=Spot)
+    public Vector4 Color;      // w = intensity
+    public Vector4 SpotParams; // x = innerCone, y = outerCone
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct ScenePushData {
+    public ulong Parts;
+    public ulong Instances;
+    public ulong Materials;
+    public ulong Camera;
+    public ulong Lights;
+    public uint LightCount;
+    public uint FrameCount;
+    public Vector2 Resolution;
+    public uint DebugFlags;
+    public uint pad_debug;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct CameraData {
+    public Matrix4x4 ViewProj;
+    public Matrix4x4 InvViewProj;
+    public Vector4 CameraPosition; // w = exposure
+}

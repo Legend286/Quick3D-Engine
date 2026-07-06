@@ -55,7 +55,12 @@ public interface ICommandSink
     public void DrawIndexed(uint indexCount, uint instanceCount = 1,
                             uint firstIndex = 0, int vertexOffset = 0, uint firstInstance = 0);
     public void DrawIndexedIndirect(RhiBuffer indirectBuffer, ulong offset, uint drawCount, uint stride);
-    public void Dispatch(uint groupsX, uint groupsY, uint groupsZ);
+    public void Dispatch(uint groupsX, uint groupsY, uint groupsZ,
+                          uint threadsX = 64, uint threadsY = 1, uint threadsZ = 1);
+    public void BindAccelStruct(uint slot, RhiAccelStruct as_handle);
+    public void UseAccelStruct(RhiAccelStruct as_handle, uint usage = 1);
+    public void BuildAccelStructs(ReadOnlySpan<RhiAccelStruct> accelStructs);
+    public void CompactAccelStructs(ReadOnlySpan<RhiAccelStruct> accelStructs);
 }
 
 public sealed class RenderGraphContext

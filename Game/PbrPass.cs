@@ -63,19 +63,23 @@ public class PbrPass : RenderPass
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct PbrPushData {
+    private struct ScenePushData {
         public ulong Parts;
         public ulong Instances;
         public ulong Materials;
         public ulong Camera;
         public ulong Lights;
         public uint LightCount;
-        public uint _pad0;
+        public uint FrameCount;
+        public Vector2 Resolution;
+        public uint DebugFlags;
+        public uint pad_debug;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct CameraData {
         public Matrix4x4 ViewProj;
+        public Matrix4x4 InvViewProj;
         public Vector4 CameraPosition; // w = exposure
     }
 
@@ -125,7 +129,7 @@ public class PbrPass : RenderPass
     private RhiBindlessHeap _bindlessHeap;
 
     public unsafe PbrPass(RhiDevice device, IEntityStore world,
-                              SceneGraph scene, ScenePass scenePass, string contentRoot)
+                              SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap)
     {
         _device = device;
         _world = world;
@@ -134,9 +138,11 @@ public class PbrPass : RenderPass
         _contentRoot = contentRoot;
         Name = scenePass.Name;
 
+        string shaderDir = Path.Combine(_contentRoot, "shaders");
+
         string src = LoadShaderSource("shaders/pbr.slang");
-        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex);
-        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment);
+        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex, shaderDir);
+        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment, shaderDir);
 
         _pipeline = RhiPipeline.CreateGraphics(
             _device, _vs, _fs,
@@ -144,7 +150,7 @@ public class PbrPass : RenderPass
             enableDepth: true);
 
         string cullSrc = LoadShaderSource("shaders/cull.slang");
-        _cullCs = RhiShader.FromSource(_device, cullSrc, "computeMain", RhiNative.ShaderStage.Compute);
+        _cullCs = RhiShader.FromSource(_device, cullSrc, "computeMain", RhiNative.ShaderStage.Compute, shaderDir);
         _cullPipeline = RhiPipeline.CreateCompute(_device, _cullCs);
 
         _sampler = RhiSampler.Create(_device);
@@ -160,7 +166,7 @@ public class PbrPass : RenderPass
         _drawCmdBuffer = RhiBuffer.Create(_device, 4096 * 16, RhiNative.BufferUsage.Storage | RhiNative.BufferUsage.Indirect);
         _drawCountBuffer = RhiBuffer.Create(_device, 16, RhiNative.BufferUsage.Storage);
         
-        _bindlessHeap = new RhiBindlessHeap(_device, 4096);
+        _bindlessHeap = sharedHeap;
     }
 
     public override void Setup(RenderGraphBuilder builder)
@@ -215,6 +221,8 @@ public class PbrPass : RenderPass
                 var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
                 var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, _lastAspect, cam.NearClip, cam.FarClip);
                 camData.ViewProj = view * proj;
+                Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
+                camData.InvViewProj = invVP;
                 camData.CameraPosition = new Vector4(transform.Position, 1.0f);
                 break;
             }
@@ -226,6 +234,8 @@ public class PbrPass : RenderPass
             var view = Matrix4x4.CreateLookAt(new Vector3(0, 0, -5), Vector3.Zero, Vector3.UnitY);
             var proj = Matrix4x4.CreatePerspectiveFieldOfView(60.0f * (MathF.PI / 180.0f), _lastAspect, 0.1f, 100.0f);
             camData.ViewProj = view * proj;
+            Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP2);
+            camData.InvViewProj = invVP2;
         }
         
         _cameraBuffer.Upload(new ReadOnlySpan<CameraData>(ref camData));
@@ -409,15 +419,17 @@ public class PbrPass : RenderPass
                 sink.UseBuffer(mesh.IndexBuffer, 1);
             }
 
-            PbrPushData pbrPush = new PbrPushData {
+            ScenePushData pbrPush = new ScenePushData {
                 Parts = _partBuffer.DeviceAddress,
                 Instances = _instanceBuffer.DeviceAddress,
                 Materials = _materialBuffer.DeviceAddress,
                 Camera = _cameraBuffer.DeviceAddress,
                 Lights = _lightBuffer.DeviceAddress,
-                LightCount = (uint)lights.Count
+                LightCount = (uint)lights.Count,
+                FrameCount = 0,
+                Resolution = new Vector2(w, h)
             };
-            sink.PushConstants(0, (uint)sizeof(PbrPushData), (IntPtr)(&pbrPush));
+            sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pbrPush));
             
             // Bind bindless textures
             if (_bindlessHeap.IsInitialized)
@@ -475,6 +487,6 @@ public class PbrPass : RenderPass
         _lightBuffer?.Dispose();
         _drawCmdBuffer?.Dispose();
         _drawCountBuffer?.Dispose();
-        _bindlessHeap?.Dispose();
+        // _bindlessHeap is shared, owned by Renderer
     }
 }

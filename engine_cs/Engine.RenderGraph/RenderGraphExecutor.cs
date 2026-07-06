@@ -205,12 +205,18 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     public void DrawIndexedIndirect(RhiBuffer indirectBuffer, ulong offset, uint drawCount, uint stride)
         => _rec.DrawIndexedIndirect(indirectBuffer, offset, drawCount, stride);
 
-    public void Dispatch(uint groupsX, uint groupsY, uint groupsZ)
-        => _rec.Dispatch(groupsX, groupsY, groupsZ);
+    public void Dispatch(uint groupsX, uint groupsY, uint groupsZ,
+                          uint threadsX = 64, uint threadsY = 1, uint threadsZ = 1)
+        => _rec.Dispatch(groupsX, groupsY, groupsZ, threadsX, threadsY, threadsZ);
 
     public void Dispose()
     {
         _rec.Dispose();
         _transientHeap?.Dispose();
     }
+    
+    public void BindAccelStruct(uint slot, RhiAccelStruct as_handle) => _rec.BindAccelStruct(slot, as_handle);
+    public void UseAccelStruct(RhiAccelStruct as_handle, uint usage = 1) => _rec.UseAccelStruct(as_handle, usage);
+    public void BuildAccelStructs(ReadOnlySpan<RhiAccelStruct> accelStructs) => _rec.BuildAccelStructs(accelStructs);
+    public void CompactAccelStructs(ReadOnlySpan<RhiAccelStruct> accelStructs) => _rec.CompactAccelStructs(accelStructs);
 }

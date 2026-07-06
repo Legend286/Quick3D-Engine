@@ -28,6 +28,7 @@ public sealed class Renderer : IDisposable
     private readonly ImGuiRenderer? _imguiRenderer;
 
     private RenderPlan? _plan;
+    private SceneGraph? _currentScene;
 
     /// <summary>Sentinel handle on which the executor binds the swapchain
     /// back-buffer before each frame. Console-friendly constant so callers
@@ -35,8 +36,26 @@ public sealed class Renderer : IDisposable
     public static readonly ResourceHandle BackBufferHandle = new(0x80000000);
     public static readonly ResourceHandle DepthBufferHandle = new(0x80000001);
 
+    private string _lastSceneName = "";
+    private bool _usePathTracer = true;
+    private RhiBindlessHeap _sharedBindlessHeap;
+
     private RhiTexture? _depthTexture;
     private uint _depthWidth, _depthHeight;
+
+    public bool UsePathTracer
+    {
+        get => _usePathTracer;
+        set
+        {
+            if (_usePathTracer != value)
+            {
+                _usePathTracer = value;
+                if (_currentScene != null)
+                    RebuildRenderPlan(_currentScene, _contentRoot);
+            }
+        }
+    }
 
     public Renderer(RhiDevice device, RhiSwapchain swap, IEntityStore world, ImGuiRenderer? imguiRenderer = null)
     {
@@ -44,6 +63,7 @@ public sealed class Renderer : IDisposable
         _swap = swap;
         _world = world;
         _imguiRenderer = imguiRenderer;
+        _sharedBindlessHeap = new RhiBindlessHeap(_device, 4096);
     }
 
     public IEntityStore World => _world;
@@ -51,6 +71,7 @@ public sealed class Renderer : IDisposable
     public void LoadScene(string contentRoot, string sceneName)
     {
         _contentRoot = contentRoot;
+        _lastSceneName = sceneName;
         _loader = new SceneLoader(contentRoot);
         SceneGraph scene = _loader.Load(sceneName);
 
@@ -104,9 +125,20 @@ public sealed class Renderer : IDisposable
             });
         }
 
+        _currentScene = scene;
+        RebuildRenderPlan(scene, contentRoot);
+    }
+
+    private void RebuildRenderPlan(SceneGraph scene, string contentRoot)
+    {
         var passes = new List<RenderPass>();
         foreach (var scenePass in scene.Passes)
-            passes.Add(new PbrPass(_device, _world, scene, scenePass, contentRoot));
+        {
+            if (_usePathTracer)
+                passes.Add(new PathTracerPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap));
+            else
+                passes.Add(new PbrPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap));
+        }
             
         passes.Add(new GridPass(_device, _world, contentRoot, clearScreen: scene.Passes.Count == 0));
             
@@ -161,6 +193,8 @@ public sealed class Renderer : IDisposable
         _loader = null;
         _depthTexture?.Dispose();
         _depthTexture = null;
+        _sharedBindlessHeap?.Dispose();
+        _sharedBindlessHeap = null!;
     }
 }
 
