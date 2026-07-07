@@ -14,6 +14,7 @@ public partial class MainWindowViewModel : ObservableObject
     public ConsolePanelViewModel ConsoleVm { get; } = new();
     public HierarchyViewModel HierarchyVm { get; } = new();
     public InspectorViewModel InspectorVm { get; } = new();
+    public ContentBrowserViewModel ContentBrowserVm { get; } = new();
 
     /// <summary>Bound to the central viewport panel. Owns the Metal swapchain
     /// + WriteableBitmap pipeline on macOS. Null on Windows until Phase 2

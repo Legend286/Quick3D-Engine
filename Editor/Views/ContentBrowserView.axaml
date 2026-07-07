@@ -1,0 +1,61 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Engine.Editor.ViewModels"
+             x:Class="Engine.Editor.Views.ContentBrowserView"
+             x:DataType="vm:ContentBrowserViewModel">
+  <Grid ColumnDefinitions="200,4,*">
+    
+    <!-- Left panel: Directory Tree -->
+    <Border Grid.Column="0" Background="#1c1f24" BorderBrush="#2d3139" BorderThickness="0,0,1,0">
+      <TreeView ItemsSource="{Binding RootFolders}" SelectedItem="{Binding SelectedFolder}">
+        <TreeView.ItemTemplate>
+          <TreeDataTemplate ItemsSource="{Binding SubFolders}">
+            <StackPanel Orientation="Horizontal" Spacing="5">
+              <TextBlock Text="&#xE2C7;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" Foreground="#eac54f" VerticalAlignment="Center" />
+              <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
+            </StackPanel>
+          </TreeDataTemplate>
+        </TreeView.ItemTemplate>
+      </TreeView>
+    </Border>
+
+    <GridSplitter Grid.Column="1" Background="#2d3139" ResizeDirection="Columns" />
+
+    <!-- Right panel: Assets in Selected Folder -->
+    <Border Grid.Column="2" Background="#12151c" Padding="10">
+      <ScrollViewer>
+        <ItemsControl ItemsSource="{Binding CurrentAssets}">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+              <WrapPanel Orientation="Horizontal" ItemWidth="90" ItemHeight="100" />
+            </ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <!-- We use a Border that can receive drag events or start drags -->
+              <Border Background="Transparent" Padding="5" PointerPressed="OnAssetPointerPressed" ToolTip.Tip="{Binding FullPath}">
+                <StackPanel Spacing="5">
+                  <Border Background="#2d3139" CornerRadius="8" Width="64" Height="64" HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding IconGlyph}" 
+                               FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" 
+                               FontSize="32" 
+                               Foreground="#aab0b6" 
+                               HorizontalAlignment="Center" 
+                               VerticalAlignment="Center" />
+                  </Border>
+                  <TextBlock Text="{Binding Name}" 
+                             FontSize="11" 
+                             TextAlignment="Center" 
+                             TextWrapping="Wrap" 
+                             MaxLines="2" 
+                             TextTrimming="CharacterEllipsis" 
+                             Foreground="#d1d5da" />
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+    </Border>
+  </Grid>
+</UserControl>
