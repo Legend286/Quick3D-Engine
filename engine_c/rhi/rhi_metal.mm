@@ -1472,6 +1472,10 @@ static int32_t metal_create_accel_struct(RhiDevice* d, const RhiAccelStructDesc*
             // TLAS: inherit all resident resources from constituent BLASes
             std::unordered_set<__unsafe_unretained id<MTLResource>> seen;
             seen.insert(as); // already added
+            if (instance_buf) {
+                seen.insert(instance_buf);
+                asi->resident_resources.push_back(instance_buf);
+            }
             for (uint32_t i = 0; i < desc->instance_count; i++) {
                 if (desc->instances[i].blas) {
                     RhiAccelStructImpl* blas_impl = reinterpret_cast<RhiAccelStructImpl*>(desc->instances[i].blas);
