@@ -67,6 +67,7 @@ public class PathTracerPass : RenderPass
         public Matrix4x4 ViewProj;
         public Matrix4x4 InvViewProj;
         public Vector4 CameraPosition; // w = exposure
+        public Vector4 CameraForward;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -150,7 +151,10 @@ public class PathTracerPass : RenderPass
         _blitVs = RhiShader.FromSource(_device, blitSrc, "vertexMain", RhiNative.ShaderStage.Vertex, shaderDir);
         _blitFs = RhiShader.FromSource(_device, blitSrc, "fragmentMain", RhiNative.ShaderStage.Fragment, shaderDir);
         _blitPipeline = RhiPipeline.CreateGraphics(_device, _blitVs, _blitFs, RhiNative.TextureFormat.Bgra8Unorm, enableDepth: false);
-        _blitPipelineWithDepth = RhiPipeline.CreateGraphics(_device, _blitVs, _blitFs, RhiNative.TextureFormat.Bgra8Unorm, enableDepth: true);
+
+        string blitDepthSrc = LoadShaderSource("shaders/blit_depth.slang");
+        var blitDepthFs = RhiShader.FromSource(_device, blitDepthSrc, "fragmentMain", RhiNative.ShaderStage.Fragment, shaderDir);
+        _blitPipelineWithDepth = RhiPipeline.CreateGraphics(_device, _blitVs, blitDepthFs, RhiNative.TextureFormat.Bgra8Unorm, enableDepth: true);
         _blitSampler = RhiSampler.Create(_device);
         _computeSampler = RhiSampler.Create(_device);
 
@@ -206,12 +210,14 @@ public class PathTracerPass : RenderPass
             if (_world.TryGet<Engine.Scene.Components.Camera>(id, out var cam))
             {
                 var transform = _world.TryGet<Transform>(id, out var t) ? t : Transform.Default;
-                var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
+                var forward = Vector3.Transform(Vector3.UnitZ, transform.Rotation);
+                var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + forward, Vector3.UnitY);
                 var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, _lastAspect, cam.NearClip, cam.FarClip);
                 camData.ViewProj = view * proj;
                 Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
                 camData.InvViewProj = invVP;
                 camData.CameraPosition = new Vector4(transform.Position, 1.0f);
+                camData.CameraForward = new Vector4(forward, 0.0f);
                 break;
             }
         }
@@ -219,6 +225,7 @@ public class PathTracerPass : RenderPass
         if (camData.ViewProj == Matrix4x4.Identity)
         {
             camData.CameraPosition = new Vector4(0, 0, -5, 1.0f);
+            camData.CameraForward = new Vector4(0, 0, 1, 0.0f);
             var view = Matrix4x4.CreateLookAt(new Vector3(0, 0, -5), Vector3.Zero, Vector3.UnitY);
             var proj = Matrix4x4.CreatePerspectiveFieldOfView(60.0f * (MathF.PI / 180.0f), _lastAspect, 0.1f, 100.0f);
             camData.ViewProj = view * proj;
@@ -263,7 +270,7 @@ public class PathTracerPass : RenderPass
         _parts.Clear();
         _materials.Clear();
         
-        HashSet<Engine.Assets.Mesh> uniqueMeshes = new HashSet<Engine.Assets.Mesh>();
+
 
         uint GetTexIndex(RhiTexture tex)
         {
@@ -299,7 +306,6 @@ public class PathTracerPass : RenderPass
                         var material = AssetRegistry.GetMaterial(p.MaterialId);
                         
                         if (mesh == null) continue;
-                        uniqueMeshes.Add(mesh);
                         
                         uint matIdx = (uint)_materials.Count;
                         Vector4 baseColor = new Vector4(1, 1, 1, 1);
@@ -409,13 +415,8 @@ public class PathTracerPass : RenderPass
         sink.UseBuffer(_materialBuffer, 1);
         sink.UseBuffer(_cameraBuffer, 1);
         sink.UseBuffer(_lightBuffer, 1);
-        foreach (var mesh in uniqueMeshes) {
-            sink.UseBuffer(mesh.VertexBuffer, 1);
-            sink.UseBuffer(mesh.IndexBuffer, 1);
-            if (mesh.Blas != null) {
-                sink.UseAccelStruct(mesh.Blas, 1);
-            }
-        }
+        // Mesh BLAS, Vertex, and Index buffers are automatically made resident by the C++ backend
+        // when the TLAS is used.
 
         if (_bindlessHeap.IsInitialized)
         {
@@ -441,7 +442,11 @@ public class PathTracerPass : RenderPass
         sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store,
                               depthTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store);
         sink.SetViewport(0, 0, w, h);
-        sink.BindPipeline(_blitPipeline);
+        if (depthTarget != null) {
+            sink.BindPipeline(_blitPipelineWithDepth);
+        } else {
+            sink.BindPipeline(_blitPipeline);
+        }
         sink.BindTexture(0, _outputBuffer);
         sink.BindSampler(0, _blitSampler);
         sink.Draw(3);

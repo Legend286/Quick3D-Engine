@@ -37,6 +37,7 @@
 
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <sys/stat.h>
 #include <errno.h>
@@ -101,6 +102,9 @@ struct RhiBindlessHeapImpl {
     std::vector<uint32_t>               free_list;
     uint32_t                            next_unalloc = 0;
     std::unordered_map<RhiTexture*, uint32_t> texture_to_slot; // forward lookup
+    
+    std::vector<__unsafe_unretained id<MTLResource>> resident_cache;
+    bool resident_cache_dirty = true;
 };
 
 struct RhiAccelStructImpl {
@@ -110,6 +114,7 @@ struct RhiAccelStructImpl {
     __strong MTLAccelerationStructureDescriptor* descriptor;
     __strong id<MTLBuffer> scratch_buffer;
     __strong id<MTLBuffer> instance_buffer;
+    std::vector<__unsafe_unretained id<MTLResource>> resident_resources;
 };
 
 struct RhiShaderImpl {
@@ -855,7 +860,7 @@ static id<MTLDepthStencilState> GetOrCreateDepthStencilState(id<MTLDevice> devic
             return g_depth_stencil_state;
         }
         MTLDepthStencilDescriptor* desc = [[MTLDepthStencilDescriptor alloc] init];
-        desc.depthCompareFunction = MTLCompareFunctionLess;
+        desc.depthCompareFunction = MTLCompareFunctionLessEqual;
         desc.depthWriteEnabled    = YES;
         desc.backFaceStencil      = nil;
         desc.frontFaceStencil     = nil;
@@ -1361,6 +1366,7 @@ static int32_t metal_create_accel_struct(RhiDevice* d, const RhiAccelStructDesc*
         RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
         if (!di || !desc || !out) return -1;
         id<MTLBuffer> instance_buf = nil;
+        NSMutableArray<id<MTLAccelerationStructure>>* blas_array = nil;
         
         MTLAccelerationStructureDescriptor* mtl_desc = nil;
         if (desc->type == RHI_ACCEL_STRUCT_TYPE_BLAS) {
@@ -1395,7 +1401,7 @@ static int32_t metal_create_accel_struct(RhiDevice* d, const RhiAccelStructDesc*
             if (desc->instance_count > 0) {
                 instance_buf = [di->device newBufferWithLength:sizeof(MTLAccelerationStructureUserIDInstanceDescriptor) * desc->instance_count options:MTLResourceStorageModeShared];
                 MTLAccelerationStructureUserIDInstanceDescriptor* ptr = (MTLAccelerationStructureUserIDInstanceDescriptor*)[instance_buf contents];
-                NSMutableArray<id<MTLAccelerationStructure>>* blas_array = [NSMutableArray arrayWithCapacity:desc->instance_count];
+                blas_array = [NSMutableArray arrayWithCapacity:desc->instance_count];
                 for (uint32_t i = 0; i < desc->instance_count; i++) {
                     const RhiTlasInstanceDesc* src = &desc->instances[i];
                     ptr[i].transformationMatrix[0][0] = src->transform[0];
@@ -1448,6 +1454,36 @@ static int32_t metal_create_accel_struct(RhiDevice* d, const RhiAccelStructDesc*
         asi->descriptor = mtl_desc;
         asi->scratch_buffer = scratch;
         asi->instance_buffer = instance_buf;
+        
+        asi->resident_resources.push_back(as);
+        if (desc->type == RHI_ACCEL_STRUCT_TYPE_BLAS) {
+            for (uint32_t i = 0; i < desc->geometry_count; i++) {
+                const RhiBlasGeometryDesc* g = &desc->geometries[i];
+                if (g->vertex_buffer) {
+                    RhiBufferImpl* vbuf = reinterpret_cast<RhiBufferImpl*>(g->vertex_buffer);
+                    asi->resident_resources.push_back(vbuf->buf);
+                }
+                if (g->index_buffer) {
+                    RhiBufferImpl* ibuf = reinterpret_cast<RhiBufferImpl*>(g->index_buffer);
+                    asi->resident_resources.push_back(ibuf->buf);
+                }
+            }
+        } else {
+            // TLAS: inherit all resident resources from constituent BLASes
+            std::unordered_set<__unsafe_unretained id<MTLResource>> seen;
+            seen.insert(as); // already added
+            for (uint32_t i = 0; i < desc->instance_count; i++) {
+                if (desc->instances[i].blas) {
+                    RhiAccelStructImpl* blas_impl = reinterpret_cast<RhiAccelStructImpl*>(desc->instances[i].blas);
+                    for (auto res : blas_impl->resident_resources) {
+                        if (seen.insert(res).second) {
+                            asi->resident_resources.push_back(res);
+                        }
+                    }
+                }
+            }
+        }
+        
         *out = reinterpret_cast<RhiAccelStruct*>(asi);
         return 0;
     } else {
@@ -1505,11 +1541,15 @@ static void metal_cmd_bind_accel_struct(RhiEncoder* enc, uint32_t slot, RhiAccel
         // queries against the AS. Treat every bind of an AS as an implicit
         // Read residency declaration.
         if (ri->render) {
-            [ri->render useResource:asi->as usage:MTLResourceUsageRead];
+            if (!asi->resident_resources.empty()) {
+                [ri->render useResources:asi->resident_resources.data() count:asi->resident_resources.size() usage:MTLResourceUsageRead stages:MTLRenderStageVertex | MTLRenderStageFragment];
+            }
             [ri->render setVertexAccelerationStructure:asi->as atBufferIndex:slot];
             [ri->render setFragmentAccelerationStructure:asi->as atBufferIndex:slot];
         } else if (ri->compute) {
-            [ri->compute useResource:asi->as usage:MTLResourceUsageRead];
+            if (!asi->resident_resources.empty()) {
+                [ri->compute useResources:asi->resident_resources.data() count:asi->resident_resources.size() usage:MTLResourceUsageRead];
+            }
             [ri->compute setAccelerationStructure:asi->as atBufferIndex:slot];
         }
     }
@@ -1522,9 +1562,13 @@ static void metal_cmd_use_accel_struct(RhiEncoder* enc, RhiAccelStruct* as, uint
         RhiAccelStructImpl* asi = reinterpret_cast<RhiAccelStructImpl*>(as);
         MTLResourceUsage mtl_usage = (usage & 0x2u) ? MTLResourceUsageWrite : MTLResourceUsageRead;
         if (ri->render) {
-            [ri->render useResource:asi->as usage:mtl_usage];
+            if (!asi->resident_resources.empty()) {
+                [ri->render useResources:asi->resident_resources.data() count:asi->resident_resources.size() usage:mtl_usage stages:MTLRenderStageVertex | MTLRenderStageFragment];
+            }
         } else if (ri->compute) {
-            [ri->compute useResource:asi->as usage:mtl_usage];
+            if (!asi->resident_resources.empty()) {
+                [ri->compute useResources:asi->resident_resources.data() count:asi->resident_resources.size() usage:mtl_usage];
+            }
         }
     }
 }
@@ -1616,6 +1660,7 @@ static int32_t metal_bindless_register_texture(RhiBindlessHeap* h, RhiTexture* t
     hi->slot_to_resource[slot] = ti->tex;
     hi->slot_to_texture[slot]  = tex;
     hi->texture_to_slot[tex]    = slot;
+    hi->resident_cache_dirty = true;
     *out_slot = slot;
     return 0;
 }
@@ -1632,6 +1677,7 @@ static void metal_bindless_release_texture(RhiBindlessHeap* h, uint32_t slot) {
     hi->slot_to_texture[slot]  = nullptr;
     hi->slot_to_resource[slot] = nil;
     hi->free_list.push_back(slot);
+    hi->resident_cache_dirty = true;
 }
 
 static int32_t metal_bindless_lookup_slot(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot) {
@@ -1649,26 +1695,28 @@ static void metal_cmd_bind_bindless_heap(RhiEncoder* e, RhiBindlessHeap* h, uint
         RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(e);
         RhiBindlessHeapImpl* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
         
-        // Collect resident non-nil resources and declare residency.
-        std::vector<__unsafe_unretained id<MTLResource>> resident;
-        resident.reserve(hi->slot_to_resource.size());
-        for (auto& res : hi->slot_to_resource) {
-            if (res) resident.push_back(res);
+        if (hi->resident_cache_dirty) {
+            hi->resident_cache.clear();
+            hi->resident_cache.reserve(hi->slot_to_resource.size());
+            for (auto& res : hi->slot_to_resource) {
+                if (res) hi->resident_cache.push_back(res);
+            }
+            hi->resident_cache_dirty = false;
         }
         
         if (ri->render) {
             [ri->render setFragmentBuffer:hi->arg_buffer offset:0 atIndex:slot];
-            if (!resident.empty()) {
-                [ri->render useResources:resident.data()
-                                  count:resident.size()
+            if (!hi->resident_cache.empty()) {
+                [ri->render useResources:hi->resident_cache.data()
+                                  count:hi->resident_cache.size()
                                   usage:MTLResourceUsageRead
                                 stages:MTLRenderStageFragment];
             }
         } else if (ri->compute) {
             [ri->compute setBuffer:hi->arg_buffer offset:0 atIndex:slot];
-            if (!resident.empty()) {
-                [ri->compute useResources:resident.data()
-                                   count:resident.size()
+            if (!hi->resident_cache.empty()) {
+                [ri->compute useResources:hi->resident_cache.data()
+                                   count:hi->resident_cache.size()
                                    usage:MTLResourceUsageRead];
             }
         }

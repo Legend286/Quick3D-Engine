@@ -30,3 +30,13 @@ sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Stor
 ```
 
 The load/store operands for the unused depth attachment don't matter — `metal_begin_render_pass` gates the entire depth block on `desc->depth_attachment != nullptr`. `Discard` is preferred so the values compile against the project's `LoadOp`/`StoreOp` enum regardless of platform.
+
+## Resource Residency & Ray Tracing
+Metal requires explicit resource residency declarations (`[encoder useResource:usage:]` or `[encoder useResources:count:usage:]`) for any resources accessed implicitly by shaders (e.g. via argument buffers or bindless arrays) that are not directly bound to the encoder.
+
+For Ray Tracing (Path Tracing), this includes Acceleration Structures (AS) and their underlying vertex/index buffers. To avoid a massive CPU overhead of emitting thousands of per-frame `useResource` calls in C# userspace:
+- **BLAS Generation**: When a BLAS is built, its vertex buffer, index buffer, and the `id<MTLAccelerationStructure>` itself are cached into a `resident_resources` vector on the C++ `RhiAccelStructImpl`.
+- **TLAS Generation**: When a TLAS is built, it iterates through all constituent BLAS instances, inherits their `resident_resources`, deduplicates them, and adds them to its own vector.
+- **Binding**: Calling `sink.UseAccelStruct(_tlas)` emits a single `[encoder useResources:]` batch call to Metal, natively making the entire AS hierarchy and all referenced geometry buffers resident for the frame.
+
+This allows the C# Path Tracer to only manage the high-level TLAS without maintaining per-mesh loops.
