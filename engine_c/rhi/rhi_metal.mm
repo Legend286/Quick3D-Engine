@@ -1470,17 +1470,17 @@ static int32_t metal_create_accel_struct(RhiDevice* d, const RhiAccelStructDesc*
             }
         } else {
             // TLAS: inherit all resident resources from constituent BLASes
-            std::unordered_set<__unsafe_unretained id<MTLResource>> seen;
-            seen.insert(as); // already added
+            std::unordered_set<void*> seen;
+            seen.insert((__bridge void*)as); // already added
             if (instance_buf) {
-                seen.insert(instance_buf);
+                seen.insert((__bridge void*)instance_buf);
                 asi->resident_resources.push_back(instance_buf);
             }
             for (uint32_t i = 0; i < desc->instance_count; i++) {
                 if (desc->instances[i].blas) {
                     RhiAccelStructImpl* blas_impl = reinterpret_cast<RhiAccelStructImpl*>(desc->instances[i].blas);
                     for (auto res : blas_impl->resident_resources) {
-                        if (seen.insert(res).second) {
+                        if (seen.insert((__bridge void*)res).second) {
                             asi->resident_resources.push_back(res);
                         }
                     }
