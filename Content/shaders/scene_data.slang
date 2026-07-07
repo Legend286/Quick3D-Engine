@@ -5,6 +5,7 @@ struct CameraData {
     float4x4 viewProj;
     float4x4 invViewProj;
     float4 cameraPosition; // w = exposure
+    float4 cameraForward;
 };
 
 struct Vertex {

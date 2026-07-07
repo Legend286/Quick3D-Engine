@@ -378,6 +378,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     const int MAX_BOUNCES = 4;
     int bounce = 0;
     float lastBsdfPdf = 1.0;
+    float primaryDepth = 1.0;
     
     float3 sunDir    = push.sky.sunDirAndRadius.xyz;
     float  sunRadius = push.sky.sunDirAndRadius.w;
@@ -413,6 +414,9 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
             
             // Emissive (first hit only)
             if (bounce == 1) {
+                float4 clipPos = mul(push.camera->viewProj, float4(hitPos, 1.0));
+                primaryDepth = clipPos.z / clipPos.w;
+                
                 MaterialData mdata = push.materials[part.materialIdx];
                 float3 emissive = mdata.emissiveColor.rgb;
                 if (mdata.emissiveTexIndex != 0xFFFFFFFF) {
@@ -547,12 +551,12 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     
     float3 oldColor = push.frameCount == 0 ? float3(0.0) : accumulationBuffer[dispatchThreadID.xy].rgb;
     float3 newColor = lerp(oldColor, radiance, 1.0 / float(push.frameCount + 1));
-    accumulationBuffer[dispatchThreadID.xy] = float4(newColor, 1.0);
+    accumulationBuffer[dispatchThreadID.xy] = float4(newColor, primaryDepth);
     
     float  exposure = push.camera->cameraPosition.w;
     float3 exposed  = newColor * exposure;
     float a = 2.51f; float b2 = 0.03f; float c = 2.43f; float d = 0.59f; float e = 0.14f;
     float3 mapped = clamp((exposed*(a*exposed+b2))/(exposed*(c*exposed+d)+e), 0.0, 1.0);
     mapped = pow(max(mapped, 0.0), float3(1.0/2.2));
-    outputBuffer[dispatchThreadID.xy] = float4(mapped, 1.0);
+    outputBuffer[dispatchThreadID.xy] = float4(mapped, primaryDepth);
 }
