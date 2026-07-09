@@ -9,4 +9,5 @@ public interface IGameLoop : IDisposable
     void LoadScene(string contentRoot, string sceneName);
     void Update(InputState input);
     void RenderFrame(RhiTexture backBuffer, uint width, uint height);
+    void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target);
 }

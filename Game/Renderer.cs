@@ -129,6 +129,20 @@ public sealed class Renderer : IDisposable
         RebuildRenderPlan(scene, contentRoot);
     }
 
+    public void BuildThumbnailPlan(string contentRoot)
+    {
+        var sg = new SceneGraph();
+        sg.Passes.Add(new ScenePass { ClearColor = new float[] { 0.15f, 0.15f, 0.15f, 1.0f } });
+
+        sg.Lights.Add(new LightNode { Type = "directional", Color = new float[] { 1, 0.9f, 0.9f }, Intensity = 3.0f, Position = new float[] { 2, 2, 2 }, Direction = new float[] { -1, -1, -1 } });
+        sg.Lights.Add(new LightNode { Type = "directional", Color = new float[] { 0.8f, 0.8f, 1 }, Intensity = 1.5f, Position = new float[] { -2, 1, 2 }, Direction = new float[] { 1, -0.5f, -1 } });
+        sg.Lights.Add(new LightNode { Type = "directional", Color = new float[] { 1, 1, 1 }, Intensity = 2.0f, Position = new float[] { 0, 2, -3 }, Direction = new float[] { 0, -1, 1 } });
+
+        _currentScene = sg;
+        _usePathTracer = false;
+        RebuildRenderPlan(sg, contentRoot);
+    }
+
     private void RebuildRenderPlan(SceneGraph scene, string contentRoot)
     {
         var passes = new List<RenderPass>();

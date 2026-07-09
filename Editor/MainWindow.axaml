@@ -158,8 +158,8 @@
       <!-- Divider & Toggle Bar -->
       <Border Grid.Row="1" Background="#1c1f24" Height="28" BorderBrush="#2d3139" BorderThickness="0,1" Margin="0,4">
         <Grid ColumnDefinitions="*,Auto">
-          <TextBlock Text="CONSOLE &amp; DIAGNOSTICS" Foreground="#aab0b6" VerticalAlignment="Center" Margin="8,0" FontSize="11" FontWeight="SemiBold" LetterSpacing="0.05" />
-          <Button Grid.Column="1" Width="28" Height="24" Background="Transparent" BorderThickness="0" Padding="0" CornerRadius="3" VerticalAlignment="Center" Margin="0,0,4,0" Click="OnToggleConsoleClicked" ToolTip.Tip="Toggle Console">
+          <TextBlock Text="BOTTOM PANELS" Foreground="#aab0b6" VerticalAlignment="Center" Margin="8,0" FontSize="11" FontWeight="SemiBold" LetterSpacing="0.05" />
+          <Button Grid.Column="1" Width="28" Height="24" Background="Transparent" BorderThickness="0" Padding="0" CornerRadius="3" VerticalAlignment="Center" Margin="0,0,4,0" Click="OnToggleConsoleClicked" ToolTip.Tip="Toggle Bottom Panel">
             <Button.Styles>
               <Style Selector="Button:pointerover /template/ ContentPresenter#PART_ContentPresenter">
                 <Setter Property="Background" Value="#2d3139" />
@@ -175,7 +175,10 @@
 
       <TabControl x:Name="ConsolesTabControl" Grid.Row="2"
                   MinHeight="80" MaxHeight="800"
-                  Height="450" IsVisible="True">
+                  Height="300" IsVisible="True">
+        <TabItem Header="Content Browser">
+          <views:ContentBrowserView DataContext="{Binding ContentBrowserVm}" />
+        </TabItem>
         <TabItem Header="Console">
           <views:ConsolePanelView DataContext="{Binding ConsoleVm}" />
         </TabItem>
@@ -200,15 +203,10 @@
                   ShowsPreview="False"
                   Background="#1c1f24" />
 
-    <!-- Right rail: Assets / Source Control -->
+    <!-- Right rail: Source Control -->
     <TabControl Grid.Row="1" Grid.Column="4"
                 MinWidth="200" MaxWidth="480"
                 Margin="4">
-      <TabItem Header="Assets">
-        <Border Padding="0">
-          <views:ContentBrowserView DataContext="{Binding ContentBrowserVm}" />
-        </Border>
-      </TabItem>
       <TabItem Header="Source Control">
         <Border Padding="8">
           <TextBlock Text="(empty - Phase 5)" FontSize="13" />

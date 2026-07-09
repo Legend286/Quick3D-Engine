@@ -5,6 +5,8 @@ using System.IO;
 using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Avalonia.Threading;
+using Avalonia.Media.Imaging;
+using System.Threading.Tasks;
 
 namespace Engine.Editor.ViewModels;
 
@@ -27,6 +29,7 @@ public partial class ContentAsset : ObservableObject
     [ObservableProperty] private string _fullPath;
     [ObservableProperty] private string _assetType;
     [ObservableProperty] private string _iconGlyph;
+    [ObservableProperty] private Bitmap? _thumbnailBitmap;
 
     public ContentAsset(string name, string fullPath, string assetType, string iconGlyph)
     {
@@ -128,7 +131,20 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
                         continue; // Skip unrecognized
                 }
 
-                CurrentAssets.Add(new ContentAsset(Path.GetFileName(file), file, type, icon));
+                var asset = new ContentAsset(Path.GetFileName(file), file, type, icon);
+                CurrentAssets.Add(asset);
+                
+                // Queue thumbnail loading/generation
+                if (type == "Model" || type == "Material" || type == "Texture")
+                {
+                    Task.Run(async () => {
+                        var bmp = await Services.ThumbnailGenerator.GetOrGenerateThumbnailAsync(file, type);
+                        if (bmp != null)
+                        {
+                            Dispatcher.UIThread.Post(() => asset.ThumbnailBitmap = bmp);
+                        }
+                    });
+                }
             }
         }
         catch { }

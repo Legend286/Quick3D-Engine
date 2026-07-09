@@ -3,53 +3,74 @@
              xmlns:vm="using:Engine.Editor.ViewModels"
              x:Class="Engine.Editor.Views.ContentBrowserView"
              x:DataType="vm:ContentBrowserViewModel">
-  <Grid ColumnDefinitions="200,4,*">
+  
+  <UserControl.Styles>
+    <Style Selector="Border.AssetItem">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+    <Style Selector="Border.AssetItem:pointerover">
+      <Setter Property="Background" Value="#2d3139" />
+    </Style>
+    <Style Selector="TreeViewItem">
+      <Setter Property="Padding" Value="4,2" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid ColumnDefinitions="250,4,*">
     
     <!-- Left panel: Directory Tree -->
-    <Border Grid.Column="0" Background="#1c1f24" BorderBrush="#2d3139" BorderThickness="0,0,1,0">
-      <TreeView ItemsSource="{Binding RootFolders}" SelectedItem="{Binding SelectedFolder}">
+    <Border Grid.Column="0" Background="#1c1f24" BorderBrush="#2d3139" BorderThickness="0,0,1,0" Padding="8">
+      <TreeView ItemsSource="{Binding RootFolders}" SelectedItem="{Binding SelectedFolder}" Background="Transparent">
         <TreeView.ItemTemplate>
           <TreeDataTemplate ItemsSource="{Binding SubFolders}">
-            <StackPanel Orientation="Horizontal" Spacing="5">
-              <TextBlock Text="&#xE2C7;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" Foreground="#eac54f" VerticalAlignment="Center" />
-              <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="&#xE2C7;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" Foreground="#eac54f" VerticalAlignment="Center" FontSize="16" />
+              <TextBlock Text="{Binding Name}" VerticalAlignment="Center" FontSize="13" Foreground="#d1d5da" />
             </StackPanel>
           </TreeDataTemplate>
         </TreeView.ItemTemplate>
       </TreeView>
     </Border>
 
-    <GridSplitter Grid.Column="1" Background="#2d3139" ResizeDirection="Columns" />
+    <GridSplitter Grid.Column="1" Background="#1c1f24" ResizeDirection="Columns" ShowsPreview="False" />
 
     <!-- Right panel: Assets in Selected Folder -->
-    <Border Grid.Column="2" Background="#12151c" Padding="10">
+    <Border Grid.Column="2" Background="#12151c" Padding="16">
       <ScrollViewer>
         <ItemsControl ItemsSource="{Binding CurrentAssets}">
           <ItemsControl.ItemsPanel>
             <ItemsPanelTemplate>
-              <WrapPanel Orientation="Horizontal" ItemWidth="90" ItemHeight="100" />
+              <WrapPanel Orientation="Horizontal" ItemWidth="130" ItemHeight="160" />
             </ItemsPanelTemplate>
           </ItemsControl.ItemsPanel>
           <ItemsControl.ItemTemplate>
             <DataTemplate>
               <!-- We use a Border that can receive drag events or start drags -->
-              <Border Background="Transparent" Padding="5" PointerPressed="OnAssetPointerPressed" ToolTip.Tip="{Binding FullPath}">
-                <StackPanel Spacing="5">
-                  <Border Background="#2d3139" CornerRadius="8" Width="64" Height="64" HorizontalAlignment="Center">
-                    <TextBlock Text="{Binding IconGlyph}" 
-                               FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" 
-                               FontSize="32" 
-                               Foreground="#aab0b6" 
-                               HorizontalAlignment="Center" 
-                               VerticalAlignment="Center" />
+              <Border Classes="AssetItem" Padding="8" CornerRadius="6" Margin="4" PointerPressed="OnAssetPointerPressed" ToolTip.Tip="{Binding FullPath}">
+                <StackPanel Spacing="8">
+                  <Border Background="#1c1f24" BorderBrush="#2d3139" BorderThickness="1" CornerRadius="8" Width="104" Height="104" HorizontalAlignment="Center">
+                    <Panel>
+                      <TextBlock Text="{Binding IconGlyph}" 
+                                 FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" 
+                                 FontSize="48" 
+                                 Foreground="#aab0b6" 
+                                 HorizontalAlignment="Center" 
+                                 VerticalAlignment="Center" 
+                                 IsVisible="{Binding ThumbnailBitmap, Converter={x:Static ObjectConverters.IsNull}}" />
+                      <Image Source="{Binding ThumbnailBitmap}" 
+                             Stretch="UniformToFill" 
+                             HorizontalAlignment="Stretch" 
+                             VerticalAlignment="Stretch"
+                             IsVisible="{Binding ThumbnailBitmap, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                    </Panel>
                   </Border>
                   <TextBlock Text="{Binding Name}" 
-                             FontSize="11" 
+                             FontSize="12" 
                              TextAlignment="Center" 
                              TextWrapping="Wrap" 
                              MaxLines="2" 
                              TextTrimming="CharacterEllipsis" 
-                             Foreground="#d1d5da" />
+                             Foreground="#e0e6ed" />
                 </StackPanel>
               </Border>
             </DataTemplate>

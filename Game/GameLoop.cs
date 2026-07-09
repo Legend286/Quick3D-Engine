@@ -158,6 +158,110 @@ public sealed class GameLoop : IGameLoop
         }
     }
 
+    public void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target)
+    {
+        if (_device == null) return;
+        
+        // 1. Create a temporary world and renderer for the thumbnail pass
+        var tempWorld = new EcsWorld();
+        
+        // 2. Setup the camera and 3-point lighting
+        ulong camEnt = tempWorld.CreateEntity();
+        tempWorld.Set(camEnt, new Engine.Scene.Components.Camera { FieldOfView = 60.0f * (MathF.PI / 180.0f), NearClip = 0.1f, FarClip = 100.0f });
+        tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, 3.0f), Rotation = Quaternion.Identity });
+
+        // Note: Lights are populated directly into the dummy SceneGraph in Renderer.BuildThumbnailPlan
+
+        // 3. Spawn the requested asset
+        if (assetType == "Model")
+        {
+            var model = Engine.Assets.ModelLoader.LoadMdl(_device, assetPath);
+            ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
+            ulong ent = tempWorld.CreateEntity();
+            tempWorld.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
+            tempWorld.Set(ent, Transform.Default);
+        }
+        else if (assetType == "Material")
+        {
+            // 1. Generate sphere mesh file
+            string spherePath = System.IO.Path.Combine(contentRoot, ".cache", "thumbnails", "sphere.msh");
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(spherePath)!);
+            if (!System.IO.File.Exists(spherePath))
+            {
+                Engine.Game.PrimitiveMeshFactory.GenerateUVSphere(spherePath);
+            }
+            // 2. Load mesh and create a dynamic model
+            var mesh = Engine.Assets.MeshLoader.LoadMsh(_device, spherePath);
+            ulong meshId = Engine.Assets.AssetRegistry.RegisterMesh(mesh);
+            
+            // 3. Load material
+            var mat = Engine.Assets.MaterialLoader.LoadMat(_device, assetPath);
+            ulong matId = Engine.Assets.AssetRegistry.RegisterMaterial(mat);
+
+            var model = new Engine.Assets.Model();
+            model.Parts = new[] { new Engine.Assets.ModelPart { Mesh = mesh, MeshId = meshId, MaterialId = matId } };
+            ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
+
+            ulong ent = tempWorld.CreateEntity();
+            tempWorld.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
+            tempWorld.Set(ent, Transform.Default);
+        }
+
+        else if (assetType == "Texture")
+        {
+            string planePath = System.IO.Path.Combine(contentRoot, ".cache", "thumbnails", "plane.msh");
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(planePath)!);
+            if (!System.IO.File.Exists(planePath))
+            {
+                // Note: using GeneratePlane so we get a flat surface facing up (Y=0).
+                Engine.Game.PrimitiveMeshFactory.GeneratePlane(planePath, 2.0f, 2.0f);
+            }
+            var mesh = Engine.Assets.MeshLoader.LoadMsh(_device, planePath);
+            ulong meshId = Engine.Assets.AssetRegistry.RegisterMesh(mesh);
+
+            // Load texture
+            Engine.RHI.RhiTexture? t = null;
+            if (System.IO.File.Exists(assetPath))
+            {
+                t = Engine.Assets.TextureLoader.LoadTexture(_device, assetPath);
+            }
+
+            // Create an unlit material
+            var mat = new Engine.Assets.Material { 
+                AlbedoColor = new float[] { 1, 1, 1, 1 }, 
+                Metallic = 0.0f, 
+                Roughness = 1.0f, 
+                AlbedoTexture = t 
+            };
+            ulong matId = Engine.Assets.AssetRegistry.RegisterMaterial(mat);
+
+            var model = new Engine.Assets.Model();
+            model.Parts = new[] { new Engine.Assets.ModelPart { Mesh = mesh, MeshId = meshId, MaterialId = matId } };
+            ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
+
+            ulong ent = tempWorld.CreateEntity();
+            tempWorld.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
+            
+            // Rotate the plane to face the camera (camera is at Z=3 looking at Z=0). Plane normal is +Y.
+            // So we rotate around X axis by 90 degrees.
+            tempWorld.Set(ent, new Transform { Rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2.0f) });
+        }
+
+        // 4. Render to target using a temporary Renderer instance
+        // Swapchain can be null/fake since we are overriding backbuffer
+        using var tempRenderer = new Renderer(_device, _swap!, tempWorld, null);
+        tempRenderer.BuildThumbnailPlan(contentRoot);
+        try
+        {
+            tempRenderer.RenderFrame(target, 256, 256);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GameLoop] RenderThumbnail failed: {ex.Message}");
+        }
+        tempWorld.Dispose();
+    }
+
     public void Dispose()
     {
         _renderer?.Dispose();
