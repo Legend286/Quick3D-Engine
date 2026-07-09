@@ -50,8 +50,10 @@ public class PbrPass : RenderPass
         public uint NormalTexIndex;
         public uint RmaTexIndex;
         public uint EmissiveTexIndex;
+        public float Subsurface;
         public uint _pad0;
-        public uint _pad1;
+        public Vector4 SubsurfaceRadius;
+        public Vector4 SubsurfaceColor;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -63,19 +65,23 @@ public class PbrPass : RenderPass
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct PbrPushData {
+    private struct ScenePushData {
         public ulong Parts;
         public ulong Instances;
         public ulong Materials;
         public ulong Camera;
         public ulong Lights;
         public uint LightCount;
-        public uint _pad0;
+        public uint FrameCount;
+        public Vector2 Resolution;
+        public uint DebugFlags;
+        public uint pad_debug;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct CameraData {
         public Matrix4x4 ViewProj;
+        public Matrix4x4 InvViewProj;
         public Vector4 CameraPosition; // w = exposure
     }
 
@@ -122,11 +128,10 @@ public class PbrPass : RenderPass
     private List<PartData> _parts = new();
     private List<MaterialData> _materials = new();
 
-    private List<RhiTexture> _bindlessTextures = new();
-    private Dictionary<IntPtr, uint> _textureMap = new();
+    private RhiBindlessHeap _bindlessHeap;
 
     public unsafe PbrPass(RhiDevice device, IEntityStore world,
-                              SceneGraph scene, ScenePass scenePass, string contentRoot)
+                              SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap)
     {
         _device = device;
         _world = world;
@@ -135,9 +140,11 @@ public class PbrPass : RenderPass
         _contentRoot = contentRoot;
         Name = scenePass.Name;
 
+        string shaderDir = Path.Combine(_contentRoot, "shaders");
+
         string src = LoadShaderSource("shaders/pbr.slang");
-        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex);
-        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment);
+        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex, shaderDir);
+        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment, shaderDir);
 
         _pipeline = RhiPipeline.CreateGraphics(
             _device, _vs, _fs,
@@ -145,7 +152,7 @@ public class PbrPass : RenderPass
             enableDepth: true);
 
         string cullSrc = LoadShaderSource("shaders/cull.slang");
-        _cullCs = RhiShader.FromSource(_device, cullSrc, "computeMain", RhiNative.ShaderStage.Compute);
+        _cullCs = RhiShader.FromSource(_device, cullSrc, "computeMain", RhiNative.ShaderStage.Compute, shaderDir);
         _cullPipeline = RhiPipeline.CreateCompute(_device, _cullCs);
 
         _sampler = RhiSampler.Create(_device);
@@ -160,6 +167,8 @@ public class PbrPass : RenderPass
         // Indirect struct is 16 bytes
         _drawCmdBuffer = RhiBuffer.Create(_device, 4096 * 16, RhiNative.BufferUsage.Storage | RhiNative.BufferUsage.Indirect);
         _drawCountBuffer = RhiBuffer.Create(_device, 16, RhiNative.BufferUsage.Storage);
+        
+        _bindlessHeap = sharedHeap;
     }
 
     public override void Setup(RenderGraphBuilder builder)
@@ -214,6 +223,8 @@ public class PbrPass : RenderPass
                 var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
                 var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, _lastAspect, cam.NearClip, cam.FarClip);
                 camData.ViewProj = view * proj;
+                Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
+                camData.InvViewProj = invVP;
                 camData.CameraPosition = new Vector4(transform.Position, 1.0f);
                 break;
             }
@@ -225,6 +236,8 @@ public class PbrPass : RenderPass
             var view = Matrix4x4.CreateLookAt(new Vector3(0, 0, -5), Vector3.Zero, Vector3.UnitY);
             var proj = Matrix4x4.CreatePerspectiveFieldOfView(60.0f * (MathF.PI / 180.0f), _lastAspect, 0.1f, 100.0f);
             camData.ViewProj = view * proj;
+            Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP2);
+            camData.InvViewProj = invVP2;
         }
         
         _cameraBuffer.Upload(new ReadOnlySpan<CameraData>(ref camData));
@@ -257,19 +270,14 @@ public class PbrPass : RenderPass
         _instances.Clear();
         _parts.Clear();
         _materials.Clear();
-        _bindlessTextures.Clear();
-        _textureMap.Clear();
         
         HashSet<Engine.Assets.Mesh> uniqueMeshes = new HashSet<Engine.Assets.Mesh>();
 
         uint GetTexIndex(RhiTexture? tex)
         {
             if (tex == null) return 0xFFFFFFFF;
-            if (_textureMap.TryGetValue(tex.Handle, out uint idx)) return idx;
-            idx = (uint)_bindlessTextures.Count;
-            _bindlessTextures.Add(tex);
-            _textureMap[tex.Handle] = idx;
-            return idx;
+            if (_bindlessHeap.TryLookup(tex, out uint idx)) return idx;
+            return _bindlessHeap.Register(tex);
         }
 
         foreach (var id in _world.Entities)
@@ -325,14 +333,17 @@ public class PbrPass : RenderPass
                         }
 
                         _materials.Add(new MaterialData {
-                            BaseColor = baseColor,
-                            EmissiveColor = emissiveColor,
-                            Metallic = material?.Metallic ?? 0.0f,
-                            Roughness = material?.Roughness ?? 1.0f,
-                            AlbedoTexIndex = albedoTex,
-                            NormalTexIndex = normalTex,
-                            RmaTexIndex = rmaTex,
-                            EmissiveTexIndex = 0xFFFFFFFF
+                            BaseColor        = baseColor,
+                            EmissiveColor    = emissiveColor,
+                            Metallic         = material?.Metallic ?? 0.0f,
+                            Roughness        = material?.Roughness ?? 1.0f,
+                            AlbedoTexIndex   = albedoTex,
+                            NormalTexIndex   = normalTex,
+                            RmaTexIndex      = rmaTex,
+                            EmissiveTexIndex = 0xFFFFFFFF,
+                            Subsurface       = material?.Subsurface ?? 0.0f,
+                            SubsurfaceRadius = Vector4.Zero,
+                            SubsurfaceColor  = Vector4.Zero,
                         });
 
                         // Use bounds loaded from the model
@@ -413,23 +424,25 @@ public class PbrPass : RenderPass
                 sink.UseBuffer(mesh.IndexBuffer, 1);
             }
 
-            PbrPushData pbrPush = new PbrPushData {
+            ScenePushData pbrPush = new ScenePushData {
                 Parts = _partBuffer.DeviceAddress,
                 Instances = _instanceBuffer.DeviceAddress,
                 Materials = _materialBuffer.DeviceAddress,
                 Camera = _cameraBuffer.DeviceAddress,
                 Lights = _lightBuffer.DeviceAddress,
-                LightCount = (uint)lights.Count
+                LightCount = (uint)lights.Count,
+                FrameCount = 0,
+                Resolution = new Vector2(w, h)
             };
-            sink.PushConstants(0, (uint)sizeof(PbrPushData), (IntPtr)(&pbrPush));
+            sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pbrPush));
             
             // Bind bindless textures
-            if (_bindlessTextures.Count > 0)
+            if (_bindlessHeap.IsInitialized)
             {
-                // Slot 2 for textures (slot 0 is push constants)
-                sink.BindTextureArray(2, _bindlessTextures.ToArray());
-                // Slot 1 for sampler
-                sink.BindSampler(1, _sampler);
+                // Slot 1 for textures (auto-assigned buffer(1) by Slang Metal)
+                sink.BindHeap(1, _bindlessHeap);
+                // Slot 0 for sampler (auto-assigned sampler(0) by Slang Metal)
+                sink.BindSampler(0, _sampler);
             }
 
             // Perform multidraw!
@@ -479,5 +492,6 @@ public class PbrPass : RenderPass
         _lightBuffer?.Dispose();
         _drawCmdBuffer?.Dispose();
         _drawCountBuffer?.Dispose();
+        // _bindlessHeap is shared, owned by Renderer
     }
 }

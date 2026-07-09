@@ -113,6 +113,8 @@ add_library(EngineC
     engine_c/engine_mem.c
     engine_c/rhi/rhi_dispatch.c
     engine_c/input/input_dispatch.c
+    engine_c/engine_transcode.cpp
+    ${basis_universal_SOURCE_DIR}/transcoder/basisu_transcoder.cpp
 )
 if(APPLE)
     target_sources(EngineC PRIVATE
@@ -142,7 +144,11 @@ endif()
 target_include_directories(EngineC
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/engine_c
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine_c/rhi
-            ${slang_SOURCE_DIR}/include)
+            ${slang_SOURCE_DIR}/include
+            ${basis_universal_SOURCE_DIR})
+
+target_compile_definitions(EngineC PRIVATE
+    BASISD_SUPPORT_KTX2_ZSTD=0)
 
 target_compile_options(EngineC PRIVATE
     -Wall -Wextra -Wpedantic

@@ -35,6 +35,7 @@ public struct InputState
     public bool KeyA;
     public bool KeyS;
     public bool KeyD;
+    public bool KeyP;
     
     // Modifiers
     public bool Shift;

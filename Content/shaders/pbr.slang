@@ -1,72 +1,15 @@
 // pbr.slang
 
-struct CameraData {
-    float4x4 viewProj;
-    float4 cameraPosition; // w = exposure
-};
+#include "scene_data.slang"
 
-struct Vertex {
-    float3 position;
-    float3 normal;
-    float2 uv;
-    float4 tangent;
-};
-
-struct PartData {
-    float4 aabbMin;
-    float4 aabbMax;
-    Vertex* vertices;
-    uint* indices;
-    uint indexCount;
-    uint materialIdx;
-    uint instanceIdx;
-};
-
-struct InstanceData {
-    float4x4 modelMatrix;
-    float4 aabbMin;
-    float4 aabbMax;
-    uint partCount;
-    uint firstPartIndex;
-};
-
-struct MaterialData {
-    float4 baseColor;
-    float4 emissiveColor;
-    float metallic;
-    float roughness;
-    uint albedoTexIndex;
-    uint normalTexIndex;
-    uint rmaTexIndex;
-    uint emissiveTexIndex;
-    uint _pad0;
-    uint _pad1;
-};
-
-struct LightData {
-    float4 position;   // w = range
-    float4 direction;  // w = type (0=Dir, 1=Point, 2=Spot)
-    float4 color;      // w = intensity
-    float4 spotParams; // x = innerCone, y = outerCone
-};
-
-struct PbrPushData {
-    PartData* parts;
-    InstanceData* instances;
-    MaterialData* materials;
-    CameraData* camera;
-    LightData* lights;
-    uint lightCount;
-    uint _pad0;
-};
 [push_constant]
-ConstantBuffer<PbrPushData> push;
+ConstantBuffer<ScenePushData> push;
 
 struct BindlessHeap {
     Texture2D textures[4096];
 };
-[binding(2, 0)] ParameterBlock<BindlessHeap> bindless;
-[binding(1, 0)] SamplerState tex_sampler;
+[[vk::binding(2, 0)]] ParameterBlock<BindlessHeap> bindless;
+[[vk::binding(1, 0)]] SamplerState tex_sampler;
 
 struct VertexOutput {
     float4 position : SV_Position;
@@ -89,41 +32,23 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     
     Vertex v = part.vertices[index];
     
-    float4 worldPos = mul(inst.modelMatrix, float4(v.position, 1.0));
+    float3 vPos = float3(v.px, v.py, v.pz);
+    float3 vNorm = float3(v.nx, v.ny, v.nz);
+    float4 vTang = float4(v.tx, v.ty, v.tz, v.tw);
+    
+    float4 worldPos = mul(inst.modelMatrix, float4(vPos, 1.0));
     output.worldPos = worldPos.xyz;
     output.position = mul(push.camera->viewProj, worldPos);
-    output.normal = normalize(mul((float3x3)inst.modelMatrix, v.normal));
-    output.tangent = float4(normalize(mul((float3x3)inst.modelMatrix, v.tangent.xyz)), v.tangent.w);
-    output.uv = v.uv;
+    output.normal = normalize(mul((float3x3)inst.modelMatrix, vNorm));
+    output.tangent = float4(normalize(mul((float3x3)inst.modelMatrix, vTang.xyz)), vTang.w);
+    output.uv = float2(v.u, v.v);
     output.materialIdx = part.materialIdx;
     
     return output;
 }
 
 // Constants
-static const float PI = 3.14159265359;
-
-// GGX/Towbridge-Reitz normal distribution
-float D_GGX(float dotNH, float roughness) {
-    float alpha = roughness * roughness;
-    float alpha2 = alpha * alpha;
-    float denom = dotNH * dotNH * (alpha2 - 1.0) + 1.0;
-    return alpha2 / (PI * denom * denom);
-}
-
-// Schlick-Beckmann geometry shadowing
-float G_SchlicksmithGGX(float dotNL, float dotNV, float roughness) {
-    float r = (roughness + 1.0);
-    float k = (r * r) / 8.0;
-    float GL = dotNL / (dotNL * (1.0 - k) + k);
-    float GV = dotNV / (dotNV * (1.0 - k) + k);
-    return GL * GV;
-}
-
-// Fresnel Schlick
-float3 F_Schlick(float cosTheta, float3 F0) {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
-}
+#include "disney_bsdf.slang"
 
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target 
@@ -149,23 +74,49 @@ float4 fragmentMain(VertexOutput input) : SV_Target
 
     float3 N = normalize(input.normal);
     
+    // Build guarded tangent frame — runs before normal mapping so TBN is always valid
+    float3 T = normalize(input.tangent.xyz);
+    if (!(dot(T, T) > 0.001)) {
+        float3 up = abs(N.y) < 0.999 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+        T = normalize(cross(up, N));
+    }
+    float3 B = cross(N, T) * input.tangent.w;
+    if (!(dot(B, B) > 0.001)) {
+        B = cross(N, T);
+    }
+    B = normalize(B);
+    T = normalize(cross(B, N));
+    
     if (mat.normalTexIndex != 0xFFFFFFFF) {
-        float3 T = normalize(input.tangent.xyz);
-        float3 B = cross(N, T) * input.tangent.w;
         float3x3 TBN = float3x3(T, B, N);
         
         float3 normalMap = bindless.textures[mat.normalTexIndex].Sample(tex_sampler, input.uv).rgb;
         normalMap = normalMap * 2.0 - 1.0;
         N = normalize(mul(normalMap, TBN));
+        
+        // Rebuild B/T from new N for BSDF use
+        B = cross(N, T) * input.tangent.w;
+        if (!(dot(B, B) > 0.001)) B = cross(N, T);
+        B = normalize(B);
+        T = normalize(cross(B, N));
     }
     
     float3 V = normalize(push.camera->cameraPosition.xyz - input.worldPos);
-
-    float dotNV = clamp(dot(N, V), 0.001, 1.0);
-
-    float3 F0 = float3(0.04, 0.04, 0.04); 
-    F0 = lerp(F0, albedo, metallic);
-
+    
+    // Construct DisneyMaterial
+    DisneyMaterial dmat;
+    dmat.baseColor = albedo;
+    dmat.metallic = metallic;
+    dmat.subsurface = 0.0;
+    dmat.specular = 0.5; // Fixed default specular (re-mapped to 0.04 internally)
+    dmat.roughness = roughness;
+    dmat.specularTint = 0.0;
+    dmat.anisotropic = 0.0;
+    dmat.sheen = 0.0;
+    dmat.sheenTint = 0.5;
+    dmat.clearcoat = 0.0;
+    dmat.clearcoatGloss = 1.0;
+    
     float3 Lo = float3(0.0);
 
     for (uint i = 0; i < push.lightCount; i++) {
@@ -195,25 +146,12 @@ float4 fragmentMain(VertexOutput input) : SV_Target
             }
         }
         
-        float3 H = normalize(V + L);
-        float dotNL = clamp(dot(N, L), 0.001, 1.0);
-        float dotNH = clamp(dot(N, H), 0.0, 1.0);
-
-        // Cook-Torrance BRDF
-        float NDF = D_GGX(dotNH, roughness);   
-        float G   = G_SchlicksmithGGX(dotNL, dotNV, roughness);      
-        float3 F  = F_Schlick(max(dot(H, V), 0.0), F0);       
-        
-        float3 numerator    = NDF * G * F;
-        float denominator   = 4.0 * dotNV * dotNL + 0.001;
-        float3 specular     = numerator / denominator;
-        
-        float3 kS = F;
-        float3 kD = float3(1.0, 1.0, 1.0) - kS;
-        kD *= 1.0 - metallic;	  
-
         float3 radiance = light.color.rgb * light.color.w * attenuation;
-        Lo += (kD * albedo / PI + specular) * radiance * dotNL;
+        
+        float3 bsdf = EvaluateDisneyBSDF(dmat, N, V, L, T, B);
+        
+        float dotNL = clamp(dot(N, L), 0.001, 1.0);
+        Lo += bsdf * radiance * dotNL;
     }
     
     float3 ambient = float3(0.03, 0.03, 0.03) * albedo * ao;

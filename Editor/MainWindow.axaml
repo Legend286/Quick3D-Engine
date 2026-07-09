@@ -205,8 +205,8 @@
                 MinWidth="200" MaxWidth="480"
                 Margin="4">
       <TabItem Header="Assets">
-        <Border Padding="8">
-          <TextBlock Text="(empty - Phase 2)" FontSize="13" />
+        <Border Padding="0">
+          <views:ContentBrowserView DataContext="{Binding ContentBrowserVm}" />
         </Border>
       </TabItem>
       <TabItem Header="Source Control">

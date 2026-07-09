@@ -7,7 +7,7 @@ struct CameraData {
 [push_constant]
 ConstantBuffer<CameraData> push;
 
-StructuredBuffer<float3> vtxBuffer : register(t1);
+[[vk::binding(1, 0)]] StructuredBuffer<float3> vtxBuffer;
 
 struct VertexOutput {
     float4 position : SV_Position;

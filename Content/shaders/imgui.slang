@@ -17,7 +17,7 @@ struct PushConstants
 [push_constant]
 ConstantBuffer<PushConstants> u_pushConstants;
 
-ByteAddressBuffer vtxBuffer : register(t1);
+[[vk::binding(1, 0)]] ByteAddressBuffer vtxBuffer;
 
 [shader("vertex")]
 VertexOutput vertexMain(uint vid : SV_VertexID)
@@ -42,7 +42,7 @@ VertexOutput vertexMain(uint vid : SV_VertexID)
 }
 
 // Texture for font atlas
-Texture2D t_fontTexture : register(t0);
+[[vk::binding(0, 0)]] Texture2D t_fontTexture;
 
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target

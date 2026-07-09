@@ -21,6 +21,7 @@ public class Mesh
     public uint VertexCount;
     public uint IndexCount;
     public uint IndexFormat; // 16 or 32
+    public RhiAccelStruct? Blas;
 
     public Mesh(RhiBuffer vb, RhiBuffer ib, uint vc, uint ic, uint ifmt)
     {
@@ -43,10 +44,17 @@ public static class MeshLoader
         public uint IndexFormat;
     }
 
+    private static readonly System.Collections.Generic.Dictionary<string, Mesh> _cache = new();
+
+    public static void ClearCache() => _cache.Clear();
+
     public static unsafe Mesh LoadMsh(RhiDevice device, string path)
     {
         if (!File.Exists(path))
             throw new FileNotFoundException($"Mesh not found: {path}");
+
+        string fullPath = Path.GetFullPath(path);
+        if (_cache.TryGetValue(fullPath, out var cached)) return cached;
 
         byte[] fileBytes = File.ReadAllBytes(path);
         fixed (byte* ptr = fileBytes)
@@ -95,7 +103,9 @@ public static class MeshLoader
 
             ib.Upload(new IntPtr(ptr + 16 + expectedVSize), iSize);
 
-            return new Mesh(vb, ib, header->VertexCount, header->IndexCount, header->IndexFormat);
+            var mesh = new Mesh(vb, ib, header->VertexCount, header->IndexCount, header->IndexFormat);
+            _cache[fullPath] = mesh;
+            return mesh;
         }
     }
 }

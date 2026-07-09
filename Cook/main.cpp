@@ -13,6 +13,7 @@
 #include <limits>
 #include <future>
 #include <mutex>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
@@ -269,7 +270,42 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    int total_tasks = (int)model.images.size();
+    int defaultScene = model.defaultScene > -1 ? model.defaultScene : 0;
+    if (defaultScene >= 0 && defaultScene < model.scenes.size()) {
+        const tinygltf::Scene& scene = model.scenes[defaultScene];
+        std::function<void(int)> count_traverse = [&](int node_idx) {
+            if (node_idx < 0 || node_idx >= model.nodes.size()) return;
+            const tinygltf::Node& node = model.nodes[node_idx];
+            if (node.mesh >= 0 && node.mesh < model.meshes.size()) {
+                total_tasks += model.meshes[node.mesh].primitives.size();
+            }
+            for (int child_idx : node.children) {
+                count_traverse(child_idx);
+            }
+        };
+        for (int root_idx : scene.nodes) {
+            count_traverse(root_idx);
+        }
+    }
     
+    std::atomic<int> g_progress_current{0};
+    std::string g_progress_stage = "";
+    int g_progress_total = 0;
+    std::mutex g_progress_mutex;
+    
+    auto set_progress_stage = [&](const std::string& stage, int total) {
+        std::lock_guard<std::mutex> lock(g_progress_mutex);
+        g_progress_stage = stage;
+        g_progress_total = total;
+        g_progress_current.store(0, std::memory_order_relaxed);
+    };
+
+    auto report_progress = [&]() {
+        int current = g_progress_current.fetch_add(1, std::memory_order_relaxed) + 1;
+        std::lock_guard<std::mutex> lock(g_progress_mutex);
+        std::cout << "[PROGRESS] " << g_progress_stage << "|" << current << "|" << g_progress_total << std::endl;
+    };    
     // 0. Discover texture types
     enum class TexType { Albedo, Normal, RMA };
     std::vector<TexType> tex_types(model.images.size(), TexType::Albedo); // Default Albedo
@@ -294,62 +330,79 @@ int main(int argc, char** argv) {
     std::mutex tex_log_mutex;
     std::atomic<int> texture_failure_count{0};
 
-    for (size_t i = 0; i < model.images.size(); ++i) {
+    unsigned int num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 4;
 
-        texture_futures.push_back(std::async(std::launch::async, [&, i]() {
-            auto& img = model.images[i];
-            std::string temp_png = (fs::path(out_dir) / (base_name + "_tex_" + std::to_string(i) + ".png")).string();
-            std::string input_img;
-            int w = 0, h = 0, comp = 0;
-            
-            if (img.image.size() > 0) {
-                stbi_write_png(temp_png.c_str(), img.width, img.height, img.component, img.image.data(), img.width * img.component);
-                input_img = temp_png;
-                w = img.width; h = img.height; comp = img.component;
-            } else if (!img.uri.empty()) {
-                fs::path ext_path = in_path.parent_path() / img.uri;
-                unsigned char* raw = stbi_load(ext_path.string().c_str(), &w, &h, &comp, 0);
-                if (raw) {
-                    stbi_image_free(raw);
-                    input_img = ext_path.string();
+    std::mutex tex_job_mutex;
+    size_t current_tex = 0;
+    
+    set_progress_stage("Importing Textures", model.images.size());
+
+    for (unsigned int t = 0; t < num_threads; ++t) {
+        texture_futures.push_back(std::async(std::launch::async, [&]() {
+            while (true) {
+                size_t i;
+                {
+                    std::lock_guard<std::mutex> lock(tex_job_mutex);
+                    if (current_tex >= model.images.size()) return;
+                    i = current_tex++;
+                }
+
+                auto& img = model.images[i];
+                std::string temp_png = (fs::temp_directory_path() / (base_name + "_tex_" + std::to_string(i) + "_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".png")).string();
+                std::string input_img;
+                int w = 0, h = 0, comp = 0;
+                
+                if (img.image.size() > 0) {
+                    stbi_write_png(temp_png.c_str(), img.width, img.height, img.component, img.image.data(), img.width * img.component);
+                    input_img = temp_png;
+                    w = img.width; h = img.height; comp = img.component;
+                } else if (!img.uri.empty()) {
+                    fs::path ext_path = in_path.parent_path() / img.uri;
+                    unsigned char* raw = stbi_load(ext_path.string().c_str(), &w, &h, &comp, 0);
+                    if (raw) {
+                        stbi_image_free(raw);
+                        input_img = ext_path.string();
+                    } else {
+                        std::lock_guard<std::mutex> lock(tex_log_mutex);
+                        std::cerr << "Failed to load external texture " << ext_path << "\n";
+                        continue;
+                    }
                 } else {
+                    continue;
+                }
+                
+                bool is_normal = (tex_types[i] == TexType::Normal);
+                bool is_linear = (tex_types[i] == TexType::Normal || tex_types[i] == TexType::RMA);
+                std::string type_name = "albedo";
+                if (tex_types[i] == TexType::Normal) type_name = "normal";
+                if (tex_types[i] == TexType::RMA) type_name = "rma";
+                
+                std::string out_ktx2;
+                try {
+                    out_ktx2 = ExecuteBasisu(input_img, out_dir, is_normal, is_linear, w, h, comp, type_name);
+                    // Delete temp png if we extracted it
+                    if (input_img == temp_png) {
+                        std::error_code ec;
+                        fs::remove(temp_png, ec);
+                    }
+                }
+                catch (const std::exception& ex) {
                     std::lock_guard<std::mutex> lock(tex_log_mutex);
-                    std::cerr << "Failed to load external texture " << ext_path << "\\n";
-                    return;
+                    std::cerr << "ERROR: texture worker " << i << " threw: " << ex.what() << "\n";
+                    texture_failure_count.fetch_add(1, std::memory_order_relaxed);
+                    out_ktx2 = "";
                 }
-            } else {
-                return;
-            }
-            
-            bool is_normal = (tex_types[i] == TexType::Normal);
-            bool is_linear = (tex_types[i] == TexType::Normal || tex_types[i] == TexType::RMA);
-            std::string type_name = "albedo";
-            if (tex_types[i] == TexType::Normal) type_name = "normal";
-            if (tex_types[i] == TexType::RMA) type_name = "rma";
-            
-            std::string out_ktx2;
-            try {
-                out_ktx2 = ExecuteBasisu(input_img, out_dir, is_normal, is_linear, w, h, comp, type_name);
-                // Delete temp png if we extracted it
-                if (input_img == temp_png) {
-                    fs::remove(temp_png);
+                catch (...) {
+                    std::lock_guard<std::mutex> lock(tex_log_mutex);
+                    std::cerr << "ERROR: texture worker " << i << " threw non-std exception\n";
+                    texture_failure_count.fetch_add(1, std::memory_order_relaxed);
+                    out_ktx2 = "";
                 }
+                cooked_textures[i] = out_ktx2;
+                report_progress();
             }
-            catch (const std::exception& ex) {
-                std::lock_guard<std::mutex> lock(tex_log_mutex);
-                std::cerr << "ERROR: texture worker " << i << " threw: " << ex.what() << "\n";
-                texture_failure_count.fetch_add(1, std::memory_order_relaxed);
-                out_ktx2 = "";
-            }
-            catch (...) {
-                std::lock_guard<std::mutex> lock(tex_log_mutex);
-                std::cerr << "ERROR: texture worker " << i << " threw non-std exception\n";
-                texture_failure_count.fetch_add(1, std::memory_order_relaxed);
-                out_ktx2 = "";
-            }
-            cooked_textures[i] = out_ktx2;
         }));
-
     }
 
     for (auto& fut : texture_futures) {
@@ -482,7 +535,6 @@ int main(int argc, char** argv) {
         }
     };
 
-    int defaultScene = model.defaultScene > -1 ? model.defaultScene : 0;
     const tinygltf::Scene& scene = model.scenes[defaultScene];
 
     fs::create_directories(fs::path(out_dir) / "scenes");
@@ -658,47 +710,73 @@ int main(int argc, char** argv) {
         float pivot_y = total_min_y;
         float pivot_z = (total_min_z + total_max_z) * 0.5f;
 
-        size_t total_indices = 0;
+        std::atomic<size_t> total_indices{0};
         
+        std::mutex mesh_job_mutex;
+        size_t current_part = 0;
+        std::vector<std::future<void>> mesh_futures;
+        
+        set_progress_stage("Importing Mesh: " + obj_name, extracted.size());
+        
+        for (unsigned int t = 0; t < num_threads; ++t) {
+            mesh_futures.push_back(std::async(std::launch::async, [&]() {
+                while (true) {
+                    size_t i;
+                    {
+                        std::lock_guard<std::mutex> lock(mesh_job_mutex);
+                        if (current_part >= extracted.size()) return;
+                        i = current_part++;
+                    }
+                    auto& p = extracted[i];
+                    
+                    for (auto& v : p.v) {
+                        v.px -= pivot_x;
+                        v.py -= pivot_y;
+                        v.pz -= pivot_z;
+                    }
+                    p.min_x -= pivot_x; p.min_y -= pivot_y; p.min_z -= pivot_z;
+                    p.max_x -= pivot_x; p.max_y -= pivot_y; p.max_z -= pivot_z;
+
+                    std::string msh_name = obj_name + "_part_" + std::to_string(i) + ".msh";
+                    std::string msh_path = (fs::path(out_dir) / "models" / msh_name).string();
+                    
+                    std::ofstream out_file(msh_path, std::ios::binary);
+                    if (out_file) {
+                        uint32_t magic = 0x3148534D;
+                        uint32_t v_count = (uint32_t)p.v.size();
+                        uint32_t i_count = (uint32_t)p.i.size();
+                        uint32_t index_format = 32;
+                        out_file.write((char*)&magic, 4);
+                        out_file.write((char*)&v_count, 4);
+                        out_file.write((char*)&i_count, 4);
+                        out_file.write((char*)&index_format, 4);
+                        if (flip_winding) {
+                            for (size_t j = 0; j < p.i.size(); j += 3) {
+                                std::swap(p.i[j+1], p.i[j+2]);
+                            }
+                        }
+                        
+                        out_file.write((char*)p.v.data(), v_count * sizeof(Vertex));
+                        out_file.write((char*)p.i.data(), i_count * 4);
+                    }
+                    total_indices.fetch_add(p.i.size(), std::memory_order_relaxed);
+                    report_progress();
+                }
+            }));
+        }
+        
+        for (auto& fut : mesh_futures) {
+            fut.get();
+        }
+
         std::string output_mdl = (fs::path(out_dir) / "models" / (obj_name + ".mdl")).string();
         std::ofstream mdl_file(output_mdl);
         mdl_file << "{\n  \"version\": 2,\n  \"parts\": [\n";
 
         for (size_t i = 0; i < extracted.size(); ++i) {
             auto& p = extracted[i];
-            
-            for (auto& v : p.v) {
-                v.px -= pivot_x;
-                v.py -= pivot_y;
-                v.pz -= pivot_z;
-            }
-            p.min_x -= pivot_x; p.min_y -= pivot_y; p.min_z -= pivot_z;
-            p.max_x -= pivot_x; p.max_y -= pivot_y; p.max_z -= pivot_z;
-
             std::string msh_name = obj_name + "_part_" + std::to_string(i) + ".msh";
-            std::string msh_path = (fs::path(out_dir) / "models" / msh_name).string();
             
-            std::ofstream out_file(msh_path, std::ios::binary);
-            if (out_file) {
-                uint32_t magic = 0x3148534D;
-                uint32_t v_count = (uint32_t)p.v.size();
-                uint32_t i_count = (uint32_t)p.i.size();
-                uint32_t index_format = 32;
-                out_file.write((char*)&magic, 4);
-                out_file.write((char*)&v_count, 4);
-                out_file.write((char*)&i_count, 4);
-                out_file.write((char*)&index_format, 4);
-            if (flip_winding) {
-                for (size_t j = 0; j < p.i.size(); j += 3) {
-                    std::swap(p.i[j+1], p.i[j+2]);
-                }
-            }
-            
-            out_file.write((char*)p.v.data(), v_count * sizeof(Vertex));
-            out_file.write((char*)p.i.data(), i_count * 4);
-        }
-        total_indices += p.i.size();
-
             mdl_file << "    { \"mesh\": \"" << msh_name << "\"";
             if (p.material_idx >= 0 && p.material_idx < cooked_materials.size()) {
                 mdl_file << ", \"material\": \"" << cooked_materials[p.material_idx] << "\"";
@@ -710,7 +788,7 @@ int main(int argc, char** argv) {
         mdl_file << "  ],\n  \"bounds\": {\n";
         mdl_file << "    \"min\": [" << (total_min_x - pivot_x) << ", " << (total_min_y - pivot_y) << ", " << (total_min_z - pivot_z) << "],\n";
         mdl_file << "    \"max\": [" << (total_max_x - pivot_x) << ", " << (total_max_y - pivot_y) << ", " << (total_max_z - pivot_z) << "]\n";
-        mdl_file << "  },\n  \"triangle_count\": " << (total_indices / 3) << "\n}\n";
+        mdl_file << "  },\n  \"triangle_count\": " << (total_indices.load(std::memory_order_relaxed) / 3) << "\n}\n";
 
         if (!first_entity) scene_file << ",\n";
         first_entity = false;

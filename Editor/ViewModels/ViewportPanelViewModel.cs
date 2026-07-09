@@ -309,17 +309,24 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
 
     public void AddModelToScene(string mdlName)
     {
+        var mdlPath = Path.Combine(_contentRoot, "assets", mdlName);
+        InstantiateModel(mdlPath);
+    }
+
+    public void InstantiateModel(string absolutePath)
+    {
         if (_world == null || _device == null) return;
         
-        var mdlPath = Path.Combine(_contentRoot, "assets", mdlName);
-        if (!File.Exists(mdlPath)) return;
+        if (!File.Exists(absolutePath)) return;
         
-        var model = Engine.Assets.ModelLoader.LoadMdl(_device, mdlPath);
+        var model = Engine.Assets.ModelLoader.LoadMdl(_device, absolutePath);
         ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
         
         ulong ent = _world.CreateEntity();
         _world.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
         _world.Set(ent, Engine.Scene.Components.Transform.Default);
+        
+        IsDirty = true;
     }
 
     /// <summary>
@@ -532,6 +539,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
                 KeyA = _keyA,
                 KeyS = _keyS,
                 KeyD = _keyD,
+                KeyP = _keyP,
                 Events = frameEvents
             };
 
@@ -560,7 +568,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     private bool _leftDown;
     private bool _rightDown;
     private bool _middleDown;
-    private bool _keyW, _keyA, _keyS, _keyD;
+    private bool _keyW, _keyA, _keyS, _keyD, _keyP;
 
     public void AddPointerDelta(float dx, float dy)
     {
@@ -630,6 +638,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             case Avalonia.Input.Key.A: _keyA = isDown; break;
             case Avalonia.Input.Key.S: _keyS = isDown; break;
             case Avalonia.Input.Key.D: _keyD = isDown; break;
+            case Avalonia.Input.Key.P: _keyP = isDown; break;
         }
 
         var ek = MapAvaloniaKey(key);

@@ -25,6 +25,19 @@ internal static class Program
             }
         };
 
+        System.Runtime.Loader.AssemblyLoadContext.Default.Resolving += (context, assemblyName) =>
+        {
+            if (assemblyName.Name != null && assemblyName.Name.StartsWith("StbImageSharp"))
+            {
+                string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, assemblyName.Name + ".dll");
+                if (System.IO.File.Exists(path))
+                {
+                    return context.LoadFromAssemblyPath(path);
+                }
+            }
+            return null;
+        };
+
         System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (s, e) =>
         {
             Engine.CBindings.Log.Error($"[TaskScheduler] Unobserved exception: {e.Exception}", "Editor");

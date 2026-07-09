@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Markup.Xaml;
 using Engine.Editor.ViewModels;
 
@@ -19,6 +20,9 @@ public partial class ViewportPanelView : UserControl
         KeyUp += OnKeyUp;
         TextInput += OnTextInput;
         PointerWheelChanged += OnPointerWheelChanged;
+
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DropEvent, OnDrop);
     }
 
     private void InitializeComponent() => AvaloniaXamlLoader.Load(this);
@@ -87,11 +91,28 @@ public partial class ViewportPanelView : UserControl
             if (btn != -1) vm.QueueMouseButtonEvent(btn, false);
         }
 
-        if (e.InitialPressMouseButton == Avalonia.Input.MouseButton.Right)
+        if (props.PointerUpdateKind == Avalonia.Input.PointerUpdateKind.RightButtonReleased)
         {
             _isDragging = false;
             e.Pointer.Capture(null);
             e.Handled = true;
+        }
+    }
+
+    private void OnDrop(object? sender, DragEventArgs e)
+    {
+        if (DataContext is ViewportPanelViewModel vm && e.Data.GetFiles() is { } files)
+        {
+            foreach (var file in files)
+            {
+                if (file.Path.LocalPath is string path && path.EndsWith(".mdl"))
+                {
+                    // Dragged a model onto the viewport! Instantiate it in front of camera
+                    // Currently we don't have raycasting, so just spawn it at the origin or somewhere
+                    Engine.CBindings.Log.Info($"Dropped Model: {path}", "Editor");
+                    vm.InstantiateModel(path);
+                }
+            }
         }
     }
 

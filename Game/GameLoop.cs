@@ -54,7 +54,7 @@ public sealed class GameLoop : IGameLoop
         });
         _world.Set(_editorCameraEnt, Transform.Default with 
         {
-            Position = new Vector3(0, 0, -5) // stepped back a bit
+            Position = new Vector3(0, 5, -15) // stepped back a bit
         });
     }
 
@@ -62,6 +62,15 @@ public sealed class GameLoop : IGameLoop
     {
         if (_world == null) return;
         EnsureCamera();
+        
+        // Toggle between path tracer and rasterizer with P key
+        if (input.KeyP && !_wasKeyPDown)
+        {
+            _renderer!.UsePathTracer = !_renderer.UsePathTracer;
+            var mode = _renderer.UsePathTracer ? "Path Tracer" : "Rasterizer (PBR)";
+            Info($"[GameLoop] Switched to {mode}", "Game");
+        }
+        _wasKeyPDown = input.KeyP;
         
         if (_imguiRenderer != null)
         {
@@ -121,6 +130,7 @@ public sealed class GameLoop : IGameLoop
     private float _yaw;
     private float _lastMouseX;
     private float _lastMouseY;
+    private bool _wasKeyPDown;
 
     public void LoadScene(string contentRoot, string sceneName)
     {
