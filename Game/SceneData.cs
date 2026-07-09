@@ -5,7 +5,8 @@ using System.Runtime.InteropServices;
 namespace Engine.Game;
 
 [StructLayout(LayoutKind.Sequential)]
-public struct PartData {
+public struct PartData
+{
     public Vector4 AabbMin;
     public Vector4 AabbMax;
     public ulong Vertices;
@@ -17,7 +18,8 @@ public struct PartData {
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public struct InstanceData {
+public struct InstanceData
+{
     public Matrix4x4 ModelMatrix;
     public Vector4 AabbMin;
     public Vector4 AabbMax;
@@ -28,7 +30,8 @@ public struct InstanceData {
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public struct MaterialData {
+public struct MaterialData
+{
     public Vector4 BaseColor;
     public Vector4 EmissiveColor;
     public float Metallic;
@@ -44,7 +47,8 @@ public struct MaterialData {
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public struct LightData {
+public struct LightData
+{
     public Vector4 Position;   // w = range
     public Vector4 Direction;  // w = type (0=Dir, 1=Point, 2=Spot)
     public Vector4 Color;      // w = intensity
@@ -52,7 +56,8 @@ public struct LightData {
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public struct SkyParams {
+public struct SkyParams
+{
     public Vector3 SunDirection;
     public float SunAngularRadius;   // radians, ~0.00465 for real sun
     public float SunIntensity;
@@ -62,7 +67,8 @@ public struct SkyParams {
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public struct ScenePushData {
+public struct ScenePushData
+{
     public ulong Parts;
     public ulong Instances;
     public ulong Materials;
@@ -77,7 +83,8 @@ public struct ScenePushData {
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public struct CameraData {
+public struct CameraData
+{
     public Matrix4x4 ViewProj;
     public Matrix4x4 InvViewProj;
     public Vector4 CameraPosition; // w = exposure

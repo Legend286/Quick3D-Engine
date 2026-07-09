@@ -23,7 +23,7 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             var projectRoot = EngineLogBootstrap.ResolveProjectRoot(desktop.Args ?? Array.Empty<string>());
-            
+
             if (string.IsNullOrEmpty(projectRoot))
             {
                 // No project found or specified. Show Welcome Window.
@@ -148,7 +148,7 @@ internal static class EngineLogBootstrap
                 dir = parent.FullName;
             }
         }
-        
+
         var currDir = Directory.GetCurrentDirectory();
         for (int i = 0; i < 6; ++i)
         {

@@ -82,10 +82,10 @@ public partial class WelcomeWindow : Window
     {
         // 1. Initialize Logging
         EngineLogBootstrap.InitFromProject(projectRoot);
-        
+
         // 2. Launch MainWindow
         var mainWindow = new MainWindow();
-        
+
         if (Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop)
         {
             desktop.MainWindow = mainWindow;
@@ -214,7 +214,7 @@ obj/
                     string destDir = Path.GetDirectoryName(destPath) ?? "";
                     if (!Directory.Exists(destDir))
                         Directory.CreateDirectory(destDir);
-                    
+
                     CopyFileAtomic(file, destPath);
                 }
             }

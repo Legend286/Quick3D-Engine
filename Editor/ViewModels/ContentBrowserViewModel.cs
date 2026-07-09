@@ -15,7 +15,7 @@ public partial class ContentFolder : ObservableObject
     [ObservableProperty] private string _name;
     [ObservableProperty] private string _fullPath;
     public ObservableCollection<ContentFolder> SubFolders { get; } = new();
-    
+
     public ContentFolder(string name, string fullPath)
     {
         Name = name;
@@ -63,10 +63,10 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
 
         if (Directory.Exists(contentDir))
             RootFolders.Add(BuildFolderTree(contentDir, "Content"));
-            
+
         if (Directory.Exists(gameDir))
             RootFolders.Add(BuildFolderTree(gameDir, "Game"));
-            
+
         if (RootFolders.Count > 0)
         {
             SelectedFolder = RootFolders[0];
@@ -133,11 +133,12 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
 
                 var asset = new ContentAsset(Path.GetFileName(file), file, type, icon);
                 CurrentAssets.Add(asset);
-                
+
                 // Queue thumbnail loading/generation
                 if (type == "Model" || type == "Material" || type == "Texture")
                 {
-                    Task.Run(async () => {
+                    Task.Run(async () =>
+                    {
                         var bmp = await Services.ThumbnailGenerator.GetOrGenerateThumbnailAsync(file, type);
                         if (bmp != null)
                         {
@@ -172,7 +173,7 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
         {
             var oldSelectedPath = SelectedFolder?.FullPath;
             InitializeFolders();
-            
+
             if (oldSelectedPath != null)
             {
                 var folder = FindFolderByPath(RootFolders, oldSelectedPath);

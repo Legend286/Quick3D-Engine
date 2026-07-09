@@ -17,7 +17,7 @@ public sealed class ImGuiRenderer : IDisposable
     private RhiShader? _fs;
     private RhiPipeline? _pipeline;
     private RhiTexture? _fontTexture;
-    
+
     private RhiBuffer? _vertexBuffer;
     private RhiBuffer? _indexBuffer;
     private int _vertexBufferSize;
@@ -37,19 +37,19 @@ public sealed class ImGuiRenderer : IDisposable
         ImGui.SetCurrentContext(ctx);
         var io = ImGui.GetIO();
         io.BackendFlags |= ImGuiBackendFlags.RendererHasVtxOffset;
-        
+
         CreateFontTexture();
     }
-    
+
     public void LoadShaders(string contentRoot)
     {
         if (_pipeline != null) return;
-        
+
         string shaderPath = Path.Combine(contentRoot, "shaders", "imgui.slang");
         string src = File.ReadAllText(shaderPath);
         _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex);
         _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment);
-        
+
         // ImGui uses BGRA or RGBA. Let's assume pipeline is for Bgra8Unorm
         _pipeline = RhiPipeline.CreateGraphics(
             _device, _vs, _fs,
@@ -57,31 +57,31 @@ public sealed class ImGuiRenderer : IDisposable
             enableDepth: false,
             enableBlend: true); // ImGui requires alpha blending
     }
-    
+
     private unsafe void CreateFontTexture()
     {
         var io = ImGui.GetIO();
         io.Fonts.GetTexDataAsRGBA32(out byte* pixels, out int width, out int height, out int bytesPerPixel);
-        
+
         // Allocate texture
         _fontTexture = RhiTexture.Create2D(_device, (uint)width, (uint)height, RhiNative.TextureFormat.Rgba8Unorm);
-        
+
         // Upload data
         _fontTexture.Upload(new IntPtr(pixels), (uint)(width * height * bytesPerPixel), (uint)(width * bytesPerPixel));
         io.Fonts.SetTexID(new IntPtr(1)); // arbitrary ID
         io.Fonts.ClearTexData();
     }
-    
+
     public void UpdateInput(InputState input, uint width, uint height)
     {
         var io = ImGui.GetIO();
         io.DisplaySize = new Vector2(input.LogicalWidth > 0 ? input.LogicalWidth : width, input.LogicalHeight > 0 ? input.LogicalHeight : height);
         io.DisplayFramebufferScale = new Vector2(input.RenderScale > 0 ? input.RenderScale : 1.0f);
         io.DeltaTime = input.DeltaTime > 0 ? input.DeltaTime : 1.0f / 60.0f;
-        
+
         // Key states are now handled via events
     }
-    
+
     public void HandleEvent(NativeInput.EngineInputEvent ev)
     {
         var io = ImGui.GetIO();
@@ -229,13 +229,13 @@ public sealed class ImGuiRenderer : IDisposable
             _ => ImGuiKey.None,
         };
     }
-    
+
     public unsafe void Render(ICommandSink sink)
     {
         ImGui.Render();
         var drawData = ImGui.GetDrawData();
         if (drawData.CmdListsCount == 0) return;
-        
+
         // Ensure buffer sizes
         if (_vertexBufferSize < drawData.TotalVtxCount)
         {
@@ -249,29 +249,29 @@ public sealed class ImGuiRenderer : IDisposable
             _indexBufferSize = drawData.TotalIdxCount + 10000;
             _indexBuffer = RhiBuffer.Create(_device, (uint)(_indexBufferSize * sizeof(ushort)), RhiNative.BufferUsage.Index);
         }
-        
+
         // Upload data
         int vtxOffset = 0;
         int idxOffset = 0;
-        
+
         // We'll write to mapped buffers ideally, but for now we'll collect and update
         var vtxData = new ImDrawVert[drawData.TotalVtxCount];
         var idxData = new ushort[drawData.TotalIdxCount];
-        
+
         for (int n = 0; n < drawData.CmdListsCount; n++)
         {
             var cmdList = drawData.CmdLists[n];
-            
+
             var vPtr = (ImDrawVert*)cmdList.VtxBuffer.Data;
             for (int i = 0; i < cmdList.VtxBuffer.Size; i++) vtxData[vtxOffset + i] = vPtr[i];
-            
+
             var iPtr = (ushort*)cmdList.IdxBuffer.Data;
             for (int i = 0; i < cmdList.IdxBuffer.Size; i++) idxData[idxOffset + i] = iPtr[i];
-            
+
             vtxOffset += cmdList.VtxBuffer.Size;
             idxOffset += cmdList.IdxBuffer.Size;
         }
-        
+
         if (_vertexBuffer != null)
         {
             fixed (void* vPtr = vtxData) _vertexBuffer.Upload(new IntPtr(vPtr), (uint)(drawData.TotalVtxCount * sizeof(ImDrawVert)));
@@ -280,23 +280,23 @@ public sealed class ImGuiRenderer : IDisposable
         {
             fixed (void* iPtr = idxData) _indexBuffer.Upload(new IntPtr(iPtr), (uint)(drawData.TotalIdxCount * sizeof(ushort)));
         }
-        
+
         // Setup push constants
         PushConstants pc;
         pc.Scale = new Vector2(2.0f / drawData.DisplaySize.X, -2.0f / drawData.DisplaySize.Y);
         pc.Translate = new Vector2(-1.0f - drawData.DisplayPos.X * pc.Scale.X, 1.0f - drawData.DisplayPos.Y * pc.Scale.Y);
-        
+
         if (_pipeline != null) sink.BindPipeline(_pipeline);
         if (_vertexBuffer != null) sink.BindVertexBuffer(1, _vertexBuffer, 0);
         if (_indexBuffer != null) sink.BindIndexBuffer(_indexBuffer, false, 0); // false because ImDrawIdx is ushort
-        
+
         sink.PushConstants(0, (uint)sizeof(PushConstants), new IntPtr(&pc));
-        
+
         int globalVtxOffset = 0;
         int globalIdxOffset = 0;
         var clipOff = drawData.DisplayPos;
         var clipScale = drawData.FramebufferScale;
-        
+
         for (int n = 0; n < drawData.CmdListsCount; n++)
         {
             var cmdList = drawData.CmdLists[n];
@@ -310,16 +310,16 @@ public sealed class ImGuiRenderer : IDisposable
                     callback((IntPtr)cmdList.NativePtr, (IntPtr)pcmd.NativePtr);
                     continue;
                 }
-                
+
                 var clipMin = new Vector2((pcmd.ClipRect.X - clipOff.X) * clipScale.X, (pcmd.ClipRect.Y - clipOff.Y) * clipScale.Y);
                 var clipMax = new Vector2((pcmd.ClipRect.Z - clipOff.X) * clipScale.X, (pcmd.ClipRect.W - clipOff.Y) * clipScale.Y);
                 if (clipMax.X <= clipMin.X || clipMax.Y <= clipMin.Y) continue;
-                
+
                 sink.SetScissor((uint)clipMin.X, (uint)clipMin.Y, (uint)(clipMax.X - clipMin.X), (uint)(clipMax.Y - clipMin.Y));
-                
+
                 // Texture binding
                 if (_fontTexture != null) sink.BindTexture(0, _fontTexture);
-                
+
                 // Draw
                 sink.DrawIndexed(pcmd.ElemCount, 1, pcmd.IdxOffset + (uint)globalIdxOffset, (int)pcmd.VtxOffset + globalVtxOffset, 0);
             }
@@ -327,7 +327,7 @@ public sealed class ImGuiRenderer : IDisposable
             globalVtxOffset += cmdList.VtxBuffer.Size;
         }
     }
-    
+
     public void Dispose()
     {
         _vertexBuffer?.Dispose();

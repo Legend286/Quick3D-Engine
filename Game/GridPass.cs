@@ -15,7 +15,7 @@ public sealed class GridPass : RenderPass, IDisposable
     private readonly RhiDevice _device;
     private readonly IEntityStore _world;
     private readonly string _contentRoot;
-    
+
     private RhiShader _vs;
     private RhiShader _fs;
     private RhiPipeline? _pipeline;
@@ -32,7 +32,8 @@ public sealed class GridPass : RenderPass, IDisposable
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct Vertex {
+    private struct Vertex
+    {
         public Vector3 Position;
     }
 
@@ -76,7 +77,7 @@ public sealed class GridPass : RenderPass, IDisposable
         _vertexCount = (uint)vertices.Count;
         ulong bufferSize = (ulong)(_vertexCount * sizeof(Vertex));
         _vertexBuffer = RhiBuffer.Create(_device, bufferSize, RhiNative.BufferUsage.Vertex);
-        
+
         fixed (Vertex* ptr = CollectionsMarshal.AsSpan(vertices))
         {
             _vertexBuffer.Upload((IntPtr)ptr, bufferSize);

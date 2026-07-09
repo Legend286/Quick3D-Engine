@@ -82,9 +82,9 @@ public sealed class Renderer : IDisposable
             var mdlPath = Path.Combine(_contentRoot, modelRef.Source);
             if (!File.Exists(mdlPath))
                 mdlPath = Path.Combine(_contentRoot, "assets", Path.GetFileName(modelRef.Source));
-                
+
             Model? model = null;
-            try 
+            try
             {
                 model = Engine.Assets.ModelLoader.LoadMdl(_device, mdlPath);
             }
@@ -93,7 +93,7 @@ public sealed class Renderer : IDisposable
                 Error($"[Renderer] Failed to load model '{mdlPath}': {ex.Message}", "Renderer");
                 continue;
             }
-            
+
             // Register all meshes and materials in the model parts
             for (int i = 0; i < model.Parts.Length; i++)
             {
@@ -107,18 +107,19 @@ public sealed class Renderer : IDisposable
 
             ulong ent = _world.CreateEntity();
             _world.Set(ent, ModelComponent.Create(modelId));
-            
+
             var pos = modelRef.Position ?? new float[] { 0, 0, 0 };
             var rot = modelRef.Rotation ?? new float[] { 0, 0, 0, 1 };
             var scl = modelRef.Scale ?? new float[] { 1, 1, 1 };
-            
+
             Quaternion q = Quaternion.Identity;
             if (rot.Length >= 4)
                 q = new Quaternion(rot[0], rot[1], rot[2], rot[3]);
             else if (rot.Length == 3)
                 q = Quaternion.CreateFromYawPitchRoll(rot[1] * MathF.PI / 180f, rot[0] * MathF.PI / 180f, rot[2] * MathF.PI / 180f);
 
-            _world.Set(ent, new Engine.Scene.Components.Transform {
+            _world.Set(ent, new Engine.Scene.Components.Transform
+            {
                 Position = pos.Length >= 3 ? new Vector3(pos[0], pos[1], pos[2]) : Vector3.Zero,
                 Rotation = q,
                 Scale = scl.Length >= 3 ? new Vector3(scl[0], scl[1], scl[2]) : Vector3.One
@@ -153,14 +154,14 @@ public sealed class Renderer : IDisposable
             else
                 passes.Add(new PbrPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap));
         }
-            
+
         passes.Add(new GridPass(_device, _world, contentRoot, clearScreen: scene.Passes.Count == 0));
-            
+
         if (_imguiRenderer != null)
             passes.Add(new ImGuiPass(_imguiRenderer));
 
         var previous = _plan;
-        
+
         Info($"[Renderer] Compiling render graph with {passes.Count} pass(es)...", "Renderer");
         var newPlan = new RenderGraphCompiler().Compile(passes);
 
@@ -172,13 +173,13 @@ public sealed class Renderer : IDisposable
     public void RenderFrame(RhiTexture backBuffer, uint width, uint height)
     {
         if (_plan is null) return;
-        
+
         if (_depthTexture == null || _depthWidth != width || _depthHeight != height)
         {
             _depthTexture?.Dispose();
             _depthWidth = width > 0 ? width : 1;
             _depthHeight = height > 0 ? height : 1;
-            
+
             var desc = new Engine.CBindings.RhiNative.TextureDesc
             {
                 Abi = 1,
@@ -196,7 +197,7 @@ public sealed class Renderer : IDisposable
         executor.BindSwapchain(backBuffer, BackBufferHandle, ResourceState.RenderTarget);
         if (_depthTexture != null)
             executor.BindSwapchain(_depthTexture, DepthBufferHandle, ResourceState.DepthStencil);
-            
+
         executor.Execute(_plan);
     }
 

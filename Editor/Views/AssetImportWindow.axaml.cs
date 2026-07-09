@@ -49,13 +49,13 @@ public partial class AssetImportWindow : Window
     private async void OnImportClicked(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not AssetImportViewModel vm) return;
-        
+
         if (string.IsNullOrWhiteSpace(vm.SourceFile) || !File.Exists(vm.SourceFile))
         {
             vm.StatusMessage = "Please select a valid source file.";
             return;
         }
-        
+
         string targetDirectory = Path.Combine(App.ProjectRoot, "Content");
         if (!Directory.Exists(targetDirectory))
             Directory.CreateDirectory(targetDirectory);
@@ -68,7 +68,7 @@ public partial class AssetImportWindow : Window
         // Find engine_cook executable robustly
         string? cookExe = null;
         string currentDir = AppDomain.CurrentDomain.BaseDirectory;
-        
+
         while (currentDir != null && currentDir.Length > 0)
         {
             string testPath = Path.Combine(currentDir, "engine_cook");
@@ -77,14 +77,14 @@ public partial class AssetImportWindow : Window
                 cookExe = testPath;
                 break;
             }
-            
+
             testPath = Path.Combine(currentDir, "out", "engine_cook");
             if (File.Exists(testPath))
             {
                 cookExe = testPath;
                 break;
             }
-            
+
             var parent = Directory.GetParent(currentDir);
             if (parent == null || parent.FullName == currentDir) break;
             currentDir = parent.FullName;
@@ -120,7 +120,7 @@ public partial class AssetImportWindow : Window
 
         vm.CookProgress = 0;
         vm.IsIndeterminate = true;
-        
+
         System.Text.StringBuilder outputBuilder = new();
         System.Text.StringBuilder errorBuilder = new();
 
@@ -151,7 +151,7 @@ public partial class AssetImportWindow : Window
                         }
                     }
                 };
-                
+
                 process.ErrorDataReceived += (s, args) =>
                 {
                     if (args.Data != null)
@@ -164,10 +164,10 @@ public partial class AssetImportWindow : Window
                 process.BeginErrorReadLine();
 
                 await process.WaitForExitAsync();
-                
+
                 string error = errorBuilder.ToString();
                 string output = outputBuilder.ToString();
-                
+
                 if (process.ExitCode != 0)
                 {
                     string failMsg = $"Import failed (code {process.ExitCode}): {error}";

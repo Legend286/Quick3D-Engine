@@ -16,7 +16,8 @@ namespace Engine.Game;
 public class PathTracerPass : RenderPass
 {
     [StructLayout(LayoutKind.Sequential)]
-    private struct PartData {
+    private struct PartData
+    {
         public Vector4 AabbMin;
         public Vector4 AabbMax;
         public ulong Vertices;
@@ -28,7 +29,8 @@ public class PathTracerPass : RenderPass
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct InstanceData {
+    private struct InstanceData
+    {
         public Matrix4x4 ModelMatrix;
         public Vector4 AabbMin;
         public Vector4 AabbMax;
@@ -39,7 +41,8 @@ public class PathTracerPass : RenderPass
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct MaterialData {
+    private struct MaterialData
+    {
         public Vector4 BaseColor;
         public Vector4 EmissiveColor;
         public float Metallic;
@@ -55,7 +58,8 @@ public class PathTracerPass : RenderPass
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct LightData {
+    private struct LightData
+    {
         public Vector4 Position;   // w = range
         public Vector4 Direction;  // w = type (0=Dir, 1=Point, 2=Spot)
         public Vector4 Color;      // w = intensity
@@ -63,7 +67,8 @@ public class PathTracerPass : RenderPass
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct CameraData {
+    private struct CameraData
+    {
         public Matrix4x4 ViewProj;
         public Matrix4x4 InvViewProj;
         public Vector4 CameraPosition; // w = exposure
@@ -71,13 +76,15 @@ public class PathTracerPass : RenderPass
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct SkyParams {
+    private struct SkyParams
+    {
         public Vector4 SunDirAndRadius;
         public Vector4 IntensityTurbidityAlbedoPad;
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct ScenePushData {
+    private struct ScenePushData
+    {
         public ulong Parts;
         public ulong Instances;
         public ulong Materials;
@@ -99,7 +106,7 @@ public class PathTracerPass : RenderPass
     private RhiShader _blitFs;
     private RhiSampler _blitSampler;
     private RhiSampler _computeSampler;
-    
+
     private RhiTexture _accumulationBuffer;
     private RhiTexture _outputBuffer;
     private RhiAccelStruct _tlas;
@@ -107,12 +114,12 @@ public class PathTracerPass : RenderPass
     private int _lastInstanceHash;
     private Matrix4x4 _lastViewProj;
     private bool _hasGeometry;
-    
+
     private readonly RhiDevice _device;
     private readonly IEntityStore _world;
     private readonly SceneGraph _scene;
     private readonly string _contentRoot;
-    
+
     private uint _lastWidth = 0;
     private uint _lastHeight = 0;
     private float _lastAspect = 1.0f;
@@ -122,11 +129,11 @@ public class PathTracerPass : RenderPass
     private RhiBuffer _instanceBuffer;
     private RhiBuffer _partBuffer;
     private RhiBuffer _materialBuffer;
-    
+
     private List<InstanceData> _instances = new();
     private List<PartData> _parts = new();
     private List<MaterialData> _materials = new();
-    
+
     private RhiBindlessHeap _bindlessHeap;
 
     /// <summary>When true, renders hit distance as grayscale instead of full path tracing.</summary>
@@ -140,13 +147,13 @@ public class PathTracerPass : RenderPass
         _scene = scene;
         _contentRoot = contentRoot;
         _bindlessHeap = sharedHeap;
-        
+
         string shaderDir = Path.Combine(_contentRoot, "shaders");
-        
+
         string ptSrc = LoadShaderSource("shaders/path_tracer.slang");
         _computeShader = RhiShader.FromSource(_device, ptSrc, "computeMain", RhiNative.ShaderStage.Compute, shaderDir);
         _computePipeline = RhiPipeline.CreateCompute(_device, _computeShader);
-        
+
         string blitSrc = LoadShaderSource("shaders/blit.slang");
         _blitVs = RhiShader.FromSource(_device, blitSrc, "vertexMain", RhiNative.ShaderStage.Vertex, shaderDir);
         _blitFs = RhiShader.FromSource(_device, blitSrc, "fragmentMain", RhiNative.ShaderStage.Fragment, shaderDir);
@@ -191,10 +198,10 @@ public class PathTracerPass : RenderPass
         {
             _outputBuffer?.Dispose();
             _accumulationBuffer?.Dispose();
-            
+
             _outputBuffer = RhiTexture.CreateStorage(_device, w, h, RhiNative.TextureFormat.Rgba16Float);
             _accumulationBuffer = RhiTexture.CreateStorage(_device, w, h, RhiNative.TextureFormat.Rgba16Float);
-            
+
             _lastWidth = w;
             _lastHeight = h;
             _frameCount = 0;
@@ -238,7 +245,7 @@ public class PathTracerPass : RenderPass
             _frameCount = 0;
             _lastViewProj = camData.ViewProj;
         }
-        
+
         _cameraBuffer.Upload(new ReadOnlySpan<CameraData>(ref camData));
 
         var lights = new List<LightData>();
@@ -247,8 +254,9 @@ public class PathTracerPass : RenderPass
             float type = 0.0f;
             if (l.Type == "point") type = 1.0f;
             else if (l.Type == "spot") type = 2.0f;
-            
-            lights.Add(new LightData {
+
+            lights.Add(new LightData
+            {
                 Position = new Vector4(l.Position[0], l.Position[1], l.Position[2], l.Range),
                 Direction = new Vector4(l.Direction[0], l.Direction[1], l.Direction[2], type),
                 Color = new Vector4(l.Color[0], l.Color[1], l.Color[2], l.Intensity),
@@ -257,7 +265,8 @@ public class PathTracerPass : RenderPass
         }
         if (lights.Count == 0)
         {
-            lights.Add(new LightData {
+            lights.Add(new LightData
+            {
                 Position = new Vector4(0, 0, 0, 10.0f),
                 Direction = new Vector4(Vector3.Normalize(new Vector3(-1, 1, -1)), 0.0f), // Dir Light
                 Color = new Vector4(1, 1, 1, 2.0f),
@@ -269,7 +278,7 @@ public class PathTracerPass : RenderPass
         _instances.Clear();
         _parts.Clear();
         _materials.Clear();
-        
+
 
 
         uint GetTexIndex(RhiTexture tex)
@@ -287,8 +296,8 @@ public class PathTracerPass : RenderPass
             if (_world.TryGet<ModelComponent>(id, out var modelComp))
             {
                 var transform = _world.TryGet<Transform>(id, out var t) ? t : Transform.Default;
-                var modelMatrix = Matrix4x4.CreateScale(transform.Scale) * 
-                                  Matrix4x4.CreateFromQuaternion(transform.Rotation) * 
+                var modelMatrix = Matrix4x4.CreateScale(transform.Scale) *
+                                  Matrix4x4.CreateFromQuaternion(transform.Rotation) *
                                   Matrix4x4.CreateTranslation(transform.Position);
 
                 var model = AssetRegistry.GetModel(modelComp.ModelId);
@@ -296,7 +305,7 @@ public class PathTracerPass : RenderPass
                 {
                     uint instIdx = (uint)_instances.Count;
                     uint firstPart = (uint)_parts.Count;
-                    
+
                     Vector3 instAabbMin = new Vector3(float.MaxValue);
                     Vector3 instAabbMax = new Vector3(float.MinValue);
 
@@ -304,9 +313,9 @@ public class PathTracerPass : RenderPass
                     {
                         var mesh = AssetRegistry.GetMesh(p.MeshId);
                         var material = AssetRegistry.GetMaterial(p.MaterialId);
-                        
+
                         if (mesh == null) continue;
-                        
+
                         uint matIdx = (uint)_materials.Count;
                         Vector4 baseColor = new Vector4(1, 1, 1, 1);
                         Vector4 emissiveColor = new Vector4(0, 0, 0, 1);
@@ -317,10 +326,12 @@ public class PathTracerPass : RenderPass
 
                         if (material != null)
                         {
-                            if (material.AlbedoColor != null && material.AlbedoColor.Length >= 4) {
+                            if (material.AlbedoColor != null && material.AlbedoColor.Length >= 4)
+                            {
                                 baseColor = new Vector4(material.AlbedoColor[0], material.AlbedoColor[1], material.AlbedoColor[2], material.AlbedoColor[3]);
                             }
-                            if (material.EmissiveColor != null && material.EmissiveColor.Length >= 4) {
+                            if (material.EmissiveColor != null && material.EmissiveColor.Length >= 4)
+                            {
                                 emissiveColor = new Vector4(material.EmissiveColor[0], material.EmissiveColor[1], material.EmissiveColor[2], material.EmissiveColor[3]);
                             }
                             albedoTex = GetTexIndex(material.AlbedoTexture);
@@ -335,7 +346,8 @@ public class PathTracerPass : RenderPass
                             emissiveColor = new Vector4(1.0f, 0.0f, 1.0f, 1.0f);
                         }
 
-                        _materials.Add(new MaterialData {
+                        _materials.Add(new MaterialData
+                        {
                             BaseColor = baseColor,
                             EmissiveColor = emissiveColor,
                             Metallic = material?.Metallic ?? 0.0f,
@@ -348,11 +360,12 @@ public class PathTracerPass : RenderPass
 
                         Vector3 partMin = p.BoundsMin;
                         Vector3 partMax = p.BoundsMax;
-                        
+
                         instAabbMin = Vector3.Min(instAabbMin, partMin);
                         instAabbMax = Vector3.Max(instAabbMax, partMax);
 
-                        _parts.Add(new PartData {
+                        _parts.Add(new PartData
+                        {
                             AabbMin = new Vector4(partMin, 1.0f),
                             AabbMax = new Vector4(partMax, 1.0f),
                             Vertices = mesh.VertexBuffer.DeviceAddress,
@@ -366,7 +379,8 @@ public class PathTracerPass : RenderPass
 
                     if (_parts.Count > firstPart)
                     {
-                        _instances.Add(new InstanceData {
+                        _instances.Add(new InstanceData
+                        {
                             ModelMatrix = modelMatrix,
                             AabbMin = new Vector4(instAabbMin, 1.0f),
                             AabbMax = new Vector4(instAabbMax, 1.0f),
@@ -387,7 +401,8 @@ public class PathTracerPass : RenderPass
 
         bool hasGeometry = UpdateTlas(sink);
 
-        ScenePushData pushData = new ScenePushData {
+        ScenePushData pushData = new ScenePushData
+        {
             Parts = _partBuffer.DeviceAddress,
             Instances = _instanceBuffer.DeviceAddress,
             Materials = _materialBuffer.DeviceAddress,
@@ -398,7 +413,8 @@ public class PathTracerPass : RenderPass
             Resolution = new Vector2(w, h),
             DebugFlags = DebugMode ? 1u : 0u,
             HasGeometry = hasGeometry ? 1u : 0u,
-            Sky = new SkyParams {
+            Sky = new SkyParams
+            {
                 SunDirAndRadius = new Vector4(Vector3.Normalize(new Vector3(0.5f, 1.0f, 0.5f)), 0.00465f),
                 IntensityTurbidityAlbedoPad = new Vector4(1.0f, 2.0f, 0.1f, 0.0f)
             }
@@ -409,7 +425,7 @@ public class PathTracerPass : RenderPass
         // --- PATH TRACING COMPUTE PASS ---
         sink.BeginComputePass("Path Tracer Compute");
         sink.BindPipeline(_computePipeline);
-        
+
         sink.UseBuffer(_instanceBuffer, 1);
         sink.UseBuffer(_partBuffer, 1);
         sink.UseBuffer(_materialBuffer, 1);
@@ -432,7 +448,7 @@ public class PathTracerPass : RenderPass
             sink.BindAccelStruct(2, _tlas);
             sink.UseAccelStruct(_tlas, 1);
         }
-        
+
         sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pushData));
         sink.Dispatch((w + 63) / 64, h, 1, 64, 1, 1);
         sink.EndComputePass();
@@ -442,9 +458,12 @@ public class PathTracerPass : RenderPass
         sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store,
                               depthTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store);
         sink.SetViewport(0, 0, w, h);
-        if (depthTarget != null) {
+        if (depthTarget != null)
+        {
             sink.BindPipeline(_blitPipelineWithDepth);
-        } else {
+        }
+        else
+        {
             sink.BindPipeline(_blitPipeline);
         }
         sink.BindTexture(0, _outputBuffer);
@@ -462,10 +481,10 @@ public class PathTracerPass : RenderPass
 
         uint instanceId = 0;
         int hash = 0;
-        
+
         var validEntities = new List<ulong>(_world.Entities);
         validEntities.Sort();
-        
+
         foreach (var id in validEntities)
         {
             if (_world.TryGet<ModelComponent>(id, out var mc))

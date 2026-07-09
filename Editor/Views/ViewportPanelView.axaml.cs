@@ -11,7 +11,7 @@ public partial class ViewportPanelView : UserControl
     public ViewportPanelView()
     {
         InitializeComponent();
-        
+
         Focusable = true;
         PointerPressed += OnPointerPressed;
         PointerMoved += OnPointerMoved;
@@ -37,8 +37,9 @@ public partial class ViewportPanelView : UserControl
         {
             var p = e.GetPosition(this);
             vm.UpdatePointerState((float)p.X, (float)p.Y, props.IsLeftButtonPressed, props.IsRightButtonPressed, props.IsMiddleButtonPressed);
-            
-            int btn = props.PointerUpdateKind switch {
+
+            int btn = props.PointerUpdateKind switch
+            {
                 Avalonia.Input.PointerUpdateKind.LeftButtonPressed => 0,
                 Avalonia.Input.PointerUpdateKind.RightButtonPressed => 1,
                 Avalonia.Input.PointerUpdateKind.MiddleButtonPressed => 2,
@@ -64,7 +65,7 @@ public partial class ViewportPanelView : UserControl
         {
             var p = e.GetPosition(this);
             vm.UpdatePointerState((float)p.X, (float)p.Y, props.IsLeftButtonPressed, props.IsRightButtonPressed, props.IsMiddleButtonPressed);
-            
+
             if (_isDragging)
             {
                 vm.AddPointerDelta((float)(p.X - _lastPoint.X), (float)(p.Y - _lastPoint.Y));
@@ -82,7 +83,8 @@ public partial class ViewportPanelView : UserControl
             var p = e.GetPosition(this);
             vm.UpdatePointerState((float)p.X, (float)p.Y, props.IsLeftButtonPressed, props.IsRightButtonPressed, props.IsMiddleButtonPressed);
 
-            int btn = props.PointerUpdateKind switch {
+            int btn = props.PointerUpdateKind switch
+            {
                 Avalonia.Input.PointerUpdateKind.LeftButtonReleased => 0,
                 Avalonia.Input.PointerUpdateKind.RightButtonReleased => 1,
                 Avalonia.Input.PointerUpdateKind.MiddleButtonReleased => 2,
@@ -127,7 +129,7 @@ public partial class ViewportPanelView : UserControl
         if (DataContext is ViewportPanelViewModel vm)
             vm.SetKeyState(e.Key, false);
     }
-    
+
     private void OnTextInput(object? sender, Avalonia.Input.TextInputEventArgs e)
     {
         if (DataContext is ViewportPanelViewModel vm && !string.IsNullOrEmpty(e.Text))
@@ -136,7 +138,7 @@ public partial class ViewportPanelView : UserControl
                 vm.QueueCharEvent(c);
         }
     }
-    
+
     private void OnPointerWheelChanged(object? sender, Avalonia.Input.PointerWheelEventArgs e)
     {
         if (DataContext is ViewportPanelViewModel vm)

@@ -9,7 +9,7 @@ namespace Engine.Editor.ViewModels;
 public partial class HierarchyEntityViewModel : ObservableObject
 {
     public ulong Id { get; }
-    
+
     [ObservableProperty]
     private string _name;
 

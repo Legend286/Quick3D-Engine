@@ -39,20 +39,20 @@ public sealed class GameLoop : IGameLoop
     }
 
     private ulong _editorCameraEnt = 0;
-    
+
     private void EnsureCamera()
     {
         if (_world == null) return;
         if (_editorCameraEnt != 0) return;
 
         _editorCameraEnt = _world.CreateEntity();
-        _world.Set(_editorCameraEnt, new Camera 
-        { 
+        _world.Set(_editorCameraEnt, new Camera
+        {
             FieldOfView = 60.0f * (MathF.PI / 180.0f),
             NearClip = 0.1f,
             FarClip = 1000.0f
         });
-        _world.Set(_editorCameraEnt, Transform.Default with 
+        _world.Set(_editorCameraEnt, Transform.Default with
         {
             Position = new Vector3(0, 5, -15) // stepped back a bit
         });
@@ -62,7 +62,7 @@ public sealed class GameLoop : IGameLoop
     {
         if (_world == null) return;
         EnsureCamera();
-        
+
         // Toggle between path tracer and rasterizer with P key
         if (input.KeyP && !_wasKeyPDown)
         {
@@ -71,11 +71,11 @@ public sealed class GameLoop : IGameLoop
             Info($"[GameLoop] Switched to {mode}", "Game");
         }
         _wasKeyPDown = input.KeyP;
-        
+
         if (_imguiRenderer != null)
         {
             _imguiRenderer.UpdateInput(input, _lastWidth, _lastHeight);
-            
+
             if (input.Events != null)
             {
                 foreach (var ev in input.Events)
@@ -83,9 +83,9 @@ public sealed class GameLoop : IGameLoop
                     _imguiRenderer.HandleEvent(ev);
                 }
             }
-            
+
             ImGuiNET.ImGui.NewFrame();
-            
+
             // Draw a test window
             ImGuiNET.ImGui.ShowDemoWindow();
         }
@@ -161,10 +161,10 @@ public sealed class GameLoop : IGameLoop
     public void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target)
     {
         if (_device == null) return;
-        
+
         // 1. Create a temporary world and renderer for the thumbnail pass
         var tempWorld = new EcsWorld();
-        
+
         // 2. Setup the camera and 3-point lighting
         ulong camEnt = tempWorld.CreateEntity();
         tempWorld.Set(camEnt, new Engine.Scene.Components.Camera { FieldOfView = 60.0f * (MathF.PI / 180.0f), NearClip = 0.1f, FarClip = 100.0f });
@@ -193,7 +193,7 @@ public sealed class GameLoop : IGameLoop
             // 2. Load mesh and create a dynamic model
             var mesh = Engine.Assets.MeshLoader.LoadMsh(_device, spherePath);
             ulong meshId = Engine.Assets.AssetRegistry.RegisterMesh(mesh);
-            
+
             // 3. Load material
             var mat = Engine.Assets.MaterialLoader.LoadMat(_device, assetPath);
             ulong matId = Engine.Assets.AssetRegistry.RegisterMaterial(mat);
@@ -227,11 +227,12 @@ public sealed class GameLoop : IGameLoop
             }
 
             // Create an unlit material
-            var mat = new Engine.Assets.Material { 
-                AlbedoColor = new float[] { 1, 1, 1, 1 }, 
-                Metallic = 0.0f, 
-                Roughness = 1.0f, 
-                AlbedoTexture = t 
+            var mat = new Engine.Assets.Material
+            {
+                AlbedoColor = new float[] { 1, 1, 1, 1 },
+                Metallic = 0.0f,
+                Roughness = 1.0f,
+                AlbedoTexture = t
             };
             ulong matId = Engine.Assets.AssetRegistry.RegisterMaterial(mat);
 
@@ -241,7 +242,7 @@ public sealed class GameLoop : IGameLoop
 
             ulong ent = tempWorld.CreateEntity();
             tempWorld.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
-            
+
             // Rotate the plane to face the camera (camera is at Z=3 looking at Z=0). Plane normal is +Y.
             // So we rotate around X axis by 90 degrees.
             tempWorld.Set(ent, new Transform { Rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2.0f) });

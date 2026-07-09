@@ -132,7 +132,7 @@ public partial class MainWindow : Window
             DataContext = vm
         };
         await importWindow.ShowDialog(this);
-        
+
         if (vm.ImportSucceeded && !string.IsNullOrEmpty(vm.ImportedSceneName))
         {
             if (DataContext is MainWindowViewModel mainVm && mainVm.ViewportVm is not null)

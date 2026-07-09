@@ -16,10 +16,10 @@ public partial class WelcomeViewModel : ObservableObject
 
     [ObservableProperty]
     private string _statusMessage = string.Empty;
-    
+
     [ObservableProperty]
     private bool _isNewProjectMode = false;
-    
+
     [CommunityToolkit.Mvvm.Input.RelayCommand]
     public void SetNewProjectMode(bool mode)
     {

@@ -9,7 +9,7 @@ namespace Engine.Game;
 public sealed class ImGuiPass : RenderPass
 {
     private readonly ImGuiRenderer _renderer;
-    
+
     public ImGuiPass(ImGuiRenderer renderer)
     {
         _renderer = renderer;
@@ -34,11 +34,11 @@ public sealed class ImGuiPass : RenderPass
                              RhiNative.LoadOp.Load,
                              RhiNative.StoreOp.Store,
                              depth: null);
-                             
+
         sink.SetViewport(0, 0, w, h);
-        
+
         _renderer.Render(sink);
-        
+
         sink.EndPass();
     }
 }

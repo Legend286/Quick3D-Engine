@@ -56,7 +56,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
 
     private Engine.Scene.SceneGraph _baseScene = new();
     public string CurrentSceneName { get; private set; } = "hello";
-    
+
     private bool _isDirty;
     public bool IsDirty
     {
@@ -264,12 +264,12 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     public void LoadScene(string sceneName)
     {
         CurrentSceneName = sceneName;
-        try 
+        try
         {
             _baseScene = new Engine.Scene.SceneLoader(_contentRoot).Load(sceneName);
         }
         catch { _baseScene = new Engine.Scene.SceneGraph(); }
-        try 
+        try
         {
             _gameLoop?.LoadScene(_contentRoot, sceneName);
         }
@@ -316,16 +316,16 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     public void InstantiateModel(string absolutePath)
     {
         if (_world == null || _device == null) return;
-        
+
         if (!File.Exists(absolutePath)) return;
-        
+
         var model = Engine.Assets.ModelLoader.LoadMdl(_device, absolutePath);
         ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
-        
+
         ulong ent = _world.CreateEntity();
         _world.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
         _world.Set(ent, Engine.Scene.Components.Transform.Default);
-        
+
         IsDirty = true;
     }
 
@@ -610,7 +610,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             CharCode = c
         });
     }
-    
+
     public void QueueMouseButtonEvent(int button, bool isDown)
     {
         QueueEvent(new Engine.CBindings.NativeInput.EngineInputEvent
@@ -619,7 +619,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             MouseButton = (Engine.CBindings.NativeInput.EngineMouseButton)button
         });
     }
-    
+
     public void QueueScrollEvent(float scrollX, float scrollY)
     {
         QueueEvent(new Engine.CBindings.NativeInput.EngineInputEvent

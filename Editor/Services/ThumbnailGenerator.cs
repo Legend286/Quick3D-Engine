@@ -38,7 +38,7 @@ public static class ThumbnailGenerator
                 var assembly = loadContext.LoadFromAssemblyName(new AssemblyName("Engine.Game"));
                 var loopType = assembly.GetTypes().First(t => typeof(IGameLoop).IsAssignableFrom(t) && !t.IsInterface);
                 _thumbnailLoop = (IGameLoop)Activator.CreateInstance(loopType)!;
-                _thumbnailLoop.Init(_device.Handle, _dummySwap.Handle, null!); 
+                _thumbnailLoop.Init(_device.Handle, _dummySwap.Handle, null!);
             }
 
             _initialized = true;
@@ -96,18 +96,18 @@ public static class ThumbnailGenerator
                 lock (_lock)
                 {
                     using var target = RhiTexture.CreateRenderTarget(_device, 256, 256, RhiNative.TextureFormat.Bgra8Unorm);
-                    
+
                     string contentRoot = Path.Combine(App.ProjectRoot, "Content");
                     _thumbnailLoop.RenderThumbnail(contentRoot, assetPath, assetType, target);
 
                     var bytes = target.Readback(256, 256, 256 * 4);
-                    
+
                     using var wb = new WriteableBitmap(new PixelSize(256, 256), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Premul);
                     using (var fb = wb.Lock())
                     {
                         System.Runtime.InteropServices.Marshal.Copy(bytes, 0, fb.Address, bytes.Length);
                     }
-                    
+
                     wb.Save(cacheFile);
                     return new Bitmap(cacheFile);
                 }

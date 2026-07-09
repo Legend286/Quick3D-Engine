@@ -28,10 +28,10 @@ public partial class MainWindowViewModel : ObservableObject
             string contentRoot = System.IO.Path.Combine(App.ProjectRoot, "Content");
             Engine.CBindings.Log.Info($"[MainWindowViewModel] ContentRoot: '{contentRoot}'", "Editor");
             ViewportVm = new ViewportPanelViewModel(contentRoot: contentRoot, sceneName: "hello");
-            
+
             HierarchyVm.Bind(ViewportVm);
             HierarchyVm.OnEntitySelected += (ent) => InspectorVm.SetSelectedEntity(ent);
-            
+
             ViewportVm.OnWorldCreated += () => InspectorVm.Bind(ViewportVm.World);
             ViewportVm.OnDirtyChanged += () => OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs(nameof(WindowTitle)));
         }

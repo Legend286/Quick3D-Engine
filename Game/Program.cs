@@ -34,7 +34,7 @@ internal static class Program
         using var world = new EcsWorld();  // now IDisposable
 
         var renderer = new Renderer(device, swap, world);
-        
+
         if (swap.TryAcquireNextImage(out RhiTexture? image))
         {
             using (image)

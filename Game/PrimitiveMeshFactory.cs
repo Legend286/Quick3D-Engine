@@ -35,17 +35,17 @@ public static class PrimitiveMeshFactory
     public static string GenerateUVSphere(string outputPath, int stacks = 32, int slices = 32)
     {
         var vertices = new System.Collections.Generic.List<MshVertex>();
-        var indices  = new System.Collections.Generic.List<uint>();
+        var indices = new System.Collections.Generic.List<uint>();
 
         for (int stack = 0; stack <= stacks; stack++)
         {
-            float phi    = MathF.PI * stack / stacks;
+            float phi = MathF.PI * stack / stacks;
             float sinPhi = MathF.Sin(phi);
             float cosPhi = MathF.Cos(phi);
 
             for (int slice = 0; slice <= slices; slice++)
             {
-                float theta    = 2.0f * MathF.PI * slice / slices;
+                float theta = 2.0f * MathF.PI * slice / slices;
                 float sinTheta = MathF.Sin(theta);
                 float cosTheta = MathF.Cos(theta);
 
@@ -58,14 +58,22 @@ public static class PrimitiveMeshFactory
 
                 // Tangent is the derivative of position w.r.t. theta, normalized
                 float tx = -sinTheta;
-                float tz =  cosTheta;
+                float tz = cosTheta;
 
                 vertices.Add(new MshVertex
                 {
-                    Px = x, Py = y, Pz = z,
-                    Nx = x, Ny = y, Nz = z,
-                    Tu = u, Tv = v,
-                    Tx = tx, Ty = 0.0f, Tz = tz, Tw = 1.0f
+                    Px = x,
+                    Py = y,
+                    Pz = z,
+                    Nx = x,
+                    Ny = y,
+                    Nz = z,
+                    Tu = u,
+                    Tv = v,
+                    Tx = tx,
+                    Ty = 0.0f,
+                    Tz = tz,
+                    Tw = 1.0f
                 });
             }
         }
@@ -74,10 +82,10 @@ public static class PrimitiveMeshFactory
         {
             for (int slice = 0; slice < slices; slice++)
             {
-                uint a = (uint)( stack      * (slices + 1) + slice);
+                uint a = (uint)(stack * (slices + 1) + slice);
                 uint b = (uint)((stack + 1) * (slices + 1) + slice);
                 uint c = (uint)((stack + 1) * (slices + 1) + slice + 1);
-                uint d = (uint)( stack      * (slices + 1) + slice + 1);
+                uint d = (uint)(stack * (slices + 1) + slice + 1);
 
                 indices.Add(a); indices.Add(b); indices.Add(c);
                 indices.Add(a); indices.Add(c); indices.Add(d);
@@ -91,7 +99,7 @@ public static class PrimitiveMeshFactory
     public static string GeneratePlane(string outputPath, float width = 20.0f, float depth = 20.0f, int divisionsX = 1, int divisionsZ = 1)
     {
         var vertices = new System.Collections.Generic.List<MshVertex>();
-        var indices  = new System.Collections.Generic.List<uint>();
+        var indices = new System.Collections.Generic.List<uint>();
 
         for (int z = 0; z <= divisionsZ; z++)
         {
@@ -99,15 +107,23 @@ public static class PrimitiveMeshFactory
             {
                 float px = (x / (float)divisionsX - 0.5f) * width;
                 float pz = (z / (float)divisionsZ - 0.5f) * depth;
-                float u  = x / (float)divisionsX;
-                float v  = z / (float)divisionsZ;
+                float u = x / (float)divisionsX;
+                float v = z / (float)divisionsZ;
 
                 vertices.Add(new MshVertex
                 {
-                    Px = px, Py = 0, Pz = pz,
-                    Nx = 0,  Ny = 1, Nz = 0,
-                    Tu = u,  Tv = v,
-                    Tx = 1,  Ty = 0, Tz = 0, Tw = 1.0f
+                    Px = px,
+                    Py = 0,
+                    Pz = pz,
+                    Nx = 0,
+                    Ny = 1,
+                    Nz = 0,
+                    Tu = u,
+                    Tv = v,
+                    Tx = 1,
+                    Ty = 0,
+                    Tz = 0,
+                    Tw = 1.0f
                 });
             }
         }
@@ -116,10 +132,10 @@ public static class PrimitiveMeshFactory
         {
             for (int x = 0; x < divisionsX; x++)
             {
-                uint a = (uint)( z      * (divisionsX + 1) + x);
+                uint a = (uint)(z * (divisionsX + 1) + x);
                 uint b = (uint)((z + 1) * (divisionsX + 1) + x);
                 uint c = (uint)((z + 1) * (divisionsX + 1) + x + 1);
-                uint d = (uint)( z      * (divisionsX + 1) + x + 1);
+                uint d = (uint)(z * (divisionsX + 1) + x + 1);
 
                 indices.Add(a); indices.Add(b); indices.Add(c);
                 indices.Add(a); indices.Add(c); indices.Add(d);
@@ -136,13 +152,13 @@ public static class PrimitiveMeshFactory
         string tmp = path + ".tmp";
 
         using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write))
-        using (var w  = new BinaryWriter(fs))
+        using (var w = new BinaryWriter(fs))
         {
             var header = new MeshHeader
             {
-                Magic       = 0x3148534D,
+                Magic = 0x3148534D,
                 VertexCount = (uint)vertices.Count,
-                IndexCount  = (uint)indices.Count,
+                IndexCount = (uint)indices.Count,
                 IndexFormat = 32,
             };
 
