@@ -37,6 +37,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     private RhiDevice? _device;
     private RhiSwapchain? _swap;
     private IGameLoop? _gameLoop;
+    public IGameLoop? GameLoop => _gameLoop;
     private GameAssemblyLoadContext? _loadContext;
     private EcsWorld? _world;
     private IntPtr _nsView;
@@ -259,7 +260,16 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
         _gameLoop = (IGameLoop)Activator.CreateInstance(loopType)!;
         _gameLoop.Init(_device.Handle, _swap.Handle, _world);
         _gameLoop.LoadScene(_contentRoot, ResolveStartupScene());
+
+        _gameLoop.OnEntityPicked += (ent) => {
+            // Need a way to notify the HierarchyVm...
+            // Or maybe MainWindowViewModel can subscribe directly?
+            // Yes, let's expose an event on ViewportPanelViewModel.
+            OnEntityPicked?.Invoke(ent);
+        };
     }
+
+    public event Action<ulong>? OnEntityPicked;
 
     public void LoadScene(string sceneName)
     {

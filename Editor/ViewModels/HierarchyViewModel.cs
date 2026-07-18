@@ -37,6 +37,25 @@ public partial class HierarchyViewModel : ObservableObject, IDisposable
 
     public event Action<ulong?>? OnEntitySelected;
 
+    public void SelectEntity(ulong id)
+    {
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            foreach (var ent in Entities)
+            {
+                if (ent.Id == id)
+                {
+                    SelectedEntity = ent;
+                    break;
+                }
+            }
+            if (id == 0)
+            {
+                SelectedEntity = null;
+            }
+        });
+    }
+
     public void Bind(ViewportPanelViewModel viewport)
     {
         Unbind();

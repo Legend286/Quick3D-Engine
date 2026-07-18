@@ -30,7 +30,15 @@ public partial class MainWindowViewModel : ObservableObject
             ViewportVm = new ViewportPanelViewModel(contentRoot: contentRoot, sceneName: "hello");
 
             HierarchyVm.Bind(ViewportVm);
-            HierarchyVm.OnEntitySelected += (ent) => InspectorVm.SetSelectedEntity(ent);
+            HierarchyVm.OnEntitySelected += (ent) => {
+                InspectorVm.SetSelectedEntity(ent);
+                if (ent.HasValue) ViewportVm.GameLoop?.SetSelectedEntity(ent.Value);
+                else ViewportVm.GameLoop?.SetSelectedEntity(0);
+            };
+
+            ViewportVm.OnEntityPicked += (ent) => {
+                HierarchyVm.SelectEntity(ent);
+            };
 
             ViewportVm.OnWorldCreated += () => InspectorVm.Bind(ViewportVm.World);
             ViewportVm.OnDirtyChanged += () => OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs(nameof(WindowTitle)));
