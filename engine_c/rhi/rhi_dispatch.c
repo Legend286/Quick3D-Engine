@@ -343,3 +343,6 @@ void rhi_format_block_info(RhiTextureFormat fmt,
     }
     g_backends[g_active].format_block_info(fmt, out_block_w, out_block_h, out_bytes_per_block);
 }
+int32_t rhi_submit_and_wait(RhiDevice* d, RhiCommandList* cl) {
+    return g_backends[g_active].submit_and_wait(d, cl);
+}

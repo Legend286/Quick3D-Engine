@@ -37,6 +37,8 @@ public interface ICommandSink
     public void EndComputePass();
 
     public void EndPass();
+    public void Submit();
+    public void SubmitAndWait();
     public void BindPipeline(RhiPipeline pipeline);
     public void BindVertexBuffer(uint slot, RhiBuffer buf, ulong offset = 0);
     public void PushConstants(uint slot, uint size, IntPtr data);

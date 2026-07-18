@@ -1051,6 +1051,19 @@ static RhiCommandList* metal_begin_cmdlist(RhiDevice* device, RhiQueueType queue
     }
 }
 
+static int32_t metal_submit_and_wait(RhiDevice* d, RhiCommandList* cl) {
+    @autoreleasepool {
+        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
+        if (cli->drawable_to_present) {
+            [cli->buf presentDrawable:cli->drawable_to_present];
+        }
+        [cli->buf commit];
+        [cli->buf waitUntilCompleted];
+        delete cli;
+        return 0;
+    }
+}
+
 static int32_t metal_submit(RhiDevice* d, RhiCommandList* cl) {
     @autoreleasepool {
         RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
@@ -1867,6 +1880,8 @@ extern "C" void rhi_metal_register(void) {
 
     b.begin_cmdlist              = metal_begin_cmdlist;
     b.submit                     = metal_submit;
+    b.submit_and_wait            = metal_submit_and_wait;
+
     b.cmd_pipeline_barrier       = metal_cmd_pipeline_barrier;
     b.cmd_signal_fence           = metal_cmd_signal_fence;
     b.cmd_wait_fence             = metal_cmd_wait_fence;

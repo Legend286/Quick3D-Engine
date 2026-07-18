@@ -281,7 +281,19 @@ public sealed class CommandRecorder : IDisposable
             RhiNative.RhiEndPass(CurrentEncoder);
             CurrentEncoder = IntPtr.Zero;
         }
-        RhiNative.RhiSubmit(_device.Handle, CmdList);
+        RhiNative.RhiSubmitCmdList(_device.Handle, CmdList);
+        _submitted = true;
+    }
+
+    public void SubmitAndWait()
+    {
+        if (_submitted) return;
+        if (CurrentEncoder != IntPtr.Zero)
+        {
+            RhiNative.RhiEndPass(CurrentEncoder);
+            CurrentEncoder = IntPtr.Zero;
+        }
+        RhiNative.RhiSubmitAndWait(_device.Handle, CmdList);
         _submitted = true;
     }
 

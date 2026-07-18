@@ -61,6 +61,7 @@ typedef struct RhiBackend {
 
     RhiCommandList *(*begin_cmdlist)(RhiDevice *device, RhiQueueType queue);
     int32_t (*submit)(RhiDevice *device, RhiCommandList *cmdl);
+    int32_t (*submit_and_wait)(RhiDevice *device, RhiCommandList *cmdl);
     void (*cmd_pipeline_barrier)(RhiCommandList *cl, uint32_t count, const RhiBarrier *barriers);
     void (*cmd_signal_fence)(RhiCommandList *cl, RhiFence *f, uint64_t value);
     void (*cmd_wait_fence)(RhiCommandList *cl, RhiFence *f, uint64_t value);

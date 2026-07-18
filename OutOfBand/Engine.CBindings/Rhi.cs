@@ -473,7 +473,10 @@ public static partial class RhiNative
     public static partial IntPtr RhiBeginCmdlist(IntPtr device, QueueType queue);
 
     [LibraryImport(Library, EntryPoint = "rhi_submit")]
-    public static partial int RhiSubmit(IntPtr device, IntPtr cmdlist);
+    public static partial int RhiSubmitCmdList(IntPtr device, IntPtr cmdlist);
+
+    [LibraryImport(Library, EntryPoint = "rhi_submit_and_wait")]
+    public static partial int RhiSubmitAndWait(IntPtr device, IntPtr cmdlist);
 
     [LibraryImport(Library, EntryPoint = "rhi_cmd_pipeline_barrier")]
     public static partial void RhiCmdPipelineBarrier(IntPtr cmdlist,

@@ -93,6 +93,7 @@ int32_t rhi_texture_readback          (RhiTexture*, void* out_bytes, uint64_t ou
 ```c
 RhiCommandList* rhi_begin_cmdlist       (RhiDevice*);
 int32_t         rhi_submit              (RhiDevice*, RhiCommandList*);
+int32_t         rhi_submit_and_wait     (RhiDevice*, RhiCommandList*);
 void            rhi_cmd_pipeline_barrier(RhiCommandList*, uint32_t count,
                                           const RhiBarrier*);
 

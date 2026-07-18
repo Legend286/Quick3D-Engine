@@ -29,7 +29,7 @@ extern "C" {
 #  endif
 #endif
 
-#define ENGINE_ABI_VERSION_RHI 6
+#define ENGINE_ABI_VERSION_RHI 7
 
 typedef struct RhiDevice         RhiDevice;
 typedef struct RhiSwapchain      RhiSwapchain;
@@ -460,6 +460,7 @@ ENGINE_API void     rhi_format_block_info(RhiTextureFormat fmt,
 
 ENGINE_API RhiCommandList* rhi_begin_cmdlist(RhiDevice* device, RhiQueueType queue);
 ENGINE_API int32_t         rhi_submit(RhiDevice* device, RhiCommandList* cmdlist);
+ENGINE_API int32_t         rhi_submit_and_wait(RhiDevice* device, RhiCommandList* cmdlist);
 ENGINE_API void            rhi_cmd_pipeline_barrier(RhiCommandList* cl,
                                                    uint32_t count,
                                                    const RhiBarrier* barriers);

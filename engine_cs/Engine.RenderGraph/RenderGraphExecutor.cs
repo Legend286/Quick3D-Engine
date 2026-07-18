@@ -159,6 +159,8 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     public void EndComputePass() => _rec.EndComputePass();
 
     public void EndPass() => _rec.EndPass();
+    public void Submit() => _rec.Submit();
+    public void SubmitAndWait() => _rec.SubmitAndWait();
     public void BindPipeline(RhiPipeline pipeline) => _rec.BindPipeline(pipeline);
     public void BindVertexBuffer(uint slot, RhiBuffer buf, ulong offset = 0)
         => _rec.BindVertexBuffer(slot, buf, offset);
