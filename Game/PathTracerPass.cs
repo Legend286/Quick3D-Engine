@@ -36,8 +36,8 @@ public class PathTracerPass : RenderPass
         public Vector4 AabbMax;
         public uint PartCount;
         public uint FirstPartIndex;
-        public uint pad1;
-        public uint pad2;
+        public uint EntityIdLow;
+        public uint EntityIdHigh;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -385,7 +385,9 @@ public class PathTracerPass : RenderPass
                             AabbMin = new Vector4(instAabbMin, 1.0f),
                             AabbMax = new Vector4(instAabbMax, 1.0f),
                             PartCount = (uint)(_parts.Count - firstPart),
-                            FirstPartIndex = firstPart
+                            FirstPartIndex = firstPart,
+                            EntityIdLow = (uint)(id & 0xFFFFFFFF),
+                            EntityIdHigh = (uint)(id >> 32)
                         });
                     }
                 }

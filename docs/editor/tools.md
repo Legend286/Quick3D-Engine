@@ -50,3 +50,19 @@ anymore on macOS - Metal draws straight to the embedded
 NSView, so the Avl Skia round-trip is bypassed entirely.
 `Engine.RHI/RhiTexture.Readback` is preserved for editor
 preview screenshots (Phase 3+).
+
+## Object Selection and Outlines
+
+The Editor implements a hardware-accelerated object selection and outline rendering pipeline through three RenderGraph passes:
+
+1. `IdPickingPass`: Renders the entity ID (`uint64_t`) into a dedicated texture format (`R32Uint`). The Editor reads back this texture at the cursor coordinate on mouse click to resolve selections in O(1) time regardless of scene complexity.
+2. `OutlineMaskPass`: Generates a solid white 2D silhouette of the currently selected entity. This pass does not read or write depth, meaning the selection outline acts as an X-Ray overlay visible through scene geometry.
+3. `OutlineCompositePass`: A post-processing pass that samples the `OutlineMaskPass` output texture using a cross-neighborhood edge detection shader. It renders an orange outline at the silhouette boundary directly onto the backbuffer.
+
+### Related Files
+- `Game/IdPickingPass.cs`
+- `Game/OutlineMaskPass.cs`
+- `Game/OutlineCompositePass.cs`
+- `Content/shaders/id_picking.slang`
+- `Content/shaders/outline_mask.slang`
+- `Content/shaders/outline_composite.slang`

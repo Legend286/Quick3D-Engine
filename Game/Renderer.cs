@@ -35,13 +35,22 @@ public sealed class Renderer : IDisposable
     /// can reference the same handle.</summary>
     public static readonly ResourceHandle BackBufferHandle = new(0x80000000);
     public static readonly ResourceHandle DepthBufferHandle = new(0x80000001);
+    public static readonly ResourceHandle OutlineMaskHandle = new(0x80000002);
 
     private string _lastSceneName = "";
     private bool _usePathTracer = true;
     private RhiBindlessHeap _sharedBindlessHeap;
 
     private RhiTexture? _depthTexture;
+    private RhiTexture? _outlineMaskTexture;
     private uint _depthWidth, _depthHeight;
+
+    private ulong _selectedEntity;
+    public ulong SelectedEntity
+    {
+        get => _selectedEntity;
+        set { _selectedEntity = value; }
+    }
 
     public bool UsePathTracer
     {
@@ -157,6 +166,9 @@ public sealed class Renderer : IDisposable
 
         passes.Add(new GridPass(_device, _world, contentRoot, clearScreen: scene.Passes.Count == 0));
 
+        passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));
+        passes.Add(new OutlineCompositePass(_device, contentRoot, this, _sharedBindlessHeap));
+
         if (_imguiRenderer != null)
             passes.Add(new ImGuiPass(_imguiRenderer));
 
@@ -177,6 +189,8 @@ public sealed class Renderer : IDisposable
         if (_depthTexture == null || _depthWidth != width || _depthHeight != height)
         {
             _depthTexture?.Dispose();
+            _outlineMaskTexture?.Dispose();
+
             _depthWidth = width > 0 ? width : 1;
             _depthHeight = height > 0 ? height : 1;
 
@@ -190,6 +204,8 @@ public sealed class Renderer : IDisposable
                 UsageFlags = Engine.CBindings.RhiNative.TextureRenderTarget
             };
             _depthTexture = RhiTexture.CreateDepth(_device, _depthWidth, _depthHeight);
+
+            _outlineMaskTexture = RhiTexture.CreateRenderTarget(_device, _depthWidth, _depthHeight, Engine.CBindings.RhiNative.TextureFormat.Bgra8Unorm);
         }
 
         using var executor = new RenderGraphExecutor(_device);
@@ -197,8 +213,25 @@ public sealed class Renderer : IDisposable
         executor.BindSwapchain(backBuffer, BackBufferHandle, ResourceState.RenderTarget);
         if (_depthTexture != null)
             executor.BindSwapchain(_depthTexture, DepthBufferHandle, ResourceState.DepthStencil);
+        if (_outlineMaskTexture != null)
+            executor.BindSwapchain(_outlineMaskTexture, OutlineMaskHandle, ResourceState.RenderTarget);
 
         executor.Execute(_plan);
+    }
+
+    public ulong Pick(uint x, uint y, uint w, uint h)
+    {
+        if (_currentScene == null) return 0;
+        using var pass = new IdPickingPass(_device, _world, _contentRoot);
+        pass.PickRequested = true;
+        pass.PickX = x;
+        pass.PickY = y;
+
+        using var executor = new RenderGraphExecutor(_device);
+        executor.SetViewportSize(1, 1);
+        pass.Execute(executor, new RenderGraphContext { Width = w, Height = h });
+
+        return pass.PickedId;
     }
 
     public void Dispose()
@@ -208,6 +241,8 @@ public sealed class Renderer : IDisposable
         _loader = null;
         _depthTexture?.Dispose();
         _depthTexture = null;
+        _outlineMaskTexture?.Dispose();
+        _outlineMaskTexture = null;
         _sharedBindlessHeap?.Dispose();
         _sharedBindlessHeap = null!;
     }

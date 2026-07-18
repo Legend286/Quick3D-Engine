@@ -32,8 +32,8 @@ struct InstanceData {
     float4 aabbMax;
     uint partCount;
     uint firstPartIndex;
-    uint pad1;
-    uint pad2;
+    uint entityIdLow;
+    uint entityIdHigh;
 };
 
 struct MaterialData {

@@ -10,4 +10,6 @@ public interface IGameLoop : IDisposable
     void Update(InputState input);
     void RenderFrame(RhiTexture backBuffer, uint width, uint height);
     void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target);
+    void SetSelectedEntity(ulong entityId);
+    event Action<ulong>? OnEntityPicked;
 }

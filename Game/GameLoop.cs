@@ -40,6 +40,22 @@ public sealed class GameLoop : IGameLoop
 
     private ulong _editorCameraEnt = 0;
 
+    public event Action<ulong>? OnEntityPicked;
+
+    public ulong SelectedEntity
+    {
+        get => _renderer?.SelectedEntity ?? 0;
+        set
+        {
+            if (_renderer != null) _renderer.SelectedEntity = value;
+        }
+    }
+
+    public void SetSelectedEntity(ulong entityId)
+    {
+        SelectedEntity = entityId;
+    }
+
     private void EnsureCamera()
     {
         if (_world == null) return;
@@ -57,6 +73,13 @@ public sealed class GameLoop : IGameLoop
             Position = new Vector3(0, 5, -15) // stepped back a bit
         });
     }
+
+    private float _pitch;
+    private float _yaw;
+    private float _lastMouseX;
+    private float _lastMouseY;
+    private bool _wasKeyPDown;
+    private bool _wasMouseDownLeft;
 
     public void Update(InputState input)
     {
@@ -89,6 +112,25 @@ public sealed class GameLoop : IGameLoop
             // Draw a test window
             ImGuiNET.ImGui.ShowDemoWindow();
         }
+
+        if (input.MouseDownLeft && !_wasMouseDownLeft && _renderer != null && _lastWidth > 0 && _lastHeight > 0)
+        {
+            uint px = (uint)Math.Clamp(input.MouseX * input.RenderScale, 0, _lastWidth - 1);
+            uint py = (uint)Math.Clamp(input.MouseY * input.RenderScale, 0, _lastHeight - 1);
+            
+            ulong pickedId = _renderer.Pick(px, py, _lastWidth, _lastHeight);
+            SelectedEntity = pickedId; // Update selection
+            OnEntityPicked?.Invoke(pickedId);
+            if (pickedId != 0)
+            {
+                Info($"[GameLoop] Picked Entity ID: {pickedId}", "Game");
+            }
+            else
+            {
+                Info($"[GameLoop] Picked sky (0)", "Game");
+            }
+        }
+        _wasMouseDownLeft = input.MouseDownLeft;
 
         if (_world.TryGet<Transform>(_editorCameraEnt, out var t))
         {
@@ -125,12 +167,6 @@ public sealed class GameLoop : IGameLoop
             _world.Set(_editorCameraEnt, t);
         }
     }
-
-    private float _pitch;
-    private float _yaw;
-    private float _lastMouseX;
-    private float _lastMouseY;
-    private bool _wasKeyPDown;
 
     public void LoadScene(string contentRoot, string sceneName)
     {
