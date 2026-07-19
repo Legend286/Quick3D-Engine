@@ -139,6 +139,7 @@ public static partial class RhiNative
         public IntPtr FragmentShader;
         public TextureFormat ColorFormat;
         public int EnableDepth;
+        public int EnableDepthWrite;
         public int EnableBlend;
         public int SampleCount;
         public uint PrimitiveTopology;

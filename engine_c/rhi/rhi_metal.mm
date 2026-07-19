@@ -851,23 +851,32 @@ struct RhiSamplerImpl {
 // Without this binding our PbrPass + GridPass were rendering with depth test
 // disabled, which is why models didn't occlude each other and the grid
 // showed through them.
-static __strong id<MTLDepthStencilState> g_depth_stencil_state = nil;
+static __strong id<MTLDepthStencilState> g_depth_stencil_state_write = nil;
+static __strong id<MTLDepthStencilState> g_depth_stencil_state_no_write = nil;
 static __weak id<MTLDevice>             g_dss_owner_device = nil;
 
-static id<MTLDepthStencilState> GetOrCreateDepthStencilState(id<MTLDevice> device) {
+static id<MTLDepthStencilState> GetOrCreateDepthStencilState(id<MTLDevice> device, bool enable_depth_write) {
     @autoreleasepool {
-        if (g_depth_stencil_state && g_dss_owner_device == device) {
-            return g_depth_stencil_state;
+        if (g_dss_owner_device != device) {
+            g_depth_stencil_state_write = nil;
+            g_depth_stencil_state_no_write = nil;
+            g_dss_owner_device = device;
         }
-        MTLDepthStencilDescriptor* desc = [[MTLDepthStencilDescriptor alloc] init];
-        desc.depthCompareFunction = MTLCompareFunctionLessEqual;
-        desc.depthWriteEnabled    = YES;
-        desc.backFaceStencil      = nil;
-        desc.frontFaceStencil     = nil;
-        id<MTLDepthStencilState> s = [device newDepthStencilStateWithDescriptor:desc];
+
+        if (enable_depth_write && g_depth_stencil_state_write) return g_depth_stencil_state_write;
+        if (!enable_depth_write && g_depth_stencil_state_no_write) return g_depth_stencil_state_no_write;
+
+        MTLDepthStencilDescriptor* dsd = [[MTLDepthStencilDescriptor alloc] init];
+        dsd.depthCompareFunction = MTLCompareFunctionLessEqual;
+        dsd.depthWriteEnabled    = enable_depth_write ? YES : NO;
+        dsd.backFaceStencil      = nil;
+        dsd.frontFaceStencil     = nil;
+        id<MTLDepthStencilState> s = [device newDepthStencilStateWithDescriptor:dsd];
         if (!s) return nil;
-        g_depth_stencil_state = s;
-        g_dss_owner_device    = device;
+        
+        if (enable_depth_write) g_depth_stencil_state_write = s;
+        else g_depth_stencil_state_no_write = s;
+
         return s;
     }
 }
@@ -1138,9 +1147,8 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
         // Apple docs: without a bound MTLDepthStencilState, depth test, read,
         // and write are all disabled regardless of depthAttachmentPixelFormat
         // on the pipeline. Bind the cached Less-compare / write-enabled
-        // state for every render pass that has a depth attachment.
         if (desc->depth_attachment) {
-            id<MTLDepthStencilState> dss = GetOrCreateDepthStencilState(cli->buf.device);
+            id<MTLDepthStencilState> dss = GetOrCreateDepthStencilState(cli->buf.device, true);
             if (dss) [enc setDepthStencilState:dss];
         }
         RhiEncoderImpl* ri = new RhiEncoderImpl();

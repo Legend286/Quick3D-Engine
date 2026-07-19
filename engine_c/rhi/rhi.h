@@ -29,7 +29,7 @@ extern "C" {
 #  endif
 #endif
 
-#define ENGINE_ABI_VERSION_RHI 7
+#define ENGINE_ABI_VERSION_RHI 8
 
 typedef struct RhiDevice         RhiDevice;
 typedef struct RhiSwapchain      RhiSwapchain;
@@ -158,6 +158,7 @@ typedef struct RhiGraphicsPipelineDesc {
     RhiShader*        fragment_shader;
     RhiTextureFormat  color_attachment_format;
     int32_t           enable_depth;
+    int32_t           enable_depth_write;
     int32_t           enable_blend;
     int32_t           sample_count;       /* MSAA; 1 = off */
     uint32_t          primitive_topology; /* RhiPrimitiveTopology */

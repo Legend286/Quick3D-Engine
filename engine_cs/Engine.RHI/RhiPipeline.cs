@@ -13,7 +13,7 @@ public sealed class RhiPipeline : IDisposable
     internal RhiPipeline(IntPtr handle) { Handle = handle; }
 
     public static RhiPipeline CreateGraphics(RhiDevice device, RhiShader vertexShader, RhiShader fragmentShader,
-        RhiNative.TextureFormat colorFormat, bool enableDepth = true, bool enableBlend = false, RhiNative.PrimitiveTopology topology = RhiNative.PrimitiveTopology.TriangleList)
+        RhiNative.TextureFormat colorFormat, bool enableDepth = true, bool enableDepthWrite = true, bool enableBlend = false, RhiNative.PrimitiveTopology topology = RhiNative.PrimitiveTopology.TriangleList)
     {
         var desc = new RhiNative.GraphicsPipelineDesc
         {
@@ -22,6 +22,7 @@ public sealed class RhiPipeline : IDisposable
             FragmentShader = fragmentShader.Handle,
             ColorFormat = colorFormat,
             EnableDepth = enableDepth ? 1 : 0,
+            EnableDepthWrite = enableDepthWrite ? 1 : 0,
             EnableBlend = enableBlend ? 1 : 0,
             SampleCount = 1,
             PrimitiveTopology = (uint)topology
