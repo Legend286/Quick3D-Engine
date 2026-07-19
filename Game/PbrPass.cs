@@ -69,6 +69,13 @@ public class PbrPass : RenderPass
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct SkyParams
+    {
+        public Vector4 SunDirAndRadius;
+        public Vector4 IntensityTurbidityAlbedoPad;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct ScenePushData
     {
         public ulong Parts;
@@ -80,7 +87,8 @@ public class PbrPass : RenderPass
         public uint FrameCount;
         public Vector2 Resolution;
         public uint DebugFlags;
-        public uint pad_debug;
+        public uint HasGeometry;
+        public SkyParams Sky;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -119,6 +127,9 @@ public class PbrPass : RenderPass
     private readonly RhiShader _cullCs;
     private readonly RhiPipeline _pipeline;
     private readonly RhiPipeline _cullPipeline;
+    private readonly RhiShader _skyVs;
+    private readonly RhiShader _skyFs;
+    private readonly RhiPipeline _skyPipeline;
     private readonly RhiSampler _sampler;
     private float _lastAspect;
 
@@ -161,6 +172,11 @@ public class PbrPass : RenderPass
         string cullSrc = LoadShaderSource("shaders/cull.slang");
         _cullCs = RhiShader.FromSource(_device, cullSrc, "computeMain", RhiNative.ShaderStage.Compute, shaderDir);
         _cullPipeline = RhiPipeline.CreateCompute(_device, _cullCs);
+
+        string skySrc = LoadShaderSource("shaders/pbr_sky.slang");
+        _skyVs = RhiShader.FromSource(_device, skySrc, "vertexMain", RhiNative.ShaderStage.Vertex, shaderDir);
+        _skyFs = RhiShader.FromSource(_device, skySrc, "fragmentMain", RhiNative.ShaderStage.Fragment, shaderDir);
+        _skyPipeline = RhiPipeline.CreateGraphics(_device, _skyVs, _skyFs, RhiNative.TextureFormat.Bgra8Unorm, enableDepth: true);
 
         _sampler = RhiSampler.Create(_device);
 
@@ -394,6 +410,25 @@ public class PbrPass : RenderPass
             }
         }
 
+        ScenePushData pbrPush = new ScenePushData
+        {
+            Parts = _partBuffer.DeviceAddress,
+            Instances = _instanceBuffer.DeviceAddress,
+            Materials = _materialBuffer.DeviceAddress,
+            Camera = _cameraBuffer.DeviceAddress,
+            Lights = _lightBuffer.DeviceAddress,
+            LightCount = (uint)lights.Count,
+            FrameCount = 0,
+            Resolution = new Vector2(w, h),
+            DebugFlags = 0,
+            HasGeometry = 1u,
+            Sky = new SkyParams
+            {
+                SunDirAndRadius = new Vector4(Vector3.Normalize(new Vector3(0.5f, 1.0f, 0.5f)), 0.00465f),
+                IntensityTurbidityAlbedoPad = new Vector4(1.0f, 2.0f, 0.1f, 0.0f)
+            }
+        };
+
         if (_instances.Count > 0)
         {
             _instanceBuffer.Upload(CollectionsMarshal.AsSpan(_instances));
@@ -442,20 +477,13 @@ public class PbrPass : RenderPass
                 sink.UseBuffer(mesh.IndexBuffer, 1);
             }
 
-            ScenePushData pbrPush = new ScenePushData
-            {
-                Parts = _partBuffer.DeviceAddress,
-                Instances = _instanceBuffer.DeviceAddress,
-                Materials = _materialBuffer.DeviceAddress,
-                Camera = _cameraBuffer.DeviceAddress,
-                Lights = _lightBuffer.DeviceAddress,
-                LightCount = (uint)lights.Count,
-                FrameCount = 0,
-                Resolution = new Vector2(w, h)
-            };
             sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pbrPush));
 
-            // Bind bindless textures
+            // 3. Draw Sky (FIRST to debug depth issues)
+            sink.BindPipeline(_skyPipeline);
+            sink.Draw(3, 1, 0, 0);
+
+            // Bind bindless textures for the main geometry pass
             if (_bindlessHeap.IsInitialized)
             {
                 // Slot 1 for textures (auto-assigned buffer(1) by Slang Metal)
@@ -464,29 +492,23 @@ public class PbrPass : RenderPass
                 sink.BindSampler(0, _sampler);
             }
 
+            sink.BindPipeline(_pipeline);
+
             // Perform multidraw!
-            // Wait, we need to read the draw count back to CPU or use draw count buffer.
-            // Currently RHI doesn't support drawCountBuffer natively in Metal (requires ICB and manual looping).
-            // But we can loop over maximum possible parts if we just read the drawCount!
-            // In Metal, MTLIndirectCommandBuffer executes commands up to drawCount.
-            // Wait, `MTLIndirectCommandBuffer` has `executeCommandsInBuffer:withRange:`.
-            // Our RhiCmdDrawIndirect takes a fixed `draw_count`.
-            // To make it fully GPU-driven, `draw_count` should be MAX_PARTS, and commands past drawCount
-            // should have `vertexCount = 0` (or we add a GPU drawCount param to RHI).
-            // Since we didn't add GPU drawCount to RHI, we can just dispatch ALL parts and let cull shader 
-            // set vertexCount = 0 for culled parts!
-
-            // So we don't even need atomic draw count for the indirect dispatch if we just dispatch _parts.Count
-            // and cull shader uses partIdx directly to write into `drawCmds[partIdx]`.
             sink.DrawIndirect(_drawCmdBuffer, 0, (uint)_parts.Count, 16);
-
-            sink.EndPass();
         }
         else
         {
             sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store, depthTarget);
-            sink.EndPass();
+            
+            sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pbrPush));
+            
+            // 3. Draw Sky (FIRST to debug depth issues)
+            sink.BindPipeline(_skyPipeline);
+            sink.Draw(3, 1, 0, 0);
         }
+        
+        sink.EndPass();
     }
 
     private string LoadShaderSource(string relPath)
@@ -499,10 +521,14 @@ public class PbrPass : RenderPass
     public void Dispose()
     {
         _pipeline?.Dispose();
+        _cullPipeline?.Dispose();
+        _skyPipeline?.Dispose();
         _vs?.Dispose();
         _fs?.Dispose();
-        _cullPipeline?.Dispose();
         _cullCs?.Dispose();
+        _skyVs?.Dispose();
+        _skyFs?.Dispose();
+        _sampler?.Dispose();
 
         _instanceBuffer?.Dispose();
         _partBuffer?.Dispose();
