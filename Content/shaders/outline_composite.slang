@@ -45,10 +45,10 @@ float4 fragmentMain(VertexOut vin) : SV_Target
     float center = maskTex.Sample(smp, uv).r;
 
     // Read neighbors (cross) with clamping to prevent wrap-around
-    float n = maskTex.Sample(smp, clamp(uv + float2(0, -texelSize.y), 0.0, 1.0)).r;
-    float s = maskTex.Sample(smp, clamp(uv + float2(0, texelSize.y), 0.0, 1.0)).r;
-    float e = maskTex.Sample(smp, clamp(uv + float2(texelSize.x, 0), 0.0, 1.0)).r;
-    float w = maskTex.Sample(smp, clamp(uv + float2(-texelSize.x, 0), 0.0, 1.0)).r;
+    float n = maskTex.Sample(smp, clamp(uv + float2(0, -texelSize.y * 2.0), 0.0, 1.0)).r;
+    float s = maskTex.Sample(smp, clamp(uv + float2(0, texelSize.y * 2.0), 0.0, 1.0)).r;
+    float e = maskTex.Sample(smp, clamp(uv + float2(texelSize.x * 2.0, 0), 0.0, 1.0)).r;
+    float w = maskTex.Sample(smp, clamp(uv + float2(-texelSize.x * 2.0, 0), 0.0, 1.0)).r;
 
     float sum = n + s + e + w;
 

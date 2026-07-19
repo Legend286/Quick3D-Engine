@@ -53,6 +53,7 @@ public sealed class GridPass : RenderPass, IDisposable
             _device, _vs, _fs,
             RhiNative.TextureFormat.Bgra8Unorm,
             enableDepth: true,
+            enableDepthWrite: false,
             enableBlend: true,
             topology: RhiNative.PrimitiveTopology.LineList
         );

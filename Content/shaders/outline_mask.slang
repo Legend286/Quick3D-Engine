@@ -24,6 +24,10 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     float4 worldPos = mul(inst.modelMatrix, float4(vPos, 1.0));
     output.position = mul(push.camera->viewProj, worldPos);
     
+    // Apply depth bias to pull the mask slightly towards the camera
+    // This prevents Z-fighting when depth-testing against the jittered PathTracer depth buffer
+    output.position.z -= 0.001 * output.position.w;
+    
     return output;
 }
 

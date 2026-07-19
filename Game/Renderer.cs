@@ -164,10 +164,10 @@ public sealed class Renderer : IDisposable
                 passes.Add(new PbrPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap));
         }
 
-        passes.Add(new GridPass(_device, _world, contentRoot, clearScreen: scene.Passes.Count == 0));
-
         passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));
         passes.Add(new OutlineCompositePass(_device, contentRoot, this, _sharedBindlessHeap));
+
+        passes.Add(new GridPass(_device, _world, contentRoot, clearScreen: scene.Passes.Count == 0));
 
         if (_imguiRenderer != null)
             passes.Add(new ImGuiPass(_imguiRenderer));
