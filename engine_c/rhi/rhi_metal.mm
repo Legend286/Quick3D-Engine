@@ -958,8 +958,39 @@ static int32_t metal_texture_readback(RhiTexture* t, void* out,
             ENGINE_LOG_ERROR("rhi_metal", "readback buffer too small");
             return -1;
         }
-        MTLRegion region = MTLRegionMake2D(0, 0, w, h);
-        [ti->tex getBytes:out bytesPerRow:stride fromRegion:region mipmapLevel:0];
+        if (ti->tex.storageMode == MTLStorageModePrivate) {
+            if (!ti->queue) {
+                ENGINE_LOG_ERROR("rhi_metal", "Cannot readback Private texture without a command queue");
+                return -1;
+            }
+            id<MTLBuffer> readbackBuf = [ti->tex.device newBufferWithLength:out_size options:MTLResourceStorageModeShared];
+            id<MTLCommandBuffer> cb = [ti->queue commandBuffer];
+            id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+            
+            [blit copyFromTexture:ti->tex
+                      sourceSlice:0
+                      sourceLevel:0
+                     sourceOrigin:MTLOriginMake(0, 0, 0)
+                       sourceSize:MTLSizeMake(w, h, 1)
+                         toBuffer:readbackBuf
+                destinationOffset:0
+           destinationBytesPerRow:stride
+         destinationBytesPerImage:stride * h];
+            
+#if TARGET_OS_OSX
+            if (readbackBuf.storageMode == MTLStorageModeManaged) {
+                [blit synchronizeResource:readbackBuf];
+            }
+#endif
+            [blit endEncoding];
+            [cb commit];
+            [cb waitUntilCompleted];
+            
+            memcpy(out, [readbackBuf contents], out_size);
+        } else {
+            MTLRegion region = MTLRegionMake2D(0, 0, w, h);
+            [ti->tex getBytes:out bytesPerRow:stride fromRegion:region mipmapLevel:0];
+        }
         return 0;
     }
 }

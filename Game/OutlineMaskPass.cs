@@ -85,19 +85,16 @@ public sealed class OutlineMaskPass : RenderPass, IDisposable
 
         CameraData camData = default;
         camData.ViewProj = Matrix4x4.Identity;
-        foreach (var id in _world.Entities)
+        ulong activeCam = _renderer.ActiveCameraEntity;
+        if (_world.TryGet<Engine.Scene.Components.Camera>(activeCam, out var cam))
         {
-            if (_world.TryGet<Engine.Scene.Components.Camera>(id, out var cam))
-            {
-                var transform = _world.TryGet<Transform>(id, out var t) ? t : Transform.Default;
-                var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
-                var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, aspect, cam.NearClip, cam.FarClip);
-                camData.ViewProj = view * proj;
-                Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
-                camData.InvViewProj = invVP;
-                camData.CameraPosition = new Vector4(transform.Position, 1.0f);
-                break;
-            }
+            var transform = _world.TryGet<Transform>(activeCam, out var t) ? t : Transform.Default;
+            var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
+            var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, aspect, cam.NearClip, cam.FarClip);
+            camData.ViewProj = view * proj;
+            Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
+            camData.InvViewProj = invVP;
+            camData.CameraPosition = new Vector4(transform.Position, 1.0f);
         }
 
         if (camData.ViewProj == Matrix4x4.Identity)

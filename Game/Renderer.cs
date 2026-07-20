@@ -52,6 +52,9 @@ public sealed class Renderer : IDisposable
         set { _selectedEntity = value; }
     }
 
+    public ulong ActiveCameraEntity { get; set; }
+
+
     public bool UsePathTracer
     {
         get => _usePathTracer;
@@ -159,9 +162,9 @@ public sealed class Renderer : IDisposable
         foreach (var scenePass in scene.Passes)
         {
             if (_usePathTracer)
-                passes.Add(new PathTracerPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap));
+                passes.Add(new PathTracerPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap, this));
             else
-                passes.Add(new PbrPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap));
+                passes.Add(new PbrPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap, this));
         }
 
         passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));

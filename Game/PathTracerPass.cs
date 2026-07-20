@@ -112,6 +112,7 @@ public class PathTracerPass : RenderPass
     private RhiAccelStruct _tlas;
     private uint _frameCount;
     private int _lastInstanceHash;
+    private int _lastMaterialHash;
     private Matrix4x4 _lastViewProj;
     private bool _hasGeometry;
 
@@ -119,6 +120,7 @@ public class PathTracerPass : RenderPass
     private readonly IEntityStore _world;
     private readonly SceneGraph _scene;
     private readonly string _contentRoot;
+    private readonly Engine.Game.Renderer _renderer;
 
     private uint _lastWidth = 0;
     private uint _lastHeight = 0;
@@ -139,7 +141,7 @@ public class PathTracerPass : RenderPass
     /// <summary>When true, renders hit distance as grayscale instead of full path tracing.</summary>
     public static bool DebugMode = false;
 
-    public unsafe PathTracerPass(RhiDevice device, IEntityStore world, SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap)
+    public unsafe PathTracerPass(RhiDevice device, IEntityStore world, SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap, Engine.Game.Renderer renderer)
     {
         Name = scenePass.Name;
         _device = device;
@@ -147,6 +149,7 @@ public class PathTracerPass : RenderPass
         _scene = scene;
         _contentRoot = contentRoot;
         _bindlessHeap = sharedHeap;
+        _renderer = renderer;
 
         string shaderDir = Path.Combine(_contentRoot, "shaders");
 
@@ -212,21 +215,18 @@ public class PathTracerPass : RenderPass
         camData.ViewProj = Matrix4x4.Identity;
         camData.CameraPosition = new Vector4(0, 0, 0, 1.0f); // 1.0f exposure default
 
-        foreach (var id in _world.Entities)
+        ulong activeCam = _renderer.ActiveCameraEntity;
+        if (_world.TryGet<Engine.Scene.Components.Camera>(activeCam, out var cam))
         {
-            if (_world.TryGet<Engine.Scene.Components.Camera>(id, out var cam))
-            {
-                var transform = _world.TryGet<Transform>(id, out var t) ? t : Transform.Default;
-                var forward = Vector3.Transform(Vector3.UnitZ, transform.Rotation);
-                var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + forward, Vector3.UnitY);
-                var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, _lastAspect, cam.NearClip, cam.FarClip);
-                camData.ViewProj = view * proj;
-                Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
-                camData.InvViewProj = invVP;
-                camData.CameraPosition = new Vector4(transform.Position, 1.0f);
-                camData.CameraForward = new Vector4(forward, 0.0f);
-                break;
-            }
+            var transform = _world.TryGet<Transform>(activeCam, out var t) ? t : Transform.Default;
+            var forward = Vector3.Transform(Vector3.UnitZ, transform.Rotation);
+            var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + forward, Vector3.UnitY);
+            var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, _lastAspect, cam.NearClip, cam.FarClip);
+            camData.ViewProj = view * proj;
+            Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
+            camData.InvViewProj = invVP;
+            camData.CameraPosition = new Vector4(transform.Position, 1.0f);
+            camData.CameraForward = new Vector4(forward, 0.0f);
         }
 
         if (camData.ViewProj == Matrix4x4.Identity)
@@ -355,7 +355,10 @@ public class PathTracerPass : RenderPass
                             AlbedoTexIndex = albedoTex,
                             NormalTexIndex = normalTex,
                             RmaTexIndex = rmaTex,
-                            EmissiveTexIndex = emissiveTex
+                            EmissiveTexIndex = emissiveTex,
+                            Subsurface = material?.Subsurface ?? 0.0f,
+                            SubsurfaceColor = material?.SubsurfaceColor != null && material.SubsurfaceColor.Length >= 3 ? new Vector4(material.SubsurfaceColor[0], material.SubsurfaceColor[1], material.SubsurfaceColor[2], 0) : Vector4.Zero,
+                            SubsurfaceRadius = material?.SubsurfaceRadius != null && material.SubsurfaceRadius.Length >= 3 ? new Vector4(material.SubsurfaceRadius[0], material.SubsurfaceRadius[1], material.SubsurfaceRadius[2], 0) : Vector4.Zero
                         });
 
                         Vector3 partMin = p.BoundsMin;
@@ -399,6 +402,18 @@ public class PathTracerPass : RenderPass
             _instanceBuffer.Upload(CollectionsMarshal.AsSpan(_instances));
             _partBuffer.Upload(CollectionsMarshal.AsSpan(_parts));
             _materialBuffer.Upload(CollectionsMarshal.AsSpan(_materials));
+        }
+
+        int currentMatHash = 0;
+        foreach (var m in _materials)
+        {
+            currentMatHash = HashCode.Combine(currentMatHash, 
+                m.BaseColor.GetHashCode(), m.Metallic.GetHashCode(), m.Roughness.GetHashCode(), m.Subsurface.GetHashCode(), m.SubsurfaceColor.GetHashCode(), m.SubsurfaceRadius.GetHashCode());
+        }
+        if (currentMatHash != _lastMaterialHash)
+        {
+            _lastMaterialHash = currentMatHash;
+            _frameCount = 0;
         }
 
         bool hasGeometry = UpdateTlas(sink);
