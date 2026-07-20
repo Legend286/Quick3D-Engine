@@ -4,6 +4,38 @@
              RequestedThemeVariant="Dark">
   <Application.Styles>
     <FluentTheme />
+    <!-- Global override for ButtonSpinner to make arrows stack vertically and save horizontal space -->
+    <Style Selector="ButtonSpinner">
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border Background="{TemplateBinding Background}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="{TemplateBinding CornerRadius}"
+                  ClipToBounds="True">
+            <DockPanel>
+              <Grid RowDefinitions="*,*" DockPanel.Dock="Right" IsVisible="{TemplateBinding ShowButtonSpinner}" Width="20">
+                <RepeatButton Grid.Row="0" Name="PART_IncreaseButton" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Padding="0" Background="Transparent" BorderThickness="0">
+                  <Path Data="M 0 3 L 3 0 L 6 3" Stroke="{Binding $parent[RepeatButton].Foreground}" StrokeThickness="1.5" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </RepeatButton>
+                <RepeatButton Grid.Row="1" Name="PART_DecreaseButton" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" Padding="0" Background="Transparent" BorderThickness="0">
+                  <Path Data="M 0 0 L 3 3 L 6 0" Stroke="{Binding $parent[RepeatButton].Foreground}" StrokeThickness="1.5" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </RepeatButton>
+              </Grid>
+              <ContentPresenter Name="PART_ContentPresenter"
+                                Content="{TemplateBinding Content}"
+                                ContentTemplate="{TemplateBinding ContentTemplate}"
+                                Padding="{TemplateBinding Padding}"
+                                HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+            </DockPanel>
+          </Border>
+        </ControlTemplate>
+      </Setter>
+    </Style>
+    <Style Selector="ButtonSpinner RepeatButton:pointerover">
+      <Setter Property="Background" Value="#1AFFFFFF" />
+    </Style>
     <!-- Win the type-rhythm battle against FluentTheme's per-control
          FontSize defaults. Without these selectors Button/MenuItem/TabItem
          pick up the theme's larger size on macOS, and the editor reads
