@@ -46,7 +46,12 @@
           <ItemsControl.ItemTemplate>
             <DataTemplate>
               <!-- We use a Border that can receive drag events or start drags -->
-              <Border Classes="AssetItem" Padding="8" CornerRadius="6" Margin="4" PointerPressed="OnAssetPointerPressed" ToolTip.Tip="{Binding FullPath}">
+              <Border Classes="AssetItem" Padding="8" CornerRadius="6" Margin="4" 
+                      PointerPressed="OnAssetPointerPressed" 
+                      PointerMoved="OnAssetPointerMoved" 
+                      PointerReleased="OnAssetPointerReleased" 
+                      DoubleTapped="OnAssetDoubleTapped" 
+                      ToolTip.Tip="{Binding FullPath}">
                 <StackPanel Spacing="8">
                   <Border Background="#1c1f24" BorderBrush="#2d3139" BorderThickness="1" CornerRadius="8" Width="104" Height="104" HorizontalAlignment="Center">
                     <Panel>

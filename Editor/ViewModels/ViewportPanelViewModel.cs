@@ -258,7 +258,7 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
             throw new InvalidOperationException("No IGameLoop implementation found in Engine.Game.");
 
         _gameLoop = (IGameLoop)Activator.CreateInstance(loopType)!;
-        _gameLoop.Init(_device.Handle, _swap.Handle, _world);
+        _gameLoop.Init(_device.Handle, _swap.Handle, _world, true);
         _gameLoop.LoadScene(_contentRoot, ResolveStartupScene());
 
         _gameLoop.OnEntityPicked += (ent) => {

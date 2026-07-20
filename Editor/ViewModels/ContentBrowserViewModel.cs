@@ -151,34 +151,89 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
         catch { }
     }
 
+    private FileSystemWatcher? _contentWatcher;
+    private FileSystemWatcher? _gameWatcher;
+
     private void SetupWatcher()
     {
-        var rootDir = Path.GetFullPath(".");
-        _watcher = new FileSystemWatcher(rootDir)
+        var contentDir = Path.GetFullPath("Content");
+        if (Directory.Exists(contentDir))
         {
-            IncludeSubdirectories = true,
-            NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite
-        };
+            _contentWatcher = new FileSystemWatcher(contentDir)
+            {
+                IncludeSubdirectories = true,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite
+            };
+            _contentWatcher.Created += OnFileSystemChanged;
+            _contentWatcher.Deleted += OnFileSystemChanged;
+            _contentWatcher.Renamed += OnFileSystemChanged;
+            _contentWatcher.EnableRaisingEvents = true;
+        }
 
-        _watcher.Created += OnFileSystemChanged;
-        _watcher.Deleted += OnFileSystemChanged;
-        _watcher.Renamed += OnFileSystemChanged;
-
-        _watcher.EnableRaisingEvents = true;
+        var gameDir = Path.GetFullPath("Game");
+        if (Directory.Exists(gameDir))
+        {
+            _gameWatcher = new FileSystemWatcher(gameDir)
+            {
+                IncludeSubdirectories = true,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite
+            };
+            _gameWatcher.Created += OnFileSystemChanged;
+            _gameWatcher.Deleted += OnFileSystemChanged;
+            _gameWatcher.Renamed += OnFileSystemChanged;
+            _gameWatcher.EnableRaisingEvents = true;
+        }
     }
 
     private void OnFileSystemChanged(object sender, FileSystemEventArgs e)
     {
+        // Ignore cache directories
+        if (e.FullPath.Contains(".cache") || e.FullPath.Contains("/out/")) return;
+
+        bool isDirectoryChange = false;
+        try
+        {
+            if (e.ChangeType == WatcherChangeTypes.Deleted)
+            {
+                // Deletion doesn't let us easily check if it was a directory using File.GetAttributes.
+                // We'll guess based on lack of extension.
+                isDirectoryChange = string.IsNullOrEmpty(Path.GetExtension(e.FullPath));
+            }
+            else
+            {
+                isDirectoryChange = File.GetAttributes(e.FullPath).HasFlag(FileAttributes.Directory);
+            }
+        }
+        catch { }
+
         Dispatcher.UIThread.Post(() =>
         {
-            var oldSelectedPath = SelectedFolder?.FullPath;
-            InitializeFolders();
-
-            if (oldSelectedPath != null)
+            if (isDirectoryChange)
             {
-                var folder = FindFolderByPath(RootFolders, oldSelectedPath);
-                if (folder != null)
-                    SelectedFolder = folder;
+                // Preserve the expanded state by only modifying the tree if needed,
+                // or for now, just don't rebuild the entire tree for file changes.
+                // Actually, building the tree every time a folder changes will still collapse it.
+                // To do this right, we would recursively update existing items.
+                // For now, if we rebuild, at least we do it less often.
+                var oldSelectedPath = SelectedFolder?.FullPath;
+                InitializeFolders();
+
+                if (oldSelectedPath != null)
+                {
+                    var folder = FindFolderByPath(RootFolders, oldSelectedPath);
+                    if (folder != null)
+                        SelectedFolder = folder;
+                }
+            }
+            else if (SelectedFolder != null)
+            {
+                // If a file changed, and it belongs to the selected folder, refresh assets
+                var selectedDir = SelectedFolder.FullPath;
+                var changedDir = Path.GetDirectoryName(e.FullPath);
+                if (string.Equals(selectedDir, changedDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    LoadAssetsForFolder(SelectedFolder);
+                }
             }
         });
     }
@@ -196,6 +251,7 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
-        _watcher?.Dispose();
+        _contentWatcher?.Dispose();
+        _gameWatcher?.Dispose();
     }
 }

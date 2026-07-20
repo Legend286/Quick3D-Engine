@@ -37,7 +37,7 @@ public static class ThumbnailGenerator
                 var loadContext = new GameAssemblyLoadContext(dllPath);
                 var assembly = loadContext.LoadFromAssemblyName(new AssemblyName("Engine.Game"));
                 var loopType = assembly.GetTypes().First(t => typeof(IGameLoop).IsAssignableFrom(t) && !t.IsInterface);
-                _thumbnailLoop = (IGameLoop)Activator.CreateInstance(loopType)!;
+                _thumbnailLoop = (IGameLoop)Activator.CreateInstance(loopType, false)!;
                 _thumbnailLoop.Init(_device.Handle, _dummySwap.Handle, null!);
             }
 
