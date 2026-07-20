@@ -37,6 +37,9 @@ public class ModelDefinition
 
     [JsonPropertyName("parts")]
     public ModelPartDefinition[] Parts { get; set; } = Array.Empty<ModelPartDefinition>();
+
+    [JsonPropertyName("bounds")]
+    public ModelPartBounds? Bounds { get; set; }
 }
 
 public struct ModelPart
@@ -115,6 +118,11 @@ public static class ModelLoader
             {
                 part.BoundsMin = new Vector3(partDef.Bounds.Min[0], partDef.Bounds.Min[1], partDef.Bounds.Min[2]);
                 part.BoundsMax = new Vector3(partDef.Bounds.Max[0], partDef.Bounds.Max[1], partDef.Bounds.Max[2]);
+            }
+            else if (def.Bounds != null)
+            {
+                part.BoundsMin = new Vector3(def.Bounds.Min[0], def.Bounds.Min[1], def.Bounds.Min[2]);
+                part.BoundsMax = new Vector3(def.Bounds.Max[0], def.Bounds.Max[1], def.Bounds.Max[2]);
             }
             else
             {

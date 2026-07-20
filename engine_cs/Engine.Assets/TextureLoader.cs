@@ -17,8 +17,12 @@ public static class TextureLoader
     /// uncompressed uploads go through RhiTexture.Upload.
     /// </summary>
     private static readonly System.Collections.Generic.Dictionary<string, RhiTexture> _cache = new();
+    private static readonly object _lock = new();
 
-    public static void ClearCache() => _cache.Clear();
+    public static void ClearCache() 
+    {
+        lock (_lock) _cache.Clear();
+    }
 
     public static RhiTexture? LoadTexture(RhiDevice device, string path)
     {
@@ -29,12 +33,18 @@ public static class TextureLoader
         }
 
         string fullPath = Path.GetFullPath(path);
-        if (_cache.TryGetValue(fullPath, out var cached)) return cached;
+        lock (_lock)
+        {
+            if (_cache.TryGetValue(fullPath, out var cached)) return cached;
+        }
 
         if (IsKtx2(path))
         {
             var tex = Ktx2Loader.Load(device, path);
-            if (tex != null) _cache[fullPath] = tex;
+            if (tex != null)
+            {
+                lock (_lock) _cache[fullPath] = tex;
+            }
             return tex;
         }
 
@@ -53,7 +63,10 @@ public static class TextureLoader
                 }
             }
 
-            if (tex != null) _cache[fullPath] = tex;
+            if (tex != null)
+            {
+                lock (_lock) _cache[fullPath] = tex;
+            }
             return tex;
         }
         catch (Exception ex)

@@ -45,8 +45,12 @@ public static class MeshLoader
     }
 
     private static readonly System.Collections.Generic.Dictionary<string, Mesh> _cache = new();
+    private static readonly object _lock = new();
 
-    public static void ClearCache() => _cache.Clear();
+    public static void ClearCache() 
+    {
+        lock (_lock) _cache.Clear();
+    }
 
     public static unsafe Mesh LoadMsh(RhiDevice device, string path)
     {
@@ -54,7 +58,10 @@ public static class MeshLoader
             throw new FileNotFoundException($"Mesh not found: {path}");
 
         string fullPath = Path.GetFullPath(path);
-        if (_cache.TryGetValue(fullPath, out var cached)) return cached;
+        lock (_lock)
+        {
+            if (_cache.TryGetValue(fullPath, out var cached)) return cached;
+        }
 
         byte[] fileBytes = File.ReadAllBytes(path);
         fixed (byte* ptr = fileBytes)
@@ -104,7 +111,10 @@ public static class MeshLoader
             ib.Upload(new IntPtr(ptr + 16 + expectedVSize), iSize);
 
             var mesh = new Mesh(vb, ib, header->VertexCount, header->IndexCount, header->IndexFormat);
-            _cache[fullPath] = mesh;
+            lock (_lock)
+            {
+                _cache[fullPath] = mesh;
+            }
             return mesh;
         }
     }

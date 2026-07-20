@@ -14,21 +14,29 @@ public sealed class AssetTextureEntry
 
 public static class AssetRegistry
 {
+    private static readonly object _lock = new();
+
     private static readonly Dictionary<ulong, Mesh> _meshes = new();
     private static ulong _nextMeshId = 1;
 
     public static ulong RegisterMesh(Mesh mesh)
     {
-        ulong id = _nextMeshId++;
-        _meshes[id] = mesh;
-        return id;
+        lock (_lock)
+        {
+            ulong id = _nextMeshId++;
+            _meshes[id] = mesh;
+            return id;
+        }
     }
 
     public static Mesh? GetMesh(ulong id)
     {
-        if (_meshes.TryGetValue(id, out Mesh? mesh))
-            return mesh;
-        return null;
+        lock (_lock)
+        {
+            if (_meshes.TryGetValue(id, out Mesh? mesh))
+                return mesh;
+            return null;
+        }
     }
 
     private static readonly Dictionary<ulong, Material> _materials = new();
@@ -36,16 +44,22 @@ public static class AssetRegistry
 
     public static ulong RegisterMaterial(Material mat)
     {
-        ulong id = _nextMaterialId++;
-        _materials[id] = mat;
-        return id;
+        lock (_lock)
+        {
+            ulong id = _nextMaterialId++;
+            _materials[id] = mat;
+            return id;
+        }
     }
 
     public static Material? GetMaterial(ulong id)
     {
-        if (_materials.TryGetValue(id, out Material? mat))
-            return mat;
-        return null;
+        lock (_lock)
+        {
+            if (_materials.TryGetValue(id, out Material? mat))
+                return mat;
+            return null;
+        }
     }
 
     private static readonly Dictionary<ulong, Model> _models = new();
@@ -53,16 +67,22 @@ public static class AssetRegistry
 
     public static ulong RegisterModel(Model model)
     {
-        ulong id = _nextModelId++;
-        _models[id] = model;
-        return id;
+        lock (_lock)
+        {
+            ulong id = _nextModelId++;
+            _models[id] = model;
+            return id;
+        }
     }
 
     public static Model? GetModel(ulong id)
     {
-        if (_models.TryGetValue(id, out Model? model))
-            return model;
-        return null;
+        lock (_lock)
+        {
+            if (_models.TryGetValue(id, out Model? model))
+                return model;
+            return null;
+        }
     }
 
     // Texture registry — stable IDs, heap-slot-stable, ref-counted so shared
@@ -71,35 +91,42 @@ public static class AssetRegistry
     private static readonly Dictionary<ulong, AssetTextureEntry> _textures = new();
     private static ulong _nextTextureId = 1;
 
-    /// <summary>Register a texture with the given pre-allocated heap slot.</summary>
     public static ulong RegisterTexture(RhiTexture texture, uint heapSlot, int initialRefCount = 1)
     {
         ArgumentNullException.ThrowIfNull(texture);
-        ulong id = _nextTextureId++;
-        _textures[id] = new AssetTextureEntry
+        lock (_lock)
         {
-            Id = id,
-            Texture = texture,
-            HeapSlot = heapSlot,
-            RefCount = initialRefCount,
-        };
-        return id;
+            ulong id = _nextTextureId++;
+            _textures[id] = new AssetTextureEntry
+            {
+                Id = id,
+                Texture = texture,
+                HeapSlot = heapSlot,
+                RefCount = initialRefCount,
+            };
+            return id;
+        }
     }
 
-    public static AssetTextureEntry? GetTexture(ulong id) =>
-        _textures.TryGetValue(id, out var entry) ? entry : null;
+    public static AssetTextureEntry? GetTexture(ulong id)
+    {
+        lock (_lock) return _textures.TryGetValue(id, out var entry) ? entry : null;
+    }
 
     public static void AddRefTexture(ulong id)
     {
-        if (_textures.TryGetValue(id, out var entry)) entry.RefCount++;
+        lock (_lock) { if (_textures.TryGetValue(id, out var entry)) entry.RefCount++; }
     }
 
     public static void ReleaseTexture(ulong id)
     {
-        if (!_textures.TryGetValue(id, out var entry)) return;
-        entry.RefCount--;
-        if (entry.RefCount > 0) return;
-        entry.Texture?.Dispose();
-        _textures.Remove(id);
+        lock (_lock)
+        {
+            if (!_textures.TryGetValue(id, out var entry)) return;
+            entry.RefCount--;
+            if (entry.RefCount > 0) return;
+            entry.Texture?.Dispose();
+            _textures.Remove(id);
+        }
     }
 }
