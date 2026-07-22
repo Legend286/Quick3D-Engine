@@ -44,8 +44,8 @@ build; CI injects credentials via standard secret env vars.
 
 | Var | Default | Effect when unset |
 | --- | --- | --- |
-| `APP_DISPLAY_NAME` | `EndEngine Editor` | - |
-| `BUNDLE_IDENTIFIER` | `com.endengine.editor` | - |
+| `APP_DISPLAY_NAME` | `Quick3D Engine Editor` | - |
+| `BUNDLE_IDENTIFIER` | `com.quick3dengine.editor` | - |
 | `APP_VERSION` | `0.1.0` | - |
 | `BUILD_NUMBER` | `1` | - |
 | `DOTNET_RUNTIME_ID` | `osx-arm64` | - |
@@ -62,7 +62,7 @@ build; CI injects credentials via standard secret env vars.
 ./scripts/build-mac-app.sh
 # To fully clean the out/ directory and force a fresh build:
 ./scripts/build-mac-app.sh --clean
-open "out/publish/osx-arm64/EndEngine Editor.app"
+open "out/publish/osx-arm64/Quick3D Engine Editor.app"
 ```
 
 With neither `DEVELOPER_ID` nor `KEYCHAIN_PROFILE` set, stage 4 produces an
@@ -99,18 +99,18 @@ keep it launchable without the right-click Open prompt.
 
 ```sh
 # One-time: store notary credentials into a keychain profile.
-xcrun notarytool store-credentials endengine-notary \
+xcrun notarytool store-credentials quick3dengine-notary \
     --apple-id "ops@<your-org>.example" \
     --team-id "<TEAMID>" \
     --password "<app-specific-password>"
 
 # Per release.
 export DEVELOPER_ID="Developer ID Application: <Org Name> (<TEAMID>)"
-export KEYCHAIN_PROFILE="endengine-notary"
+export KEYCHAIN_PROFILE="quick3dengine-notary"
 
 ./scripts/build-mac-app.sh
-xcrun stapler validate "out/publish/osx-arm64/EndEngine Editor.app"
-open "out/publish/osx-arm64/EndEngine Editor.app"
+xcrun stapler validate "out/publish/osx-arm64/Quick3D Engine Editor.app"
+open "out/publish/osx-arm64/Quick3D Engine Editor.app"
 ```
 
 ### Custom bundle identity
@@ -210,9 +210,9 @@ quarantine xattr (so `open` doesn't bounce the bundle). The .app is
 launchable via:
 
 ```sh
-open "out/publish/osx-arm64/EndEngine Editor.app"
+open "out/publish/osx-arm64/Quick3D Engine Editor.app"
 # Or directly:
-"out/publish/osx-arm64/EndEngine Editor.app/Contents/MacOS/Engine.Editor"
+"out/publish/osx-arm64/Quick3D Engine Editor.app/Contents/MacOS/Engine.Editor"
 ```
 
 The cheapest CI dry-run for verifying bundle layout, info.plist

@@ -153,29 +153,36 @@ Support
 
 # Layered Material System
 
-Materials are evaluated as physical layers.
+Materials in Q3DE are evaluated as physical layers. The system evaluates the material stack physically, strictly maintaining energy conservation at every step.
 
-Each layer can
+## Stochastic BSDF Evaluation
 
-- Reflect
-- Refract
-- Absorb
+To remain performant and physically accurate without evaluating multiple BSDF lobes per hit, the path tracer utilizes **Stochastic BSDF Blending**. 
 
-Remaining energy is transmitted to the next layer.
+Instead of interpolating parameters (like blending metallic values, which breaks PBR) or summing multiple heavy BSDF evaluations, the path tracer treats Layer Masks as a **probability function**. 
 
-Do not blend BRDF lobes directly.
+When a ray hits a surface:
+1. The 3D Noise (or texture mask) is evaluated.
+2. A random number determines which layer (Base or Top) is evaluated for that specific bounce.
+3. This converges to the correct physical blend over multiple samples, strictly conserving energy and preserving sharp transitions (like dirt patches over shiny metal).
 
-Do not blend metallic into BRDF equations.
+## Energy Conservation
 
-Instead evaluate the material stack physically.
+- **Subsurface Scattering (SSS)**: SSS evaluates deep inside the material, acting as the base diffuse lobe. When SSS is enabled, the surface diffuse reflection is attenuated by `(1.0 - subsurface_weight)` to conserve energy, ensuring specular highlights remain intact even on highly translucent materials.
+- **Clearcoat**: The Clearcoat layer is evaluated over the chosen base/top layer. Light that reflects off the clearcoat lobe is subtracted from the transmitted light reaching the base layers, respecting Fresnel reflection principles.
 
-Benefits
+## Masking System
 
-- Energy conservation
+1. **3D Noise Masking**: Procedural value/simplex noise in world or object space allows rapid, textureless masking of materials (e.g. rust or dirt deposits).
+2. **Texture Masks** (Future): UV-based blending maps.
+3. **Vertex Painting** (Future): Per-vertex blend weights.
+
+Benefits:
+- Strict Energy conservation
 - Physically correct reflections
 - Stable material transitions
 - No white metallic fringes
-- Shared implementation between raster and path tracing
+- Shared implementation architecture between raster and path tracing
 
 ---
 

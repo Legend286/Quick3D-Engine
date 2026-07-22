@@ -20,8 +20,8 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 # ---- env-var-driven inputs (defaults per docs/build/mac-app-bundle.md) -----
-APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-EndEngine Editor}"
-BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-com.endengine.editor}"
+APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-Quick3D Engine Editor}"
+BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER:-com.quick3dengine.editor}"
 APP_VERSION="${APP_VERSION:-0.1.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 DOTNET_RUNTIME_ID="${DOTNET_RUNTIME_ID:-osx-arm64}"

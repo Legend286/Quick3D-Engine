@@ -27,8 +27,8 @@ full matrix. The most common subset:
 
 | Var | Purpose |
 | --- | --- |
-| `APP_DISPLAY_NAME` | `.app` bundle + Info.plist display name. Default `EndEngine Editor`. |
-| `BUNDLE_IDENTIFIER` | `CFBundleIdentifier` in Info.plist. Default `com.endengine.editor`. |
+| `APP_DISPLAY_NAME` | `.app` bundle + Info.plist display name. Default `Quick3D Engine Editor`. |
+| `BUNDLE_IDENTIFIER` | `CFBundleIdentifier` in Info.plist. Default `com.quick3dengine.editor`. |
 | `APP_VERSION` | `CFBundleShortVersionString`. Default `0.1.0`. |
 | `BUILD_NUMBER` | `CFBundleVersion`. Default `1`. |
 | `DOTNET_RUNTIME_ID` | `-r` arg to `dotnet publish`. Default `osx-arm64`. |

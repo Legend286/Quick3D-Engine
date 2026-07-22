@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 
 set(SLANG_VERSION "2026.12")
 
-project(EndEngine
+project(Quick3DEngine
     VERSION 0.1.0
     DESCRIPTION "Source-inspired game engine: C backend + C# userspace, Metal RHI"
     LANGUAGES C CXX OBJC OBJCXX)
@@ -196,6 +196,6 @@ target_include_directories(TestEngineMem PRIVATE engine_c)
 enable_testing()
 add_test(NAME MemoryTests COMMAND TestEngineMem)
 
-message(STATUS "EndEngine ${PROJECT_VERSION} configured")
+message(STATUS "Quick3DEngine ${PROJECT_VERSION} configured")
 message(STATUS "  Platform targets: ${ENGINE_PLATFORMS}")
 message(STATUS "  FetchContent:     ${ENGINE_FETCHCONTENT}")
