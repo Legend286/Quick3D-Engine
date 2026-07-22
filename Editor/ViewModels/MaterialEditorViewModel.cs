@@ -44,6 +44,14 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
     [ObservableProperty] private float _subsurfaceRadiusR;
     [ObservableProperty] private float _subsurfaceRadiusG;
     [ObservableProperty] private float _subsurfaceRadiusB;
+    [ObservableProperty] private float _clearcoat;
+    [ObservableProperty] private float _clearcoatRoughness;
+    [ObservableProperty] private float _topColorR;
+    [ObservableProperty] private float _topColorG;
+    [ObservableProperty] private float _topColorB;
+    [ObservableProperty] private float _topMetallic;
+    [ObservableProperty] private float _topRoughness;
+    [ObservableProperty] private int _topMaskType;
 
     public MaterialEditorViewModel(string materialPath)
     {
@@ -80,6 +88,17 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
                     SubsurfaceRadiusG = (float)sssRadius[1]!;
                     SubsurfaceRadiusB = (float)sssRadius[2]!;
                 }
+                if (doc["clearcoat"] != null) Clearcoat = (float)doc["clearcoat"]!;
+                if (doc["clearcoat_roughness"] != null) ClearcoatRoughness = (float)doc["clearcoat_roughness"]!;
+                
+                if (doc["top_color"] is JsonArray topAlbedo) {
+                    TopColorR = (float)topAlbedo[0]!;
+                    TopColorG = (float)topAlbedo[1]!;
+                    TopColorB = (float)topAlbedo[2]!;
+                }
+                if (doc["top_metallic"] != null) TopMetallic = (float)doc["top_metallic"]!;
+                if (doc["top_roughness"] != null) TopRoughness = (float)doc["top_roughness"]!;
+                if (doc["top_mask_type"] != null) TopMaskType = (int)doc["top_mask_type"]!;
             }
         } 
         catch {}
@@ -101,6 +120,13 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
                 doc["subsurface"] = Subsurface;
                 doc["subsurface_color"] = new JsonArray(SubsurfaceColorR, SubsurfaceColorG, SubsurfaceColorB);
                 doc["subsurface_radius"] = new JsonArray(SubsurfaceRadiusR, SubsurfaceRadiusG, SubsurfaceRadiusB);
+                doc["clearcoat"] = Clearcoat;
+                doc["clearcoat_roughness"] = ClearcoatRoughness;
+                
+                doc["top_color"] = new JsonArray(TopColorR, TopColorG, TopColorB, 1.0f);
+                doc["top_metallic"] = TopMetallic;
+                doc["top_roughness"] = TopRoughness;
+                doc["top_mask_type"] = TopMaskType;
                 
                 // Atomic save
                 string tmp = _materialPath + ".tmp";
@@ -122,6 +148,14 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
     partial void OnSubsurfaceRadiusRChanged(float value) => PushMaterialToPreview();
     partial void OnSubsurfaceRadiusGChanged(float value) => PushMaterialToPreview();
     partial void OnSubsurfaceRadiusBChanged(float value) => PushMaterialToPreview();
+    partial void OnClearcoatChanged(float value) => PushMaterialToPreview();
+    partial void OnClearcoatRoughnessChanged(float value) => PushMaterialToPreview();
+    partial void OnTopColorRChanged(float value) => PushMaterialToPreview();
+    partial void OnTopColorGChanged(float value) => PushMaterialToPreview();
+    partial void OnTopColorBChanged(float value) => PushMaterialToPreview();
+    partial void OnTopMetallicChanged(float value) => PushMaterialToPreview();
+    partial void OnTopRoughnessChanged(float value) => PushMaterialToPreview();
+    partial void OnTopMaskTypeChanged(int value) => PushMaterialToPreview();
 
     private void PushMaterialToPreview()
     {
@@ -134,7 +168,13 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
                 Roughness,
                 Subsurface,
                 new[] { SubsurfaceColorR, SubsurfaceColorG, SubsurfaceColorB },
-                new[] { SubsurfaceRadiusR, SubsurfaceRadiusG, SubsurfaceRadiusB }
+                new[] { SubsurfaceRadiusR, SubsurfaceRadiusG, SubsurfaceRadiusB },
+                Clearcoat,
+                ClearcoatRoughness,
+                new[] { TopColorR, TopColorG, TopColorB, 1.0f },
+                TopMetallic,
+                TopRoughness,
+                (uint)TopMaskType
             );
         }
         SaveMaterialData();

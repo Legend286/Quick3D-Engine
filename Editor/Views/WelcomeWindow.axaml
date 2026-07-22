@@ -9,12 +9,12 @@
         FontFamily="-apple-system,Segoe UI,Helvetica,Arial,sans-serif"
         FontSize="13"
         Background="#12151c"
-        Title="End Engine — Welcome">
+        Title="Quick3D Engine — Welcome">
 
     <Grid RowDefinitions="Auto,*,Auto">
         <!-- Header -->
         <Border Grid.Row="0" Background="#1c1f24" Padding="20">
-            <TextBlock Text="Welcome to End Engine" Foreground="#d0d4dc" FontSize="20" FontWeight="SemiBold" />
+            <TextBlock Text="Welcome to Quick3D Engine" Foreground="#d0d4dc" FontSize="20" FontWeight="SemiBold" />
         </Border>
 
         <!-- Main Content -->

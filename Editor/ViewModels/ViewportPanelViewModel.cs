@@ -31,7 +31,7 @@ using Engine.RHI;
 
 namespace Engine.Editor.ViewModels;
 
-public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
+public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposable
 {
     private readonly DispatcherTimer _timer;
     private RhiDevice? _device;
@@ -56,7 +56,9 @@ public sealed class ViewportPanelViewModel : ObservableObject, IDisposable
     private readonly object _hotReloadLock = new();
 
     private Engine.Scene.SceneGraph _baseScene = new();
-    public string CurrentSceneName { get; private set; } = "hello";
+    
+    [ObservableProperty]
+    private string _currentSceneName = "New Scene";
 
     private bool _isDirty;
     public bool IsDirty

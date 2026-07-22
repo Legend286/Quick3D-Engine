@@ -9,7 +9,7 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private string _statusText = "Engine starting...";
 
-    public string WindowTitle => (ViewportVm?.IsDirty == true ? "* " : "") + "End Engine - Editor - " + (ViewportVm?.CurrentSceneName ?? "No Scene");
+    public string WindowTitle => (ViewportVm?.IsDirty == true ? "* " : "") + "Quick3D Engine Editor - " + (ViewportVm?.CurrentSceneName ?? "No Scene");
 
     public ConsolePanelViewModel ConsoleVm { get; } = new();
     public HierarchyViewModel HierarchyVm { get; } = new();
@@ -27,7 +27,7 @@ public partial class MainWindowViewModel : ObservableObject
         {
             string contentRoot = System.IO.Path.Combine(App.ProjectRoot, "Content");
             Engine.CBindings.Log.Info($"[MainWindowViewModel] ContentRoot: '{contentRoot}'", "Editor");
-            ViewportVm = new ViewportPanelViewModel(contentRoot: contentRoot, sceneName: "hello");
+            ViewportVm = new ViewportPanelViewModel(contentRoot: contentRoot, sceneName: "New Scene");
 
             HierarchyVm.Bind(ViewportVm);
             HierarchyVm.OnEntitySelected += (ent) => {
@@ -42,6 +42,13 @@ public partial class MainWindowViewModel : ObservableObject
 
             ViewportVm.OnWorldCreated += () => InspectorVm.Bind(ViewportVm.World);
             ViewportVm.OnDirtyChanged += () => OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs(nameof(WindowTitle)));
+            ViewportVm.PropertyChanged += (s, e) =>
+            {
+                if (e.PropertyName == nameof(ViewportPanelViewModel.CurrentSceneName))
+                {
+                    OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs(nameof(WindowTitle)));
+                }
+            };
         }
     }
 

@@ -3,43 +3,159 @@
         xmlns:views="using:Engine.Editor.Views"
         x:Class="Engine.Editor.Views.MaterialEditorWindow"
         Title="Material Editor" Width="1000" Height="600"
-        Background="#12151c">
-  <Grid ColumnDefinitions="*,300">
+        Background="#1e1e1e">
+  <Window.Styles>
+    <Style Selector="Expander">
+      <Setter Property="Background" Value="#252526" />
+      <Setter Property="BorderBrush" Value="#333333" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Margin" Value="0,0,0,10" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+    <Style Selector="Expander /template/ ToggleButton">
+      <Setter Property="Foreground" Value="#d4d4d4" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="TextBlock.PropertyLabel">
+      <Setter Property="Foreground" Value="#cccccc" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Margin" Value="0,0,10,0" />
+    </Style>
+    <Style Selector="NumericUpDown">
+      <Setter Property="Background" Value="#3c3c3c" />
+      <Setter Property="Foreground" Value="#d4d4d4" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="ShowButtonSpinner" Value="True" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="Height" Value="24" />
+      <Setter Property="Padding" Value="4,0" />
+    </Style>
+    <Style Selector="ComboBox">
+      <Setter Property="Background" Value="#3c3c3c" />
+      <Setter Property="Foreground" Value="#d4d4d4" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+  </Window.Styles>
+
+  <Grid ColumnDefinitions="*,350">
     <views:ViewportMetalLayerHost Name="PreviewHost" Grid.Column="0" />
-    <ScrollViewer Grid.Column="1">
-      <StackPanel Margin="10" Spacing="10">
-        <TextBlock Text="Material Properties" FontSize="18" FontWeight="Bold" Foreground="#d1d5da" />
+    
+    <Border Grid.Column="1" Background="#1e1e1e" BorderBrush="#333333" BorderThickness="1,0,0,0">
+      <ScrollViewer>
+        <StackPanel Margin="15">
+          <TextBlock Text="Material Properties" FontSize="16" FontWeight="Bold" Foreground="#ffffff" Margin="0,0,0,15" />
 
-        <TextBlock Text="Base Color" Foreground="#aab0b6" />
-        <Grid ColumnDefinitions="*,*,*">
-          <Slider Grid.Column="0" Minimum="0" Maximum="1" Value="{Binding BaseColorR}" />
-          <Slider Grid.Column="1" Minimum="0" Maximum="1" Value="{Binding BaseColorG}" />
-          <Slider Grid.Column="2" Minimum="0" Maximum="1" Value="{Binding BaseColorB}" />
-        </Grid>
+          <!-- Base Layer -->
+          <Expander Header="Base Layer" IsExpanded="True">
+            <StackPanel Margin="10" Spacing="8">
+              
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Base Color" Grid.Column="0" />
+                <Grid ColumnDefinitions="*,5,*,5,*" Grid.Column="1">
+                  <NumericUpDown Grid.Column="0" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding BaseColorR}" FormatString="0.00" />
+                  <NumericUpDown Grid.Column="2" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding BaseColorG}" FormatString="0.00" />
+                  <NumericUpDown Grid.Column="4" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding BaseColorB}" FormatString="0.00" />
+                </Grid>
+              </Grid>
 
-        <TextBlock Text="Metallic" Foreground="#aab0b6" />
-        <Slider Minimum="0" Maximum="1" Value="{Binding Metallic}" />
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Metallic" Grid.Column="0" />
+                <NumericUpDown Grid.Column="1" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding Metallic}" FormatString="0.00" />
+              </Grid>
 
-        <TextBlock Text="Roughness" Foreground="#aab0b6" />
-        <Slider Minimum="0" Maximum="1" Value="{Binding Roughness}" />
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Roughness" Grid.Column="0" />
+                <NumericUpDown Grid.Column="1" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding Roughness}" FormatString="0.00" />
+              </Grid>
+              
+            </StackPanel>
+          </Expander>
 
-        <TextBlock Text="Subsurface" Foreground="#aab0b6" />
-        <Slider Minimum="0" Maximum="1" Value="{Binding Subsurface}" />
+          <!-- Top Layer -->
+          <Expander Header="Top Layer">
+            <StackPanel Margin="10" Spacing="8">
+              
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Mask Type" Grid.Column="0" />
+                <ComboBox Grid.Column="1" SelectedIndex="{Binding TopMaskType}">
+                  <ComboBoxItem>None</ComboBoxItem>
+                  <ComboBoxItem>3D Noise</ComboBoxItem>
+                </ComboBox>
+              </Grid>
 
-        <TextBlock Text="Subsurface Color" Foreground="#aab0b6" />
-        <Grid ColumnDefinitions="*,*,*">
-          <Slider Grid.Column="0" Minimum="0" Maximum="1" Value="{Binding SubsurfaceColorR}" />
-          <Slider Grid.Column="1" Minimum="0" Maximum="1" Value="{Binding SubsurfaceColorG}" />
-          <Slider Grid.Column="2" Minimum="0" Maximum="1" Value="{Binding SubsurfaceColorB}" />
-        </Grid>
-        
-        <TextBlock Text="Subsurface Radius" Foreground="#aab0b6" />
-        <Grid ColumnDefinitions="*,*,*">
-          <Slider Grid.Column="0" Minimum="0.01" Maximum="10" Value="{Binding SubsurfaceRadiusR}" />
-          <Slider Grid.Column="1" Minimum="0.01" Maximum="10" Value="{Binding SubsurfaceRadiusG}" />
-          <Slider Grid.Column="2" Minimum="0.01" Maximum="10" Value="{Binding SubsurfaceRadiusB}" />
-        </Grid>
-      </StackPanel>
-    </ScrollViewer>
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Top Color" Grid.Column="0" />
+                <Grid ColumnDefinitions="*,5,*,5,*" Grid.Column="1">
+                  <NumericUpDown Grid.Column="0" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding TopColorR}" FormatString="0.00" />
+                  <NumericUpDown Grid.Column="2" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding TopColorG}" FormatString="0.00" />
+                  <NumericUpDown Grid.Column="4" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding TopColorB}" FormatString="0.00" />
+                </Grid>
+              </Grid>
+
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Metallic" Grid.Column="0" />
+                <NumericUpDown Grid.Column="1" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding TopMetallic}" FormatString="0.00" />
+              </Grid>
+
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Roughness" Grid.Column="0" />
+                <NumericUpDown Grid.Column="1" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding TopRoughness}" FormatString="0.00" />
+              </Grid>
+              
+            </StackPanel>
+          </Expander>
+
+          <!-- Subsurface Layer -->
+          <Expander Header="Subsurface Layer">
+            <StackPanel Margin="10" Spacing="8">
+              
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Amount" Grid.Column="0" />
+                <NumericUpDown Grid.Column="1" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding Subsurface}" FormatString="0.00" />
+              </Grid>
+
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Color" Grid.Column="0" />
+                <Grid ColumnDefinitions="*,5,*,5,*" Grid.Column="1">
+                  <NumericUpDown Grid.Column="0" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding SubsurfaceColorR}" FormatString="0.00" />
+                  <NumericUpDown Grid.Column="2" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding SubsurfaceColorG}" FormatString="0.00" />
+                  <NumericUpDown Grid.Column="4" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding SubsurfaceColorB}" FormatString="0.00" />
+                </Grid>
+              </Grid>
+
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Radius" Grid.Column="0" />
+                <Grid ColumnDefinitions="*,5,*,5,*" Grid.Column="1">
+                  <NumericUpDown Grid.Column="0" Minimum="0.01" Maximum="10" Increment="0.1" Value="{Binding SubsurfaceRadiusR}" FormatString="0.0" />
+                  <NumericUpDown Grid.Column="2" Minimum="0.01" Maximum="10" Increment="0.1" Value="{Binding SubsurfaceRadiusG}" FormatString="0.0" />
+                  <NumericUpDown Grid.Column="4" Minimum="0.01" Maximum="10" Increment="0.1" Value="{Binding SubsurfaceRadiusB}" FormatString="0.0" />
+                </Grid>
+              </Grid>
+              
+            </StackPanel>
+          </Expander>
+
+          <!-- Clearcoat Layer -->
+          <Expander Header="Clearcoat Layer">
+            <StackPanel Margin="10" Spacing="8">
+              
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Amount" Grid.Column="0" />
+                <NumericUpDown Grid.Column="1" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding Clearcoat}" FormatString="0.00" />
+              </Grid>
+
+              <Grid ColumnDefinitions="120,*">
+                <TextBlock Classes="PropertyLabel" Text="Roughness" Grid.Column="0" />
+                <NumericUpDown Grid.Column="1" Minimum="0" Maximum="1" Increment="0.01" Value="{Binding ClearcoatRoughness}" FormatString="0.00" />
+              </Grid>
+              
+            </StackPanel>
+          </Expander>
+
+        </StackPanel>
+      </ScrollViewer>
+    </Border>
   </Grid>
 </Window>
