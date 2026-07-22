@@ -38,6 +38,24 @@ public class MaterialDefinition
 
     [JsonPropertyName("subsurface_color")]
     public float[] SubsurfaceColor { get; set; } = { 1.0f, 1.0f, 1.0f };
+
+    [JsonPropertyName("clearcoat")]
+    public float Clearcoat { get; set; } = 0.0f;
+
+    [JsonPropertyName("clearcoat_roughness")]
+    public float ClearcoatRoughness { get; set; } = 0.0f;
+
+    [JsonPropertyName("top_color")]
+    public float[] TopColor { get; set; } = { 1, 1, 1, 1 };
+
+    [JsonPropertyName("top_metallic")]
+    public float TopMetallic { get; set; } = 0.0f;
+
+    [JsonPropertyName("top_roughness")]
+    public float TopRoughness { get; set; } = 1.0f;
+
+    [JsonPropertyName("top_mask_type")]
+    public uint TopMaskType { get; set; } = 0;
 }
 
 public class Material
@@ -52,6 +70,12 @@ public class Material
     public float Subsurface { get; set; } = 0.0f;
     public float[] SubsurfaceRadius { get; set; } = { 1.0f, 0.2f, 0.1f };
     public float[] SubsurfaceColor  { get; set; } = { 1.0f, 1.0f, 1.0f };
+    public float Clearcoat { get; set; }
+    public float ClearcoatRoughness { get; set; }
+    public float[] TopColor { get; set; } = { 1, 1, 1, 1 };
+    public float TopMetallic { get; set; }
+    public float TopRoughness { get; set; } = 1.0f;
+    public uint TopMaskType { get; set; }
 }
 
 public static class MaterialLoader
@@ -81,6 +105,12 @@ public static class MaterialLoader
             Subsurface       = def.Subsurface,
             SubsurfaceRadius = def.SubsurfaceRadius,
             SubsurfaceColor  = def.SubsurfaceColor,
+            Clearcoat        = def.Clearcoat,
+            ClearcoatRoughness = def.ClearcoatRoughness,
+            TopColor         = def.TopColor,
+            TopMetallic      = def.TopMetallic,
+            TopRoughness     = def.TopRoughness,
+            TopMaskType      = def.TopMaskType,
         };
 
         var dir = Path.GetDirectoryName(path) ?? "";

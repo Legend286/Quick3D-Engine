@@ -11,7 +11,7 @@ public interface IGameLoop : IDisposable
     void RenderFrame(RhiTexture backBuffer, uint width, uint height);
     void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target);
     void LoadMaterialPreview(string contentRoot, string materialPath);
-    void UpdateMaterialPreview(float[] albedo, float metallic, float roughness, float subsurface, float[] subsurfaceColor, float[] subsurfaceRadius);
+    void UpdateMaterialPreview(float[] albedo, float metallic, float roughness, float subsurface, float[] subsurfaceColor, float[] subsurfaceRadius, float clearcoat, float clearcoatRoughness, float[] topColor, float topMetallic, float topRoughness, uint topMaskType);
     void SetSelectedEntity(ulong entityId);
     event Action<ulong>? OnEntityPicked;
 }
