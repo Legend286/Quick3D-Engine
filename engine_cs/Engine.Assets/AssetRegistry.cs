@@ -129,4 +129,16 @@ public static class AssetRegistry
             _textures.Remove(id);
         }
     }
+
+    public static void Clear()
+    {
+        lock (_lock)
+        {
+            _meshes.Clear();
+            _materials.Clear();
+            _models.Clear();
+            _textures.Clear();
+        }
+    }
 }
+

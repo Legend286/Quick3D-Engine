@@ -88,6 +88,10 @@ public sealed class Renderer : IDisposable
         SceneGraph scene = _loader.Load(sceneName);
 
         _world.Clear();
+        MeshLoader.ClearCache();
+        MaterialLoader.ClearCache();
+        TextureLoader.ClearCache();
+        AssetRegistry.Clear();
 
         foreach (var modelRef in scene.Models)
         {
@@ -236,6 +240,22 @@ public sealed class Renderer : IDisposable
 
         return pass.PickedId;
     }
+
+    public (ulong EntityId, uint PartIndex) PickSubmesh(uint x, uint y, uint w, uint h)
+    {
+        if (_currentScene == null) return (0, 0);
+        using var pass = new IdPickingPass(_device, _world, _contentRoot);
+        pass.PickRequested = true;
+        pass.PickX = x;
+        pass.PickY = y;
+
+        using var executor = new RenderGraphExecutor(_device);
+        executor.SetViewportSize(1, 1);
+        pass.Execute(executor, new RenderGraphContext { Width = w, Height = h });
+
+        return (pass.PickedId, pass.PickedPartIndex);
+    }
+
 
     public void Dispose()
     {
