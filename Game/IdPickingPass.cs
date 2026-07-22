@@ -35,6 +35,8 @@ public class IdPickingPass : RenderPass, IDisposable
     public uint PickY;
     public bool PickRequested;
     public ulong PickedId = 0;
+    public uint PickedPartIndex = 0;
+
 
     public unsafe IdPickingPass(RhiDevice device, IEntityStore world, string contentRoot)
     {
@@ -81,7 +83,7 @@ public class IdPickingPass : RenderPass, IDisposable
             {
                 if (_world.TryGet<Transform>(id, out var t))
                 {
-                    var view = Matrix4x4.CreateLookAt(t.Position, t.Position + Vector3.Transform(Vector3.UnitZ, t.Rotation), Vector3.UnitY);
+                    var view = Matrix4x4.CreateLookAt(t.Position, t.Position + Vector3.Transform(-Vector3.UnitZ, t.Rotation), Vector3.UnitY);
                     Matrix4x4 proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, (float)w / h, cam.NearClip, cam.FarClip);
                     camData.ViewProj = view * proj;
                     camData.CameraPosition = new Vector4(t.Position, 1.0f);
@@ -212,8 +214,10 @@ public class IdPickingPass : RenderPass, IDisposable
         sink.SubmitAndWait();
 
         var bytes = pickTarget.Readback(1, 1, 4);
-        PickedId = (uint)bytes[0] | ((uint)bytes[1] << 8) | ((uint)bytes[2] << 16) | ((uint)bytes[3] << 24);
+        PickedId = (uint)bytes[0] | ((uint)bytes[1] << 8);
+        PickedPartIndex = (uint)bytes[2] | ((uint)bytes[3] << 8);
     }
+
 
     public void Dispose()
     {

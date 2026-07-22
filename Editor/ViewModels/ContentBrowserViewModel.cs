@@ -249,6 +249,46 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
         return null;
     }
 
+    public void MoveItem(string sourcePath, string targetDirectoryPath)
+    {
+        if (string.IsNullOrEmpty(sourcePath) || string.IsNullOrEmpty(targetDirectoryPath)) return;
+        if (!Directory.Exists(targetDirectoryPath)) return;
+
+        try
+        {
+            if (File.Exists(sourcePath))
+            {
+                string fileName = Path.GetFileName(sourcePath);
+                string destPath = Path.Combine(targetDirectoryPath, fileName);
+                if (!string.Equals(sourcePath, destPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Move(sourcePath, destPath, true);
+                    
+                    // Move sidecar files (.tex or .msh if present)
+                    string ext = Path.GetExtension(sourcePath).ToLower();
+                    if (ext == ".ktx2")
+                    {
+                        string texSidecar = Path.ChangeExtension(sourcePath, ".tex");
+                        if (File.Exists(texSidecar)) File.Move(texSidecar, Path.ChangeExtension(destPath, ".tex"), true);
+                    }
+                }
+            }
+            else if (Directory.Exists(sourcePath))
+            {
+                string dirName = Path.GetFileName(sourcePath);
+                string destPath = Path.Combine(targetDirectoryPath, dirName);
+                if (!string.Equals(sourcePath, destPath, StringComparison.OrdinalIgnoreCase) && !destPath.StartsWith(sourcePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    Directory.Move(sourcePath, destPath);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Engine.CBindings.Log.Error($"[ContentBrowser] Failed to move '{sourcePath}': {ex.Message}", "ContentBrowser");
+        }
+    }
+
     public void Dispose()
     {
         _contentWatcher?.Dispose();

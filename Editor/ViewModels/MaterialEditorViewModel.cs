@@ -10,7 +10,51 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Engine.Editor.Views;
 using Engine.RHI;
 
+using System.Collections.ObjectModel;
+using CommunityToolkit.Mvvm.Input;
+
 namespace Engine.Editor.ViewModels;
+
+public partial class MaterialLayerViewModel : ObservableObject
+{
+    private readonly Action _onChanged;
+
+    [ObservableProperty] private string _name;
+    [ObservableProperty] private float _colorR = 1.0f;
+    [ObservableProperty] private float _colorG = 1.0f;
+    [ObservableProperty] private float _colorB = 1.0f;
+    [ObservableProperty] private float _metallic = 0.0f;
+    [ObservableProperty] private float _roughness = 1.0f;
+    [ObservableProperty] private int _maskType = 0; // 0=None, 1=3D Perlin, 2=Voronoi, 3=FBM, 4=Turbulence, 5=Cavity, 6=Height, 7=Texture Mask
+    [ObservableProperty] private float _noiseScale = 10.0f;
+    [ObservableProperty] private int _noiseDetail = 3;
+    [ObservableProperty] private float _noiseThreshold = 0.5f;
+    [ObservableProperty] private string _albedoTexture = "";
+    [ObservableProperty] private string _normalTexture = "";
+    [ObservableProperty] private string _rmaTexture = "";
+    [ObservableProperty] private string _maskTexture = "";
+
+    public MaterialLayerViewModel(string name, Action onChanged)
+    {
+        _name = name;
+        _onChanged = onChanged;
+    }
+
+    partial void OnColorRChanged(float value) => _onChanged();
+    partial void OnColorGChanged(float value) => _onChanged();
+    partial void OnColorBChanged(float value) => _onChanged();
+    partial void OnMetallicChanged(float value) => _onChanged();
+    partial void OnRoughnessChanged(float value) => _onChanged();
+    partial void OnMaskTypeChanged(int value) => _onChanged();
+    partial void OnNoiseScaleChanged(float value) => _onChanged();
+    partial void OnNoiseDetailChanged(int value) => _onChanged();
+    partial void OnNoiseThresholdChanged(float value) => _onChanged();
+    partial void OnAlbedoTextureChanged(string value) => _onChanged();
+    partial void OnNormalTextureChanged(string value) => _onChanged();
+    partial void OnRmaTextureChanged(string value) => _onChanged();
+    partial void OnMaskTextureChanged(string value) => _onChanged();
+}
+
 
 public partial class MaterialEditorViewModel : ObservableObject, IDisposable
 {
@@ -32,26 +76,26 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
     private float _camDist = 5f;
     private ulong _cameraEntity;
 
-    [ObservableProperty] private float _baseColorR;
-    [ObservableProperty] private float _baseColorG;
-    [ObservableProperty] private float _baseColorB;
-    [ObservableProperty] private float _metallic;
-    [ObservableProperty] private float _roughness;
+    [ObservableProperty] private float _baseColorR = 1.0f;
+    [ObservableProperty] private float _baseColorG = 1.0f;
+    [ObservableProperty] private float _baseColorB = 1.0f;
+    [ObservableProperty] private float _metallic = 0.0f;
+    [ObservableProperty] private float _roughness = 1.0f;
+    [ObservableProperty] private string _baseAlbedoTexture = "";
+    [ObservableProperty] private string _baseNormalTexture = "";
+    [ObservableProperty] private string _baseRmaTexture = "";
+
     [ObservableProperty] private float _subsurface;
-    [ObservableProperty] private float _subsurfaceColorR;
-    [ObservableProperty] private float _subsurfaceColorG;
-    [ObservableProperty] private float _subsurfaceColorB;
-    [ObservableProperty] private float _subsurfaceRadiusR;
-    [ObservableProperty] private float _subsurfaceRadiusG;
-    [ObservableProperty] private float _subsurfaceRadiusB;
+    [ObservableProperty] private float _subsurfaceColorR = 1.0f;
+    [ObservableProperty] private float _subsurfaceColorG = 1.0f;
+    [ObservableProperty] private float _subsurfaceColorB = 1.0f;
+    [ObservableProperty] private float _subsurfaceRadiusR = 1.0f;
+    [ObservableProperty] private float _subsurfaceRadiusG = 0.2f;
+    [ObservableProperty] private float _subsurfaceRadiusB = 0.1f;
     [ObservableProperty] private float _clearcoat;
     [ObservableProperty] private float _clearcoatRoughness;
-    [ObservableProperty] private float _topColorR;
-    [ObservableProperty] private float _topColorG;
-    [ObservableProperty] private float _topColorB;
-    [ObservableProperty] private float _topMetallic;
-    [ObservableProperty] private float _topRoughness;
-    [ObservableProperty] private int _topMaskType;
+
+    [ObservableProperty] private ObservableCollection<MaterialLayerViewModel> _layers = new();
 
     public MaterialEditorViewModel(string materialPath)
     {
@@ -60,6 +104,48 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
         _timer.Tick += OnTick;
         
         LoadMaterialData();
+    }
+
+    [RelayCommand]
+    public void AddLayer()
+    {
+        var layer = new MaterialLayerViewModel($"Layer {Layers.Count + 1}", PushMaterialToPreview);
+        Layers.Add(layer);
+        PushMaterialToPreview();
+    }
+
+    [RelayCommand]
+    public void RemoveLayer(MaterialLayerViewModel? layer)
+    {
+        if (layer != null && Layers.Contains(layer))
+        {
+            Layers.Remove(layer);
+            PushMaterialToPreview();
+        }
+    }
+
+    [RelayCommand]
+    public void MoveLayerUp(MaterialLayerViewModel? layer)
+    {
+        if (layer == null) return;
+        int idx = Layers.IndexOf(layer);
+        if (idx > 0)
+        {
+            Layers.Move(idx, idx - 1);
+            PushMaterialToPreview();
+        }
+    }
+
+    [RelayCommand]
+    public void MoveLayerDown(MaterialLayerViewModel? layer)
+    {
+        if (layer == null) return;
+        int idx = Layers.IndexOf(layer);
+        if (idx >= 0 && idx < Layers.Count - 1)
+        {
+            Layers.Move(idx, idx + 1);
+            PushMaterialToPreview();
+        }
     }
 
     private void LoadMaterialData()
@@ -77,6 +163,10 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
                 }
                 if (doc["metallic"] != null) Metallic = (float)doc["metallic"]!;
                 if (doc["roughness"] != null) Roughness = (float)doc["roughness"]!;
+                if (doc["albedo_texture"] != null) BaseAlbedoTexture = (string)doc["albedo_texture"]!;
+                if (doc["normal_texture"] != null) BaseNormalTexture = (string)doc["normal_texture"]!;
+                if (doc["rma_texture"] != null) BaseRmaTexture = (string)doc["rma_texture"]!;
+
                 if (doc["subsurface"] != null) Subsurface = (float)doc["subsurface"]!;
                 if (doc["subsurface_color"] is JsonArray sssColor) {
                     SubsurfaceColorR = (float)sssColor[0]!;
@@ -91,14 +181,50 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
                 if (doc["clearcoat"] != null) Clearcoat = (float)doc["clearcoat"]!;
                 if (doc["clearcoat_roughness"] != null) ClearcoatRoughness = (float)doc["clearcoat_roughness"]!;
                 
-                if (doc["top_color"] is JsonArray topAlbedo) {
-                    TopColorR = (float)topAlbedo[0]!;
-                    TopColorG = (float)topAlbedo[1]!;
-                    TopColorB = (float)topAlbedo[2]!;
+                Layers.Clear();
+                if (doc["layers"] is JsonArray layersArray)
+                {
+                    foreach (var node in layersArray)
+                    {
+                        if (node is JsonObject lobj)
+                        {
+                            string layerName = lobj["name"]?.ToString() ?? "Layer";
+                            var lvm = new MaterialLayerViewModel(layerName, PushMaterialToPreview);
+
+
+                            if (lobj["albedo_color"] is JsonArray col) {
+                                lvm.ColorR = (float)col[0]!;
+                                lvm.ColorG = (float)col[1]!;
+                                lvm.ColorB = (float)col[2]!;
+                            }
+                            if (lobj["metallic"] != null) lvm.Metallic = (float)lobj["metallic"]!;
+                            if (lobj["roughness"] != null) lvm.Roughness = (float)lobj["roughness"]!;
+                            if (lobj["mask_type"] != null) lvm.MaskType = (int)lobj["mask_type"]!;
+                            if (lobj["noise_scale"] != null) lvm.NoiseScale = (float)lobj["noise_scale"]!;
+                            if (lobj["noise_detail"] != null) lvm.NoiseDetail = (int)lobj["noise_detail"]!;
+                            if (lobj["noise_threshold"] != null) lvm.NoiseThreshold = (float)lobj["noise_threshold"]!;
+                            if (lobj["albedo_texture"] != null) lvm.AlbedoTexture = (string)lobj["albedo_texture"]!;
+                            if (lobj["normal_texture"] != null) lvm.NormalTexture = (string)lobj["normal_texture"]!;
+                            if (lobj["rma_texture"] != null) lvm.RmaTexture = (string)lobj["rma_texture"]!;
+                            if (lobj["mask_texture"] != null) lvm.MaskTexture = (string)lobj["mask_texture"]!;
+                            Layers.Add(lvm);
+                        }
+                    }
                 }
-                if (doc["top_metallic"] != null) TopMetallic = (float)doc["top_metallic"]!;
-                if (doc["top_roughness"] != null) TopRoughness = (float)doc["top_roughness"]!;
-                if (doc["top_mask_type"] != null) TopMaskType = (int)doc["top_mask_type"]!;
+                else if (doc["top_color"] != null || doc["top_mask_type"] != null)
+                {
+                    // Convert legacy top layer into layer stack
+                    var lvm = new MaterialLayerViewModel("Top Layer", PushMaterialToPreview);
+                    if (doc["top_color"] is JsonArray topAlbedo) {
+                        lvm.ColorR = (float)topAlbedo[0]!;
+                        lvm.ColorG = (float)topAlbedo[1]!;
+                        lvm.ColorB = (float)topAlbedo[2]!;
+                    }
+                    if (doc["top_metallic"] != null) lvm.Metallic = (float)doc["top_metallic"]!;
+                    if (doc["top_roughness"] != null) lvm.Roughness = (float)doc["top_roughness"]!;
+                    if (doc["top_mask_type"] != null) lvm.MaskType = (int)doc["top_mask_type"]!;
+                    Layers.Add(lvm);
+                }
             }
         } 
         catch {}
@@ -110,6 +236,7 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
     private void SaveMaterialData()
     {
         if (!File.Exists(_materialPath)) return;
+
         try {
             var json = File.ReadAllText(_materialPath);
             var doc = JsonNode.Parse(json) as JsonObject;
@@ -117,16 +244,45 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
                 doc["albedo_color"] = new JsonArray(BaseColorR, BaseColorG, BaseColorB, 1.0f);
                 doc["metallic"] = Metallic;
                 doc["roughness"] = Roughness;
+                if (!string.IsNullOrEmpty(BaseAlbedoTexture)) doc["albedo_texture"] = BaseAlbedoTexture;
+                if (!string.IsNullOrEmpty(BaseNormalTexture)) doc["normal_texture"] = BaseNormalTexture;
+                if (!string.IsNullOrEmpty(BaseRmaTexture)) doc["rma_texture"] = BaseRmaTexture;
+
                 doc["subsurface"] = Subsurface;
                 doc["subsurface_color"] = new JsonArray(SubsurfaceColorR, SubsurfaceColorG, SubsurfaceColorB);
                 doc["subsurface_radius"] = new JsonArray(SubsurfaceRadiusR, SubsurfaceRadiusG, SubsurfaceRadiusB);
                 doc["clearcoat"] = Clearcoat;
                 doc["clearcoat_roughness"] = ClearcoatRoughness;
                 
-                doc["top_color"] = new JsonArray(TopColorR, TopColorG, TopColorB, 1.0f);
-                doc["top_metallic"] = TopMetallic;
-                doc["top_roughness"] = TopRoughness;
-                doc["top_mask_type"] = TopMaskType;
+                var larr = new JsonArray();
+                foreach (var l in Layers)
+                {
+                    var lobj = new JsonObject();
+                    lobj["name"] = l.Name;
+                    lobj["albedo_color"] = new JsonArray(l.ColorR, l.ColorG, l.ColorB, 1.0f);
+                    lobj["metallic"] = l.Metallic;
+                    lobj["roughness"] = l.Roughness;
+                    lobj["mask_type"] = l.MaskType;
+                    lobj["noise_scale"] = l.NoiseScale;
+                    lobj["noise_detail"] = l.NoiseDetail;
+                    lobj["noise_threshold"] = l.NoiseThreshold;
+                    if (!string.IsNullOrEmpty(l.AlbedoTexture)) lobj["albedo_texture"] = l.AlbedoTexture;
+                    if (!string.IsNullOrEmpty(l.NormalTexture)) lobj["normal_texture"] = l.NormalTexture;
+                    if (!string.IsNullOrEmpty(l.RmaTexture)) lobj["rma_texture"] = l.RmaTexture;
+                    if (!string.IsNullOrEmpty(l.MaskTexture)) lobj["mask_texture"] = l.MaskTexture;
+                    larr.Add(lobj);
+                }
+
+                doc["layers"] = larr;
+
+                if (Layers.Count > 0)
+                {
+                    var top = Layers[0];
+                    doc["top_color"] = new JsonArray(top.ColorR, top.ColorG, top.ColorB, 1.0f);
+                    doc["top_metallic"] = top.Metallic;
+                    doc["top_roughness"] = top.Roughness;
+                    doc["top_mask_type"] = top.MaskType;
+                }
                 
                 // Atomic save
                 string tmp = _materialPath + ".tmp";
@@ -141,6 +297,10 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
     partial void OnBaseColorBChanged(float value) => PushMaterialToPreview();
     partial void OnMetallicChanged(float value) => PushMaterialToPreview();
     partial void OnRoughnessChanged(float value) => PushMaterialToPreview();
+    partial void OnBaseAlbedoTextureChanged(string value) => PushMaterialToPreview();
+    partial void OnBaseNormalTextureChanged(string value) => PushMaterialToPreview();
+    partial void OnBaseRmaTextureChanged(string value) => PushMaterialToPreview();
+
     partial void OnSubsurfaceChanged(float value) => PushMaterialToPreview();
     partial void OnSubsurfaceColorRChanged(float value) => PushMaterialToPreview();
     partial void OnSubsurfaceColorGChanged(float value) => PushMaterialToPreview();
@@ -150,18 +310,17 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
     partial void OnSubsurfaceRadiusBChanged(float value) => PushMaterialToPreview();
     partial void OnClearcoatChanged(float value) => PushMaterialToPreview();
     partial void OnClearcoatRoughnessChanged(float value) => PushMaterialToPreview();
-    partial void OnTopColorRChanged(float value) => PushMaterialToPreview();
-    partial void OnTopColorGChanged(float value) => PushMaterialToPreview();
-    partial void OnTopColorBChanged(float value) => PushMaterialToPreview();
-    partial void OnTopMetallicChanged(float value) => PushMaterialToPreview();
-    partial void OnTopRoughnessChanged(float value) => PushMaterialToPreview();
-    partial void OnTopMaskTypeChanged(int value) => PushMaterialToPreview();
 
     private void PushMaterialToPreview()
     {
         if (_isLoading) return;
         if (_gameLoop != null)
         {
+            float[] topCol = Layers.Count > 0 ? new[] { Layers[0].ColorR, Layers[0].ColorG, Layers[0].ColorB, 1.0f } : new[] { 1.0f, 1.0f, 1.0f, 1.0f };
+            float topMet = Layers.Count > 0 ? Layers[0].Metallic : 0.0f;
+            float topRough = Layers.Count > 0 ? Layers[0].Roughness : 1.0f;
+            uint topMask = Layers.Count > 0 ? (uint)Layers[0].MaskType : 0u;
+
             _gameLoop.UpdateMaterialPreview(
                 new[] { BaseColorR, BaseColorG, BaseColorB, 1.0f },
                 Metallic,
@@ -171,14 +330,15 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
                 new[] { SubsurfaceRadiusR, SubsurfaceRadiusG, SubsurfaceRadiusB },
                 Clearcoat,
                 ClearcoatRoughness,
-                new[] { TopColorR, TopColorG, TopColorB, 1.0f },
-                TopMetallic,
-                TopRoughness,
-                (uint)TopMaskType
+                topCol,
+                topMet,
+                topRough,
+                topMask
             );
         }
         SaveMaterialData();
     }
+
 
     public void AddPointerDelta(float dx, float dy)
     {

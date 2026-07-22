@@ -8,6 +8,7 @@ ConstantBuffer<ScenePushData> push;
 struct VertexOutput {
     float4 position : SV_Position;
     uint entityIdLow : BLENDINDICES0;
+    uint partIdx : BLENDINDICES1;
 };
 
 [shader("vertex")]
@@ -26,6 +27,7 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     float4 worldPos = mul(inst.modelMatrix, float4(vPos, 1.0));
     output.position = mul(push.camera->viewProj, worldPos);
     output.entityIdLow = inst.entityIdLow;
+    output.partIdx = iid - inst.firstPartIndex;
     
     return output;
 }
@@ -34,9 +36,11 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
 float4 fragmentMain(VertexOutput input) : SV_Target 
 {
     uint id = input.entityIdLow;
-    float r = float((id >> 0)  & 0xFF) / 255.0;
-    float g = float((id >> 8)  & 0xFF) / 255.0;
-    float b = float((id >> 16) & 0xFF) / 255.0;
-    float a = float((id >> 24) & 0xFF) / 255.0;
+    uint partIdx = input.partIdx;
+    float r = float((id >> 0) & 0xFF) / 255.0;
+    float g = float((id >> 8) & 0xFF) / 255.0;
+    float b = float((partIdx >> 0) & 0xFF) / 255.0;
+    float a = float((partIdx >> 8) & 0xFF) / 255.0;
     return float4(r, g, b, a);
 }
+

@@ -30,19 +30,27 @@ public partial class AssetImportWindow : Window
 
         var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "Select Model to Import",
+            Title = "Select Model or Texture to Import",
             AllowMultiple = false,
             FileTypeFilter = new[]
             {
-                new FilePickerFileType("GLTF Models") { Patterns = new[] { "*.glb", "*.gltf" } }
+                new FilePickerFileType("All Supported Assets") { Patterns = new[] { "*.glb", "*.gltf", "*.png", "*.jpg", "*.jpeg", "*.tga", "*.bmp", "*.ktx2" } },
+                new FilePickerFileType("GLTF Models") { Patterns = new[] { "*.glb", "*.gltf" } },
+                new FilePickerFileType("Textures") { Patterns = new[] { "*.png", "*.jpg", "*.jpeg", "*.tga", "*.bmp", "*.ktx2" } }
             }
         });
 
         if (files.Count > 0 && DataContext is AssetImportViewModel vm)
         {
             vm.SourceFile = files[0].Path.LocalPath;
+            string ext = Path.GetExtension(vm.SourceFile).ToLower();
+            if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".bmp" || ext == ".ktx2")
+                vm.AssetType = "Texture";
+            else
+                vm.AssetType = "Model";
         }
     }
+
 
 
 

@@ -164,7 +164,7 @@ public class PbrPass : RenderPass
         if (_world.TryGet<Engine.Scene.Components.Camera>(activeCam, out var cam))
         {
             var transform = _world.TryGet<Transform>(activeCam, out var t) ? t : Transform.Default;
-            var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
+            var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(-Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
             var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, _lastAspect, cam.NearClip, cam.FarClip);
             camData.ViewProj = view * proj;
             Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);

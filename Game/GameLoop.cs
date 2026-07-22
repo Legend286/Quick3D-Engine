@@ -268,8 +268,8 @@ public sealed class GameLoop : IGameLoop
                 float maxDim = MathF.Max(size.X, MathF.Max(size.Y, size.Z));
                 if (maxDim > 0.001f)
                 {
-                    // Scale so the max dimension is 1.5 (fits safely in 60deg FOV at Z=2.2)
-                    scale = 1.5f / maxDim;
+                    // Scale so the max dimension fills 100% of FOV
+                    scale = 2.2f / maxDim;
                 }
                 offset = -center * scale;
             }
@@ -304,7 +304,7 @@ public sealed class GameLoop : IGameLoop
             tempWorld.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
             tempWorld.Set(ent, Transform.Default);
             
-            // Move camera slightly closer for materials so the sphere fills the icon better
+            // Camera position so sphere fills icon completely
             tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, 1.8f), Rotation = Quaternion.Identity });
         }
 
@@ -314,7 +314,6 @@ public sealed class GameLoop : IGameLoop
             System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(planePath)!);
             if (!System.IO.File.Exists(planePath))
             {
-                // Note: using GeneratePlane so we get a flat surface facing up (Y=0).
                 Engine.Game.PrimitiveMeshFactory.GeneratePlane(planePath, 2.0f, 2.0f);
             }
             var mesh = Engine.Assets.MeshLoader.LoadMsh(_device, planePath);
@@ -327,7 +326,6 @@ public sealed class GameLoop : IGameLoop
                 t = Engine.Assets.TextureLoader.LoadTexture(_device, assetPath);
             }
 
-            // Create an unlit material
             var mat = new Engine.Assets.Material
             {
                 AlbedoColor = new float[] { 1, 1, 1, 1 },
@@ -344,15 +342,16 @@ public sealed class GameLoop : IGameLoop
             ulong ent = tempWorld.CreateEntity();
             tempWorld.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
 
-            // Rotate the plane to face the camera (camera is at Z=3 looking at Z=0). Plane normal is +Y.
-            // So we rotate around X axis by 90 degrees.
+            // Rotate plane to face camera (-Z view)
             tempWorld.Set(ent, new Transform { Rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2.0f) });
+            tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, 1.8f), Rotation = Quaternion.Identity });
         }
 
         // 4. Render to target using a temporary Renderer instance
-        // Swapchain can be null/fake since we are overriding backbuffer
         using var tempRenderer = new Renderer(_device, _swap!, tempWorld, null);
+        tempRenderer.ActiveCameraEntity = camEnt;
         tempRenderer.BuildThumbnailPlan(contentRoot);
+
         try
         {
             tempRenderer.RenderFrame(target, 256, 256);
@@ -420,6 +419,23 @@ public sealed class GameLoop : IGameLoop
             mat.TopMetallic = topMetallic;
             mat.TopRoughness = topRoughness;
             mat.TopMaskType = topMaskType;
+        }
+    }
+
+    public void ApplyMaterialToSubmesh(uint x, uint y, uint w, uint h, string materialPath)
+    {
+        if (_renderer == null || _device == null) return;
+        (ulong entId, uint partIdx) = _renderer.PickSubmesh(x, y, w, h);
+        if (entId != 0 && _world.TryGet<Engine.RHI.ModelComponent>(entId, out var modelComp))
+        {
+            var model = Engine.Assets.AssetRegistry.GetModel(modelComp.ModelId);
+            if (model != null && model.Parts != null && partIdx < model.Parts.Length)
+            {
+                var mat = Engine.Assets.MaterialLoader.LoadMat(_device, materialPath);
+                ulong matId = Engine.Assets.AssetRegistry.RegisterMaterial(mat);
+                model.Parts[partIdx].MaterialId = matId;
+                model.Parts[partIdx].Material = mat;
+            }
         }
     }
 

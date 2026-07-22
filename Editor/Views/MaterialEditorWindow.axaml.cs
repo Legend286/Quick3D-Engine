@@ -2,7 +2,9 @@
 using Avalonia.Controls;
 using Avalonia.Markup.Xaml;
 using Avalonia.Input;
+using Avalonia.VisualTree;
 using Engine.Editor.ViewModels;
+
 
 namespace Engine.Editor.Views;
 
@@ -36,7 +38,57 @@ public partial class MaterialEditorWindow : Window
             host.PointerReleased += OnPointerReleased;
             host.PointerWheelChanged += OnPointerWheelChanged;
         }
+
+        AddHandler(DragDrop.DragOverEvent, OnDragOver);
+        AddHandler(DragDrop.DropEvent, OnDrop);
     }
+
+    private void OnDragOver(object? sender, DragEventArgs e)
+    {
+        if (e.Data.Contains(DataFormats.Files) || e.Data.Contains(DataFormats.Text))
+            e.DragEffects = DragDropEffects.Copy | DragDropEffects.Link;
+        else
+            e.DragEffects = DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void OnDrop(object? sender, DragEventArgs e)
+    {
+        string? path = null;
+        if (e.Data.Contains(DataFormats.Files))
+        {
+            var files = e.Data.GetFiles();
+            if (files != null)
+            {
+                foreach (var f in files)
+                {
+                    path = f.Path.LocalPath;
+                    break;
+                }
+            }
+        }
+        else if (e.Data.Contains(DataFormats.Text))
+        {
+            path = e.Data.GetText();
+        }
+
+        if (!string.IsNullOrEmpty(path))
+        {
+            Avalonia.Visual? current = e.Source as Avalonia.Visual;
+            while (current != null && current is not TextBox)
+            {
+                current = current.GetVisualParent();
+            }
+
+            if (current is TextBox tb)
+            {
+                tb.Text = path;
+                e.Handled = true;
+            }
+        }
+    }
+
+
 
     private void InitializeComponent()
     {

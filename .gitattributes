@@ -1,10 +1,11 @@
-# Binary cooked assets must be tracked via Git LFS.
-*.mdl     filter=lfs diff=lfs merge=lfs -text
-*.ktx2    filter=lfs diff=lfs merge=lfs -text
-*.ktx     filter=lfs diff=lfs merge=lfs -text
-*.basis   filter=lfs diff=lfs merge=lfs -text
-*.audio   filter=lfs diff=lfs merge=lfs -text
-*.bin     filter=lfs diff=lfs merge=lfs -text
+# Binary assets marked as binary.
+*.mdl     binary
+*.ktx2    binary
+*.ktx     binary
+*.basis   binary
+*.audio   binary
+*.bin     binary
+
 
 # Source files: prefer LF for cross-platform consistency.
 *.c       text eol=lf

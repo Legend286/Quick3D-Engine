@@ -34,7 +34,7 @@ public static class SceneDataExtractor
         if (world.TryGet<Engine.Scene.Components.Camera>(activeCameraId, out var cam))
         {
             var transform = world.TryGet<Transform>(activeCameraId, out var t) ? t : Transform.Default;
-            var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
+            var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(-Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
             var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, aspect, cam.NearClip, cam.FarClip);
             camData.ViewProj = view * proj;
             Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);

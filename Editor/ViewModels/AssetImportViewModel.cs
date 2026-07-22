@@ -8,6 +8,9 @@ public partial class AssetImportViewModel : ObservableObject
     private string _sourceFile = string.Empty;
 
     [ObservableProperty]
+    private string _assetType = "Model"; // "Model" or "Texture"
+
+    [ObservableProperty]
     private bool _uniformScale = true;
 
     [ObservableProperty]

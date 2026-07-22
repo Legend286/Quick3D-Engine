@@ -105,18 +105,32 @@ public partial class ViewportPanelView : UserControl
     {
         if (DataContext is ViewportPanelViewModel vm && e.Data.GetFiles() is { } files)
         {
+            var pos = e.GetPosition(this);
+            uint x = (uint)pos.X;
+            uint y = (uint)pos.Y;
+            uint w = (uint)System.Math.Max(1, Bounds.Width);
+            uint h = (uint)System.Math.Max(1, Bounds.Height);
+
             foreach (var file in files)
             {
-                if (file.Path.LocalPath is string path && path.EndsWith(".mdl"))
+                if (file.Path.LocalPath is string path)
                 {
-                    // Dragged a model onto the viewport! Instantiate it in front of camera
-                    // Currently we don't have raycasting, so just spawn it at the origin or somewhere
-                    Engine.CBindings.Log.Info($"Dropped Model: {path}", "Editor");
-                    vm.InstantiateModel(path);
+                    string ext = System.IO.Path.GetExtension(path).ToLower();
+                    if (ext == ".mdl" || path.EndsWith(".scene.json"))
+                    {
+                        Engine.CBindings.Log.Info($"Dropped Model/Scene: {path}", "Editor");
+                        vm.InstantiateModel(path);
+                    }
+                    else if (ext == ".mat")
+                    {
+                        Engine.CBindings.Log.Info($"Dropped Material at ({x}, {y}) onto viewport: {path}", "Editor");
+                        vm.GameLoop?.ApplyMaterialToSubmesh(x, y, w, h, path);
+                    }
                 }
             }
         }
     }
+
 
     private void OnKeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
     {

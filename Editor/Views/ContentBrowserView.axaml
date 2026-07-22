@@ -23,13 +23,14 @@
       <TreeView ItemsSource="{Binding RootFolders}" SelectedItem="{Binding SelectedFolder}" Background="Transparent">
         <TreeView.ItemTemplate>
           <TreeDataTemplate ItemsSource="{Binding SubFolders}">
-            <StackPanel Orientation="Horizontal" Spacing="8">
+            <StackPanel Orientation="Horizontal" Spacing="8" DragDrop.AllowDrop="True" PointerPressed="OnFolderPointerPressed" PointerMoved="OnFolderPointerMoved">
               <TextBlock Text="&#xE2C7;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" Foreground="#eac54f" VerticalAlignment="Center" FontSize="16" />
               <TextBlock Text="{Binding Name}" VerticalAlignment="Center" FontSize="13" Foreground="#d1d5da" />
             </StackPanel>
           </TreeDataTemplate>
         </TreeView.ItemTemplate>
       </TreeView>
+
     </Border>
 
     <GridSplitter Grid.Column="1" Background="#1c1f24" ResizeDirection="Columns" ShowsPreview="False" />

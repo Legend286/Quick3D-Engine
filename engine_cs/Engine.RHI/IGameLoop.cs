@@ -13,5 +13,7 @@ public interface IGameLoop : IDisposable
     void LoadMaterialPreview(string contentRoot, string materialPath);
     void UpdateMaterialPreview(float[] albedo, float metallic, float roughness, float subsurface, float[] subsurfaceColor, float[] subsurfaceRadius, float clearcoat, float clearcoatRoughness, float[] topColor, float topMetallic, float topRoughness, uint topMaskType);
     void SetSelectedEntity(ulong entityId);
+    void ApplyMaterialToSubmesh(uint x, uint y, uint w, uint h, string materialPath);
     event Action<ulong>? OnEntityPicked;
 }
+
