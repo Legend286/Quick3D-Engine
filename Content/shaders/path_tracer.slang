@@ -50,23 +50,47 @@ float3 SampleUniformSphere(float u1, float u2) {
     return float3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
 }
 
-// Returns Disney material from hit geometry
-DisneyMaterial GetMaterial(PartData part, InstanceData inst, uint primitiveId, float3 barycentrics,
-                            out float3 hitNormal, out float3 hitTangent, out float3 hitBitangent,
-                            out float3 albedo, out float subsurface, out float3 subsurfaceRadius, out float3 subsurfaceColor) {
+// =====================================================================
+// Noise Functions
+// =====================================================================
+float hash(float3 p) {
+    p = frac(p * float3(0.1311, 0.2811, 0.3811));
+    p += dot(p, p.zyx + 31.32);
+    return frac((p.x + p.y) * p.z);
+}
+
+float noise3D(float3 x) {
+    float3 i = floor(x);
+    float3 f = frac(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return lerp(
+        lerp(lerp(hash(i + float3(0,0,0)), hash(i + float3(1,0,0)), f.x),
+             lerp(hash(i + float3(0,1,0)), hash(i + float3(1,1,0)), f.x), f.y),
+        lerp(lerp(hash(i + float3(0,0,1)), hash(i + float3(1,0,1)), f.x),
+             lerp(hash(i + float3(0,1,1)), hash(i + float3(1,1,1)), f.x), f.y), f.z);
+}
+
+// =====================================================================
+// Material Evaluation
+// =====================================================================
+DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics, uint primId, 
+                           float3 worldPos, inout uint seed,
+                           out float3 hitNormal, out float3 hitTangent, out float3 hitBitangent, 
+                           out float3 albedo,
+                           out float subsurface, out float3 subsurfaceRadius, out float3 subsurfaceColor) {
     
     uint i0, i1, i2;
     if ((part.flags & 1u) != 0u) {
-        i0 = part.indices[primitiveId * 3 + 0];
-        i1 = part.indices[primitiveId * 3 + 1];
-        i2 = part.indices[primitiveId * 3 + 2];
+        i0 = part.indices[primId * 3 + 0];
+        i1 = part.indices[primId * 3 + 1];
+        i2 = part.indices[primId * 3 + 2];
     } else {
-        uint dword0 = part.indices[(primitiveId * 3 + 0) / 2];
-        uint dword1 = part.indices[(primitiveId * 3 + 1) / 2];
-        uint dword2 = part.indices[(primitiveId * 3 + 2) / 2];
-        i0 = ((primitiveId * 3 + 0) % 2 == 0) ? (dword0 & 0xFFFF) : (dword0 >> 16);
-        i1 = ((primitiveId * 3 + 1) % 2 == 0) ? (dword1 & 0xFFFF) : (dword1 >> 16);
-        i2 = ((primitiveId * 3 + 2) % 2 == 0) ? (dword2 & 0xFFFF) : (dword2 >> 16);
+        uint dword0 = part.indices[(primId * 3 + 0) / 2];
+        uint dword1 = part.indices[(primId * 3 + 1) / 2];
+        uint dword2 = part.indices[(primId * 3 + 2) / 2];
+        i0 = ((primId * 3 + 0) % 2 == 0) ? (dword0 & 0xFFFF) : (dword0 >> 16);
+        i1 = ((primId * 3 + 1) % 2 == 0) ? (dword1 & 0xFFFF) : (dword1 >> 16);
+        i2 = ((primId * 3 + 2) % 2 == 0) ? (dword2 & 0xFFFF) : (dword2 >> 16);
     }
     
     Vertex v0 = part.vertices[i0];
@@ -107,8 +131,6 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, uint primitiveId, f
         float4 texColor = bindless.textures[mat.albedoTexIndex].SampleLevel(tex_sampler, uv, 0);
         baseColor *= texColor.rgb;
     }
-    albedo = baseColor;
-    
     float metallic  = mat.metallic;
     float roughness = mat.roughness;
     if (mat.rmaTexIndex != 0xFFFFFFFF) {
@@ -116,6 +138,25 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, uint primitiveId, f
         roughness *= rma.g;
         metallic  *= rma.b;
     }
+    
+    // Layer Stacking (Stochastic BSDF Choice)
+    if (mat.topMaskType != 0) {
+        float mask = 0.0;
+        if (mat.topMaskType == 1) {
+            // 3D Noise masking
+            mask = smoothstep(0.3, 0.7, noise3D(worldPos * 10.0));
+        }
+        
+        if (rand(seed) < mask) {
+            // Evaluate Top Layer
+            baseColor = mat.topColor.rgb;
+            metallic = mat.topMetallic;
+            roughness = mat.topRoughness;
+        }
+    }
+    
+    // Energy conservation: scale diffuse by (1 - subsurface) to allow SSS lobe room
+    albedo = baseColor * (1.0 - mat.subsurface);
     
     if (mat.normalTexIndex != 0xFFFFFFFF) {
         float3 normalMap = bindless.textures[mat.normalTexIndex].SampleLevel(tex_sampler, uv, 0).rgb;
@@ -133,7 +174,7 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, uint primitiveId, f
     subsurfaceColor  = mat.subsurfaceColor.xyz;
     
     DisneyMaterial dmat;
-    dmat.baseColor    = baseColor;
+    dmat.baseColor    = albedo;
     dmat.metallic     = metallic;
     dmat.subsurface   = 0.0; // SSS handled separately in path tracer, not in diffuse lobe
     dmat.specular     = 0.5;
@@ -142,8 +183,8 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, uint primitiveId, f
     dmat.anisotropic  = 0.0;
     dmat.sheen        = 0.0;
     dmat.sheenTint    = 0.5;
-    dmat.clearcoat    = 0.0;
-    dmat.clearcoatGloss = 1.0;
+    dmat.clearcoat    = mat.clearcoat;
+    dmat.clearcoatGloss = 1.0 - mat.clearcoatRoughness;
     return dmat;
 }
 
@@ -193,7 +234,7 @@ float3 RandomWalkSSS(float3 entryPos, float3 entryDir, float3 N,
     float sigma_avg = max(dot(sigma_t, lum), 1e-5);
     
     float3 throughput = float3(1.0);
-    float3 pos = entryPos - N * 0.002; // offset inside the surface
+    float3 pos = entryPos - N * 0.0001; // offset inside the surface
     float3 dir = entryDir;
     
     for (int i = 0; i < MAX_SSS_BOUNCES; i++) {
@@ -276,18 +317,20 @@ float3 RandomWalkSSS(float3 entryPos, float3 entryDir, float3 N,
                     attenuation   = (falloff * falloff) / (dist * dist + 1.0);
                 }
                 
-                RayDesc shadowRay;
-                shadowRay.Origin    = pos + exitNorm * 0.002;
-                shadowRay.Direction = L;
-                shadowRay.TMin      = 0.001;
-                shadowRay.TMax      = lightType == 0.0 ? 10000.0 : length(light.position.xyz - pos) - 0.001;
+                float dotNL = dot(exitNorm, L);
+                if (dotNL > 0.0) {
+                    RayDesc shadowRay;
+                    shadowRay.Origin    = pos + exitNorm * 0.005;
+                    shadowRay.Direction = L;
+                    shadowRay.TMin      = 0.001;
+                    shadowRay.TMax      = lightType == 0.0 ? 10000.0 : length(light.position.xyz - pos) - 0.001;
                 
-                RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
-                if (hasGeom) { sq.TraceRayInline(tlas, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, shadowRay); sq.Proceed(); }
-                
-                if (!hasGeom || sq.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
-                    float dotNL = clamp(dot(exitNorm, L), 0.0, 1.0);
-                    exitRadiance += light.color.rgb * light.color.w * attenuation * dotNL / PI;
+                    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
+                    if (hasGeom) { sq.TraceRayInline(tlas, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, shadowRay); sq.Proceed(); }
+                    
+                    if (!hasGeom || sq.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
+                        exitRadiance += light.color.rgb * light.color.w * attenuation * dotNL / PI;
+                    }
                 }
             }
             
@@ -327,7 +370,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     // ---- Debug mode ----
     if ((push.debugFlags & 1u) != 0u) {
-        float2 inUV = (float2(dispatchThreadID.xy) + 0.5) / push.resolution;
+        float2 inUV = (float2(dispatchThreadID.xy) + 0.5) * push.resolution.zw;
         float2 ndc = inUV * 2.0 - 1.0;
         ndc.y = -ndc.y;
         float3 rayOrigin = push.camera->cameraPosition.xyz;
@@ -357,7 +400,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     uint seed = dispatchThreadID.y * uint(push.resolution.x) + dispatchThreadID.x + push.frameCount * 719393;
     
     float2 pixelCenter = float2(dispatchThreadID.xy) + float2(rand(seed), rand(seed));
-    float2 inUV = pixelCenter / push.resolution;
+    float2 inUV = pixelCenter * push.resolution.zw;
     float2 ndc  = inUV * 2.0 - 1.0;
     ndc.y = -ndc.y;
     
@@ -407,7 +450,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
             
             PartData    part = push.parts[partIdx];
             InstanceData inst = push.instances[part.instanceIdx];
-            DisneyMaterial mat = GetMaterial(part, inst, primId, bary, N, T, B, albedo,
+            DisneyMaterial mat = GetMaterial(part, inst, bary, primId, hitPos, seed, N, T, B, albedo,
                                              surfSubsurface, subsurfaceRadius, subsurfaceColor);
             float3 V = -ray.Direction;
             bounce++;
@@ -441,23 +484,18 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
             }
             
             // ---- Random-Walk SSS decision ----
-            // Only attempt SSS if the material has a non-zero subsurface weight and
-            // we are hitting the surface from outside (V · N > 0).
-            bool doSSS = (surfSubsurface > 0.0) && (dot(V, N) > 0.0) && (rand(seed) < surfSubsurface);
-            
-            if (doSSS) {
+            if ((surfSubsurface > 0.0) && (dot(V, N) > 0.0)) {
                 // Sigma_t = 1 / mean_free_path
                 float3 sigma_t = float3(
                     1.0 / max(subsurfaceRadius.x, 1e-4),
                     1.0 / max(subsurfaceRadius.y, 1e-4),
                     1.0 / max(subsurfaceRadius.z, 1e-4));
                 
-                float3 sssRadiance = RandomWalkSSS(hitPos, -V, N, sigma_t, subsurfaceColor, seed);
-                radiance += throughput * sssRadiance;
-                
-                // After SSS we terminate this path — the walk has already accounted for
-                // indirect bounces inside the object.
-                break;
+                // Stochastically evaluate SSS walk
+                if (rand(seed) < surfSubsurface) {
+                    float3 sssRadiance = RandomWalkSSS(hitPos, -V, N, sigma_t, subsurfaceColor, seed);
+                    radiance += throughput * sssRadiance;
+                }
             }
             
             // ---- NEE (Next Event Estimation) ----
@@ -473,7 +511,24 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
                 float attenuation = 1.0;
                 
                 if (lightType == 0.0) {
-                    L = normalize(light.direction.xyz);
+                    float3 baseL = normalize(light.direction.xyz);
+                    float sunRad = light.spotParams.x;
+                    if (sunRad > 0.0) {
+                        float2 u = float2(rand(seed), rand(seed));
+                        float cosThetaMax = cos(sunRad);
+                        float cosTheta = lerp(cosThetaMax, 1.0, u.x);
+                        float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+                        float phi = 2.0 * PI * u.y;
+                        
+                        float3 w = baseL;
+                        float3 a = abs(w.x) > 0.9 ? float3(0, 1, 0) : float3(1, 0, 0);
+                        float3 v = normalize(cross(w, a));
+                        float3 u_vec = cross(v, w);
+                        
+                        L = u_vec * cos(phi) * sinTheta + v * sin(phi) * sinTheta + w * cosTheta;
+                    } else {
+                        L = baseL;
+                    }
                 } else {
                     float3 delta = light.position.xyz - hitPos;
                     float  dist  = length(delta);
@@ -483,22 +538,24 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
                     attenuation   = (falloff * falloff) / (dist * dist + 1.0);
                 }
                 
-                RayDesc shadowRay;
-                shadowRay.Origin    = hitPos + N * 0.001;
-                shadowRay.Direction = L;
-                shadowRay.TMin      = 0.001;
-                shadowRay.TMax      = lightType == 0.0 ? 10000.0 : length(light.position.xyz - hitPos) - 0.001;
+                float dotNL = dot(N, L);
+                if (dotNL > 0.0) {
+                    RayDesc shadowRay;
+                    shadowRay.Origin    = hitPos + N * 0.001;
+                    shadowRay.Direction = L;
+                    shadowRay.TMin      = 0.001;
+                    shadowRay.TMax      = lightType == 0.0 ? 10000.0 : length(light.position.xyz - hitPos) - 0.001;
                 
-                RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
-                if (push.hasGeometry != 0u) {
-                    sq.TraceRayInline(tlas, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, shadowRay);
-                    sq.Proceed();
-                }
-                
-                if (push.hasGeometry == 0u || sq.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
-                    float3 bsdf  = EvaluateDisneyBSDF(mat, N, V, L, T, B);
-                    float  dotNL = clamp(dot(N, L), 0.001, 1.0);
-                    directLight += bsdf * light.color.rgb * light.color.w * attenuation * dotNL;
+                    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
+                    if (push.hasGeometry != 0u) {
+                        sq.TraceRayInline(tlas, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, shadowRay);
+                        sq.Proceed();
+                    }
+                    
+                    if (push.hasGeometry == 0u || sq.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
+                        float3 bsdf  = EvaluateDisneyBSDF(mat, N, V, L, T, B);
+                        directLight += bsdf * light.color.rgb * light.color.w * attenuation * dotNL;
+                    }
                 }
             }
             radiance += throughput * directLight;

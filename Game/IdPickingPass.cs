@@ -15,53 +15,6 @@ namespace Engine.Game;
 
 public class IdPickingPass : RenderPass, IDisposable
 {
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PartData
-    {
-        public Vector4 AabbMin;
-        public Vector4 AabbMax;
-        public ulong Vertices;
-        public ulong Indices;
-        public uint IndexCount;
-        public uint MaterialIdx;
-        public uint InstanceIdx;
-        public uint pad;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct InstanceData
-    {
-        public Matrix4x4 ModelMatrix;
-        public Vector4 AabbMin;
-        public Vector4 AabbMax;
-        public uint PartCount;
-        public uint FirstPartIndex;
-        public uint EntityIdLow;
-        public uint EntityIdHigh;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct CameraData
-    {
-        public Matrix4x4 ViewProj;
-        public Matrix4x4 InvViewProj;
-        public Vector4 CameraPosition;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ScenePushData
-    {
-        public ulong Parts;
-        public ulong Instances;
-        public ulong Materials;
-        public ulong Camera;
-        public ulong Lights;
-        public uint LightCount;
-        public uint FrameCount;
-        public Vector2 Resolution;
-        public uint DebugFlags;
-        public uint pad_debug;
-    }
 
     private readonly RhiDevice _device;
     private readonly IEntityStore _world;
@@ -180,10 +133,14 @@ public class IdPickingPass : RenderPass, IDisposable
 
                         _parts.Add(new PartData
                         {
+                            AabbMin = new Vector4(0f, 0f, 0f, 1f),
+                            AabbMax = new Vector4(0f, 0f, 0f, 1f),
                             Vertices = mesh.VertexBuffer.DeviceAddress,
                             Indices = mesh.IndexBuffer.DeviceAddress,
                             IndexCount = mesh.IndexCount,
-                            InstanceIdx = instIdx
+                            MaterialIdx = 0,
+                            InstanceIdx = instIdx,
+                            Flags = 0
                         });
                     }
 
@@ -221,12 +178,21 @@ public class IdPickingPass : RenderPass, IDisposable
             sink.UseBuffer(mesh.VertexBuffer, 1);
             sink.UseBuffer(mesh.IndexBuffer, 1);
         }
-
         ScenePushData pushData = new ScenePushData
         {
-            Parts = _partBuffer.DeviceAddress,
-            Instances = _instanceBuffer.DeviceAddress,
+            Parts = _partBuffer?.DeviceAddress ?? 0,
+            Instances = _instanceBuffer?.DeviceAddress ?? 0,
+            Materials = 0,
             Camera = _cameraBuffer.DeviceAddress,
+            Lights = 0,
+            LightCount = 0,
+            FrameCount = 0,
+            Resolution = new Vector4(w, h, 1.0f / w, 1.0f / h),
+            DebugFlags = 0,
+            HasGeometry = 1,
+            pad0 = 0,
+            pad1 = 0,
+            Sky = new SkyParams()
         };
         sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pushData));
 

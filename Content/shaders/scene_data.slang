@@ -37,18 +37,33 @@ struct InstanceData {
 };
 
 struct MaterialData {
+    // Base Layer
     float4 baseColor;
-    float4 emissiveColor;
     float metallic;
     float roughness;
     uint albedoTexIndex;
     uint normalTexIndex;
-    uint rmaTexIndex;
-    uint emissiveTexIndex;
-    float subsurface;        // 0-1 blend weight for random-walk SSS
+
+    // Top Layer
+    float4 topColor;
+    float topMetallic;
+    float topRoughness;
+    uint topMaskType;
     uint _pad0;
-    float4 subsurfaceRadius; // xyz = per-channel mean free path in world units
-    float4 subsurfaceColor;  // xyz = scattering albedo that tints the SSS lobe
+
+    // Common/Other
+    float4 emissiveColor;
+    uint emissiveTexIndex;
+    uint rmaTexIndex;
+    float subsurface;
+    float clearcoat;
+    
+    float4 subsurfaceRadius;
+    float4 subsurfaceColor;
+    float clearcoatRoughness;
+    uint _pad1;
+    uint _pad2;
+    uint _pad3;
 };
 
 struct LightData {
@@ -71,7 +86,7 @@ struct ScenePushData {
     LightData* lights;
     uint lightCount;
     uint frameCount;
-    float2 resolution;
+    float4 resolution;
     uint debugFlags;
     uint hasGeometry;
     SkyParams sky;

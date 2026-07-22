@@ -144,6 +144,12 @@ public static class SceneDataExtractor
                                 Subsurface = material.Subsurface,
                                 SubsurfaceRadius = new Vector4(sr.Length > 2 ? sr[0] : 1f, sr.Length > 2 ? sr[1] : 0.2f, sr.Length > 2 ? sr[2] : 0.1f, 0f),
                                 SubsurfaceColor = new Vector4(sc.Length > 2 ? sc[0] : 1f, sc.Length > 2 ? sc[1] : 1f, sc.Length > 2 ? sc[2] : 1f, 0f),
+                                TopColor = material.TopColor != null && material.TopColor.Length > 3 ? new Vector4(material.TopColor[0], material.TopColor[1], material.TopColor[2], material.TopColor[3]) : Vector4.One,
+                                TopMetallic = material.TopMetallic,
+                                TopRoughness = material.TopRoughness,
+                                TopMaskType = material.TopMaskType,
+                                Clearcoat = material.Clearcoat,
+                                ClearcoatRoughness = material.ClearcoatRoughness
                             });
                         }
                         else
@@ -192,7 +198,9 @@ public static class SceneDataExtractor
             Lights = lightBuffer?.DeviceAddress ?? 0,
             LightCount = (uint)lights.Count,
             FrameCount = 0, // Should be populated by caller
-            Resolution = Vector2.Zero // Should be populated by caller
+            Resolution = new Vector4(0, 0, 0, 0), // Should be populated by caller
+            pad0 = 0,
+            pad1 = 0
         };
     }
 

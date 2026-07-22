@@ -402,7 +402,7 @@ public sealed class GameLoop : IGameLoop
         _renderer.UsePathTracer = true; // Preview using path tracing
     }
 
-    public void UpdateMaterialPreview(float[] albedo, float metallic, float roughness, float subsurface, float[] subsurfaceColor, float[] subsurfaceRadius)
+    public void UpdateMaterialPreview(float[] albedo, float metallic, float roughness, float subsurface, float[] subsurfaceColor, float[] subsurfaceRadius, float clearcoat, float clearcoatRoughness, float[] topColor, float topMetallic, float topRoughness, uint topMaskType)
     {
         if (_previewMatId == 0) return;
         var mat = Engine.Assets.AssetRegistry.GetMaterial(_previewMatId);
@@ -414,6 +414,12 @@ public sealed class GameLoop : IGameLoop
             mat.Subsurface = subsurface;
             mat.SubsurfaceColor = subsurfaceColor;
             mat.SubsurfaceRadius = subsurfaceRadius;
+            mat.Clearcoat = clearcoat;
+            mat.ClearcoatRoughness = clearcoatRoughness;
+            mat.TopColor = topColor;
+            mat.TopMetallic = topMetallic;
+            mat.TopRoughness = topRoughness;
+            mat.TopMaskType = topMaskType;
         }
     }
 

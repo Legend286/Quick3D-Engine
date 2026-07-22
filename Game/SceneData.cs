@@ -14,7 +14,7 @@ public struct PartData
     public uint IndexCount;
     public uint MaterialIdx;
     public uint InstanceIdx;
-    public uint pad0;
+    public uint Flags;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -25,25 +25,37 @@ public struct InstanceData
     public Vector4 AabbMax;
     public uint PartCount;
     public uint FirstPartIndex;
-    public uint pad1;
-    public uint pad2;
+    public uint EntityIdLow;
+    public uint EntityIdHigh;
 }
 
 [StructLayout(LayoutKind.Sequential)]
 public struct MaterialData
 {
     public Vector4 BaseColor;
-    public Vector4 EmissiveColor;
     public float Metallic;
     public float Roughness;
     public uint AlbedoTexIndex;
     public uint NormalTexIndex;
-    public uint RmaTexIndex;
-    public uint EmissiveTexIndex;
-    public float Subsurface;         // 0-1: blend weight between diffuse and random-walk SSS
+    
+    public Vector4 TopColor;
+    public float TopMetallic;
+    public float TopRoughness;
+    public uint TopMaskType; // 0=None, 1=3D Noise
     public uint _pad0;
-    public Vector4 SubsurfaceRadius; // xyz = per-channel mean free path (world units), w = unused
-    public Vector4 SubsurfaceColor;  // xyz = scattering albedo (tints the subsurface response)
+
+    public Vector4 EmissiveColor;
+    public uint EmissiveTexIndex;
+    public uint RmaTexIndex;
+    public float Subsurface;
+    public float Clearcoat;
+    
+    public Vector4 SubsurfaceRadius;
+    public Vector4 SubsurfaceColor;
+    public float ClearcoatRoughness;
+    public uint _pad1;
+    public uint _pad2;
+    public uint _pad3;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -58,12 +70,8 @@ public struct LightData
 [StructLayout(LayoutKind.Sequential)]
 public struct SkyParams
 {
-    public Vector3 SunDirection;
-    public float SunAngularRadius;   // radians, ~0.00465 for real sun
-    public float SunIntensity;
-    public float Turbidity;          // 2-6 typical, 2=clear
-    public float GroundAlbedo;       // 0-1, typical 0.1
-    public Vector3 pad_sky;
+    public Vector4 SunDirAndRadius;
+    public Vector4 IntensityTurbidityAlbedoPad;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -76,9 +84,11 @@ public struct ScenePushData
     public ulong Lights;
     public uint LightCount;
     public uint FrameCount;
-    public Vector2 Resolution;
+    public Vector4 Resolution;
     public uint DebugFlags;
-    public uint hasGeometry;
+    public uint HasGeometry;
+    public uint pad0;
+    public uint pad1;
     public SkyParams Sky;
 }
 
@@ -88,4 +98,5 @@ public struct CameraData
     public Matrix4x4 ViewProj;
     public Matrix4x4 InvViewProj;
     public Vector4 CameraPosition; // w = exposure
+    public Vector4 CameraForward;
 }

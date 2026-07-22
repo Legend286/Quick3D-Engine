@@ -15,88 +15,6 @@ namespace Engine.Game;
 
 public class PathTracerPass : RenderPass
 {
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PartData
-    {
-        public Vector4 AabbMin;
-        public Vector4 AabbMax;
-        public ulong Vertices;
-        public ulong Indices;
-        public uint IndexCount;
-        public uint MaterialIdx;
-        public uint InstanceIdx;
-        public uint Flags; // 1 = 32-bit indices, 0 = 16-bit indices
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct InstanceData
-    {
-        public Matrix4x4 ModelMatrix;
-        public Vector4 AabbMin;
-        public Vector4 AabbMax;
-        public uint PartCount;
-        public uint FirstPartIndex;
-        public uint EntityIdLow;
-        public uint EntityIdHigh;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MaterialData
-    {
-        public Vector4 BaseColor;
-        public Vector4 EmissiveColor;
-        public float Metallic;
-        public float Roughness;
-        public uint AlbedoTexIndex;
-        public uint NormalTexIndex;
-        public uint RmaTexIndex;
-        public uint EmissiveTexIndex;
-        public float Subsurface;
-        public uint _pad0;
-        public Vector4 SubsurfaceRadius;
-        public Vector4 SubsurfaceColor;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct LightData
-    {
-        public Vector4 Position;   // w = range
-        public Vector4 Direction;  // w = type (0=Dir, 1=Point, 2=Spot)
-        public Vector4 Color;      // w = intensity
-        public Vector4 SpotParams; // x = innerCone, y = outerCone
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct CameraData
-    {
-        public Matrix4x4 ViewProj;
-        public Matrix4x4 InvViewProj;
-        public Vector4 CameraPosition; // w = exposure
-        public Vector4 CameraForward;
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct SkyParams
-    {
-        public Vector4 SunDirAndRadius;
-        public Vector4 IntensityTurbidityAlbedoPad;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ScenePushData
-    {
-        public ulong Parts;
-        public ulong Instances;
-        public ulong Materials;
-        public ulong Camera;
-        public ulong Lights;
-        public uint LightCount;
-        public uint FrameCount;
-        public Vector2 Resolution;
-        public uint DebugFlags;
-        public uint HasGeometry;
-        public SkyParams Sky;
-    }
 
     private RhiPipeline _computePipeline;
     private RhiShader _computeShader;
@@ -249,18 +167,30 @@ public class PathTracerPass : RenderPass
         _cameraBuffer.Upload(new ReadOnlySpan<CameraData>(ref camData));
 
         var lights = new List<LightData>();
+        Vector3 skySunDir = Vector3.Normalize(new Vector3(0.5f, 1.0f, 0.5f));
+        float skySunRadius = 0.00465f;
+
         foreach (var l in _scene.Lights)
         {
             float type = 0.0f;
+            float p1 = l.InnerCone;
+            float p2 = l.OuterCone;
             if (l.Type == "point") type = 1.0f;
             else if (l.Type == "spot") type = 2.0f;
+            else if (l.Type == "directional")
+            {
+                type = 0.0f;
+                p1 = l.SunRadius;
+                skySunDir = Vector3.Normalize(new Vector3(-l.Direction[0], -l.Direction[1], -l.Direction[2]));
+                skySunRadius = l.SunRadius;
+            }
 
             lights.Add(new LightData
             {
                 Position = new Vector4(l.Position[0], l.Position[1], l.Position[2], l.Range),
                 Direction = new Vector4(l.Direction[0], l.Direction[1], l.Direction[2], type),
                 Color = new Vector4(l.Color[0], l.Color[1], l.Color[2], l.Intensity),
-                SpotParams = new Vector4(l.InnerCone, l.OuterCone, 0, 0)
+                SpotParams = new Vector4(p1, p2, 0, 0)
             });
         }
         if (lights.Count == 0)
@@ -358,7 +288,13 @@ public class PathTracerPass : RenderPass
                             EmissiveTexIndex = emissiveTex,
                             Subsurface = material?.Subsurface ?? 0.0f,
                             SubsurfaceColor = material?.SubsurfaceColor != null && material.SubsurfaceColor.Length >= 3 ? new Vector4(material.SubsurfaceColor[0], material.SubsurfaceColor[1], material.SubsurfaceColor[2], 0) : Vector4.Zero,
-                            SubsurfaceRadius = material?.SubsurfaceRadius != null && material.SubsurfaceRadius.Length >= 3 ? new Vector4(material.SubsurfaceRadius[0], material.SubsurfaceRadius[1], material.SubsurfaceRadius[2], 0) : Vector4.Zero
+                            SubsurfaceRadius = material?.SubsurfaceRadius != null && material.SubsurfaceRadius.Length >= 3 ? new Vector4(material.SubsurfaceRadius[0], material.SubsurfaceRadius[1], material.SubsurfaceRadius[2], 0) : Vector4.Zero,
+                            TopColor = material?.TopColor != null && material.TopColor.Length >= 4 ? new Vector4(material.TopColor[0], material.TopColor[1], material.TopColor[2], material.TopColor[3]) : Vector4.One,
+                            TopMetallic = material?.TopMetallic ?? 0.0f,
+                            TopRoughness = material?.TopRoughness ?? 1.0f,
+                            TopMaskType = material?.TopMaskType ?? 0,
+                            Clearcoat = material?.Clearcoat ?? 0.0f,
+                            ClearcoatRoughness = material?.ClearcoatRoughness ?? 1.0f
                         });
 
                         Vector3 partMin = p.BoundsMin;
@@ -427,12 +363,14 @@ public class PathTracerPass : RenderPass
             Lights = _lightBuffer.DeviceAddress,
             LightCount = (uint)lights.Count,
             FrameCount = _frameCount,
-            Resolution = new Vector2(w, h),
+            Resolution = new Vector4(w, h, 1.0f / w, 1.0f / h),
             DebugFlags = DebugMode ? 1u : 0u,
             HasGeometry = hasGeometry ? 1u : 0u,
+            pad0 = 0,
+            pad1 = 0,
             Sky = new SkyParams
             {
-                SunDirAndRadius = new Vector4(Vector3.Normalize(new Vector3(0.5f, 1.0f, 0.5f)), 0.00465f),
+                SunDirAndRadius = new Vector4(skySunDir, skySunRadius),
                 IntensityTurbidityAlbedoPad = new Vector4(1.0f, 2.0f, 0.1f, 0.0f)
             }
         };

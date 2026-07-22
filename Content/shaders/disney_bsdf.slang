@@ -124,7 +124,10 @@ float3 EvaluateDisneyBSDF(DisneyMaterial mat, float3 N, float3 V, float3 L, floa
     float Fr = lerp(0.04, 1.0, FH);
     float3 clearcoat = mat.clearcoat * Dr * Gr * Fr;
     
-    return diffuse + sheen + specular + clearcoat;
+    float3 baseLayers = diffuse + sheen + specular;
+    float clearcoatAttenuation = 1.0 - (mat.clearcoat * Fr);
+    
+    return baseLayers * clearcoatAttenuation + clearcoat;
 }
 
 // =====================================================================================
@@ -162,46 +165,81 @@ float PdfGGX(float dotNH, float dotNH_V, float roughness) {
     return (D * dotNH) / (4.0 * dotNH_V + 1e-5);
 }
 
+// GTR1 Importance Sampling
+float3 SampleGTR1(float u1, float u2, float alpha, float3 N, float3 T, float3 B) {
+    float a2 = alpha * alpha;
+    float phi = 2.0 * PI * u1;
+    float cosThetaSq = (1.0 - pow(a2, 1.0 - u2)) / (1.0 - a2);
+    float cosTheta = sqrt(max(0.0, cosThetaSq));
+    float sinTheta = sqrt(max(0.0, 1.0 - cosThetaSq));
+    float3 H = float3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
+    return normalize(H.x * T + H.y * B + H.z * N);
+}
+
+// PDF for GTR1
+float PdfGTR1(float dotNH, float dotNH_V, float alpha) {
+    float d = D_GTR1(dotNH, alpha);
+    return (d * dotNH) / (4.0 * dotNH_V + 1e-5);
+}
+
 // Combined Disney Sample
 // Returns the sampled direction L and sets the pdf.
 float3 SampleDisneyBSDF(DisneyMaterial mat, float3 N, float3 V, float3 T, float3 B, float2 rnd, out float pdf) {
-    float specularWeight = lerp(0.5, 1.0, mat.metallic); // Heuristic to choose between diffuse and specular
+    float pDiff = (1.0 - mat.metallic) * 0.5;
+    float pSpec = 1.0 - pDiff;
+    float pCc   = (mat.clearcoat > 0.0) ? 0.1 : 0.0;
     
-    if (rnd.x < specularWeight) {
+    // Normalize probabilities
+    float totalP = pDiff + pSpec + pCc;
+    pDiff /= totalP;
+    pSpec /= totalP;
+    pCc   /= totalP;
+    
+    float3 L;
+    float3 H;
+    
+    if (rnd.x < pCc) {
+        // Sample Clearcoat
+        rnd.x /= pCc;
+        float alpha = lerp(0.1, 0.001, mat.clearcoatGloss);
+        H = SampleGTR1(rnd.x, rnd.y, alpha, N, T, B);
+        L = reflect(-V, H);
+    } else if (rnd.x < pCc + pSpec) {
         // Sample Specular
-        rnd.x /= specularWeight;
-        float3 H = SampleGGX(rnd.x, rnd.y, mat.roughness, N, T, B);
-        float3 L = reflect(-V, H);
-        
-        float dotNL = clamp(dot(N, L), 0.001, 1.0);
-        float dotNH = clamp(dot(N, H), 0.001, 1.0);
-        float dotVH = clamp(dot(V, H), 0.001, 1.0);
-        
-        float pdfSpec = PdfGGX(dotNH, dotVH, mat.roughness);
-        float pdfDiff = PdfCosineHemisphere(dotNL);
-        
-        pdf = lerp(pdfDiff, pdfSpec, specularWeight);
-        return L;
+        rnd.x = (rnd.x - pCc) / pSpec;
+        H = SampleGGX(rnd.x, rnd.y, mat.roughness, N, T, B);
+        L = reflect(-V, H);
     } else {
         // Sample Diffuse
-        rnd.x = (rnd.x - specularWeight) / (1.0 - specularWeight);
-        float3 L = SampleCosineHemisphere(rnd.x, rnd.y, N, T, B);
-        
-        float3 H = normalize(L + V);
-        float dotNL = clamp(dot(N, L), 0.001, 1.0);
-        float dotNH = clamp(dot(N, H), 0.001, 1.0);
-        float dotVH = clamp(dot(V, H), 0.001, 1.0);
-        
-        float pdfSpec = PdfGGX(dotNH, dotVH, mat.roughness);
-        float pdfDiff = PdfCosineHemisphere(dotNL);
-        
-        pdf = lerp(pdfDiff, pdfSpec, specularWeight);
-        return L;
+        rnd.x = (rnd.x - pCc - pSpec) / pDiff;
+        L = SampleCosineHemisphere(rnd.x, rnd.y, N, T, B);
+        H = normalize(L + V);
     }
+    
+    float dotNL = clamp(dot(N, L), 0.001, 1.0);
+    float dotNH = clamp(dot(N, H), 0.001, 1.0);
+    float dotVH = clamp(dot(V, H), 0.001, 1.0);
+    
+    float pdfSpec = PdfGGX(dotNH, dotVH, mat.roughness);
+    float pdfDiff = PdfCosineHemisphere(dotNL);
+    float alpha = lerp(0.1, 0.001, mat.clearcoatGloss);
+    float pdfCc   = PdfGTR1(dotNH, dotVH, alpha);
+    
+    pdf = pDiff * pdfDiff + pSpec * pdfSpec + pCc * pdfCc;
+    return L;
 }
 
 float PdfDisneyBSDF(DisneyMaterial mat, float3 N, float3 V, float3 L) {
-    float specularWeight = lerp(0.5, 1.0, mat.metallic);
+    float pDiff = (1.0 - mat.metallic) * 0.5;
+    float pSpec = 1.0 - pDiff;
+    float pCc   = (mat.clearcoat > 0.0) ? 0.1 : 0.0;
+    
+    // Normalize probabilities
+    float totalP = pDiff + pSpec + pCc;
+    pDiff /= totalP;
+    pSpec /= totalP;
+    pCc   /= totalP;
+    
     float3 H = normalize(L + V);
     float dotNL = clamp(dot(N, L), 0.001, 1.0);
     float dotNH = clamp(dot(N, H), 0.001, 1.0);
@@ -209,6 +247,8 @@ float PdfDisneyBSDF(DisneyMaterial mat, float3 N, float3 V, float3 L) {
     
     float pdfSpec = PdfGGX(dotNH, dotVH, mat.roughness);
     float pdfDiff = PdfCosineHemisphere(dotNL);
+    float alpha = lerp(0.1, 0.001, mat.clearcoatGloss);
+    float pdfCc   = PdfGTR1(dotNH, dotVH, alpha);
     
-    return lerp(pdfDiff, pdfSpec, specularWeight);
+    return pDiff * pdfDiff + pSpec * pdfSpec + pCc * pdfCc;
 }

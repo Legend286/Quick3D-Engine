@@ -8,8 +8,8 @@ ConstantBuffer<ScenePushData> push;
 struct BindlessHeap {
     Texture2D textures[4096];
 };
-[[vk::binding(2, 0)]] ParameterBlock<BindlessHeap> bindless;
-[[vk::binding(1, 0)]] SamplerState tex_sampler;
+[[vk::binding(1, 0)]] ParameterBlock<BindlessHeap> bindless;
+[[vk::binding(2, 0)]] SamplerState tex_sampler;
 
 struct VertexOutput {
     float4 position : SV_Position;

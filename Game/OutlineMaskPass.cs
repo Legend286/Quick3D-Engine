@@ -150,8 +150,8 @@ public sealed class OutlineMaskPass : RenderPass, IDisposable
                         ModelMatrix = modelMatrix,
                         PartCount = (uint)(_parts.Count - firstPart),
                         FirstPartIndex = firstPart,
-                        pad1 = (uint)(selectedId & 0xFFFFFFFF),
-                        pad2 = (uint)(selectedId >> 32)
+                        EntityIdLow = (uint)(selectedId & 0xFFFFFFFF),
+                        EntityIdHigh = (uint)(selectedId >> 32)
                     });
                 }
             }
