@@ -5,7 +5,50 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Engine.RHI;
 
+using System.Collections.Generic;
+
 namespace Engine.Assets;
+
+
+public class MaterialLayerDefinition
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "Layer";
+
+    [JsonPropertyName("albedo_color")]
+    public float[] AlbedoColor { get; set; } = { 1, 1, 1, 1 };
+
+    [JsonPropertyName("albedo_texture")]
+    public string? AlbedoTexture { get; set; }
+
+    [JsonPropertyName("normal_texture")]
+    public string? NormalTexture { get; set; }
+
+    [JsonPropertyName("rma_texture")]
+    public string? RmaTexture { get; set; }
+
+    [JsonPropertyName("metallic")]
+    public float Metallic { get; set; } = 0.0f;
+
+    [JsonPropertyName("roughness")]
+    public float Roughness { get; set; } = 1.0f;
+
+    [JsonPropertyName("mask_type")]
+    public uint MaskType { get; set; } = 0; // 0=None, 1=3D Noise, 2=Cavity, 3=Height, 4=TextureMask
+
+    [JsonPropertyName("mask_texture")]
+    public string? MaskTexture { get; set; }
+
+    [JsonPropertyName("noise_scale")]
+    public float NoiseScale { get; set; } = 10.0f;
+
+    [JsonPropertyName("noise_detail")]
+    public int NoiseDetail { get; set; } = 3;
+
+    [JsonPropertyName("noise_threshold")]
+    public float NoiseThreshold { get; set; } = 0.5f;
+}
+
 
 public class MaterialDefinition
 {
@@ -56,6 +99,29 @@ public class MaterialDefinition
 
     [JsonPropertyName("top_mask_type")]
     public uint TopMaskType { get; set; } = 0;
+
+    [JsonPropertyName("top_mask_texture")]
+    public string? TopMaskTexture { get; set; }
+
+    [JsonPropertyName("layers")]
+    public List<MaterialLayerDefinition> Layers { get; set; } = new();
+}
+
+public class MaterialLayer
+{
+    public string Name { get; set; } = "Layer";
+    public float[] AlbedoColor { get; set; } = { 1, 1, 1, 1 };
+    public RhiTexture? AlbedoTexture { get; set; }
+    public string? AlbedoTexturePath { get; set; }
+    public RhiTexture? NormalTexture { get; set; }
+    public string? NormalTexturePath { get; set; }
+    public RhiTexture? RmaTexture { get; set; }
+    public string? RmaTexturePath { get; set; }
+    public float Metallic { get; set; } = 0.0f;
+    public float Roughness { get; set; } = 1.0f;
+    public uint MaskType { get; set; } = 0;
+    public RhiTexture? MaskTexture { get; set; }
+    public string? MaskTexturePath { get; set; }
 }
 
 public class Material
@@ -63,8 +129,11 @@ public class Material
     public float[] AlbedoColor { get; set; } = { 1, 1, 1, 1 };
     public float[] EmissiveColor { get; set; } = { 0, 0, 0, 1 };
     public RhiTexture? AlbedoTexture { get; set; }
+    public string? AlbedoTexturePath { get; set; }
     public RhiTexture? NormalTexture { get; set; }
+    public string? NormalTexturePath { get; set; }
     public RhiTexture? RmaTexture { get; set; }
+    public string? RmaTexturePath { get; set; }
     public float Metallic { get; set; }
     public float Roughness { get; set; }
     public float Subsurface { get; set; } = 0.0f;
@@ -76,6 +145,9 @@ public class Material
     public float TopMetallic { get; set; }
     public float TopRoughness { get; set; } = 1.0f;
     public uint TopMaskType { get; set; }
+    public RhiTexture? TopMaskTexture { get; set; }
+    public string? TopMaskTexturePath { get; set; }
+    public List<MaterialLayer> Layers { get; set; } = new();
 }
 
 public static class MaterialLoader
@@ -111,6 +183,10 @@ public static class MaterialLoader
             TopMetallic      = def.TopMetallic,
             TopRoughness     = def.TopRoughness,
             TopMaskType      = def.TopMaskType,
+            AlbedoTexturePath = def.AlbedoTexture,
+            NormalTexturePath = def.NormalTexture,
+            RmaTexturePath = def.RmaTexture,
+            TopMaskTexturePath = def.TopMaskTexture,
         };
 
         var dir = Path.GetDirectoryName(path) ?? "";
@@ -130,7 +206,37 @@ public static class MaterialLoader
             mat.RmaTexture = TextureLoader.LoadTexture(device, Path.Combine(dir, def.RmaTexture));
         }
 
+        if (!string.IsNullOrEmpty(def.TopMaskTexture))
+        {
+            mat.TopMaskTexture = TextureLoader.LoadTexture(device, Path.Combine(dir, def.TopMaskTexture));
+        }
+
+        if (def.Layers != null)
+        {
+            foreach (var ldef in def.Layers)
+            {
+                var layer = new MaterialLayer
+                {
+                    Name = ldef.Name,
+                    AlbedoColor = ldef.AlbedoColor,
+                    Metallic = ldef.Metallic,
+                    Roughness = ldef.Roughness,
+                    MaskType = ldef.MaskType,
+                    AlbedoTexturePath = ldef.AlbedoTexture,
+                    NormalTexturePath = ldef.NormalTexture,
+                    RmaTexturePath = ldef.RmaTexture,
+                    MaskTexturePath = ldef.MaskTexture
+                };
+                if (!string.IsNullOrEmpty(ldef.AlbedoTexture)) layer.AlbedoTexture = TextureLoader.LoadTexture(device, Path.Combine(dir, ldef.AlbedoTexture));
+                if (!string.IsNullOrEmpty(ldef.NormalTexture)) layer.NormalTexture = TextureLoader.LoadTexture(device, Path.Combine(dir, ldef.NormalTexture));
+                if (!string.IsNullOrEmpty(ldef.RmaTexture)) layer.RmaTexture = TextureLoader.LoadTexture(device, Path.Combine(dir, ldef.RmaTexture));
+                if (!string.IsNullOrEmpty(ldef.MaskTexture)) layer.MaskTexture = TextureLoader.LoadTexture(device, Path.Combine(dir, ldef.MaskTexture));
+                mat.Layers.Add(layer);
+            }
+        }
+
         _cache[fullPath] = mat;
         return mat;
     }
 }
+

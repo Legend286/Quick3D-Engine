@@ -112,10 +112,30 @@ public static class Ktx2Loader
         bool isUastc = false;
         if (vkFormat == 0)
         {
-            // basisu correctly outputs vkFormat=VK_FORMAT_UNDEFINED (0) for universal formats
-            // like UASTC. Since we already rejected supercompress == 1 (BasisLZ / ETC1S),
-            // this must be UASTC. The engine treats UASTC as ASTC_4x4_UNORM_BLOCK (157).
-            vkFormat = 157;
+            // basisu outputs vkFormat=VK_FORMAT_UNDEFINED (0) for universal formats like UASTC.
+            // dataFormatDescriptorByteOffset is at offset 56, length at offset 60.
+            uint dfdOffset = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(56, 4));
+            uint dfdLength = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(60, 4));
+
+            bool isUastcDfd = false;
+            if (dfdOffset > 0 && dfdLength > 0 && (dfdOffset + dfdLength) <= (uint)bytes.Length)
+            {
+                var dfdSpan = bytes.AsSpan((int)dfdOffset, (int)dfdLength);
+                if (dfdSpan.Length >= 9 && dfdSpan[8] == 166)
+                    isUastcDfd = true;
+                else if (dfdSpan.Length >= 13 && dfdSpan[12] == 166)
+                    isUastcDfd = true;
+                else if (System.Text.Encoding.ASCII.GetString(dfdSpan).Contains("Basis Universal") || System.Text.Encoding.ASCII.GetString(dfdSpan).Contains("KTXwriter"))
+                    isUastcDfd = true;
+            }
+
+            if (!isUastcDfd)
+            {
+                Error($"KTX2 vkFormat=0 has missing or non-UASTC DFD (file={path}). Only UASTC is supported.", "KTX2Loader");
+                return null;
+            }
+
+            vkFormat = 157; // ASTC_4x4_UNORM_BLOCK
             isUastc = true;
             if (!_transcoderInitialized)
             {
@@ -123,6 +143,7 @@ public static class Ktx2Loader
                 _transcoderInitialized = true;
             }
         }
+
 
         if (!RhiTexture.FromKhronosFormat(vkFormat, out var rhiFormat, out string fmtName))
         {

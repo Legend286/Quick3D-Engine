@@ -50,16 +50,15 @@ float3 SampleUniformSphere(float u1, float u2) {
     return float3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
 }
 
-// =====================================================================
-// Noise Functions
-// =====================================================================
 float hash(float3 p) {
     p = frac(p * float3(0.1311, 0.2811, 0.3811));
     p += dot(p, p.zyx + 31.32);
     return frac((p.x + p.y) * p.z);
 }
 
+
 float noise3D(float3 x) {
+
     float3 i = floor(x);
     float3 f = frac(x);
     f = f * f * (3.0 - 2.0 * f);
@@ -70,9 +69,54 @@ float noise3D(float3 x) {
              lerp(hash(i + float3(0,1,1)), hash(i + float3(1,1,1)), f.x), f.y), f.z);
 }
 
+float voronoi3D(float3 p) {
+    float3 i = floor(p);
+    float3 f = frac(p);
+    float minDist = 1.0;
+    for (int z = -1; z <= 1; z++) {
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                float3 neighbor = float3(x, y, z);
+                float3 point = float3(hash(i + neighbor), hash(i + neighbor + 13.5), hash(i + neighbor + 27.1));
+                float3 diff = neighbor + point - f;
+                float dist = length(diff);
+                minDist = min(minDist, dist);
+            }
+        }
+    }
+    return minDist;
+}
+
+float fbm3D(float3 p, int octaves) {
+    float val = 0.0;
+    float amp = 0.5;
+    float3 pos = p;
+    for (int i = 0; i < 4; i++) {
+        if (i >= octaves) break;
+        val += amp * noise3D(pos);
+        pos *= 2.0;
+        amp *= 0.5;
+    }
+    return val;
+}
+
+float turbulence3D(float3 p, int octaves) {
+    float val = 0.0;
+    float amp = 0.5;
+    float3 pos = p;
+    for (int i = 0; i < 4; i++) {
+        if (i >= octaves) break;
+        val += amp * abs(noise3D(pos) * 2.0 - 1.0);
+        pos *= 2.0;
+        amp *= 0.5;
+    }
+    return val;
+}
+
 // =====================================================================
 // Material Evaluation
 // =====================================================================
+
 DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics, uint primId, 
                            float3 worldPos, inout uint seed,
                            out float3 hitNormal, out float3 hitTangent, out float3 hitBitangent, 
@@ -142,18 +186,58 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics
     // Layer Stacking (Stochastic BSDF Choice)
     if (mat.topMaskType != 0) {
         float mask = 0.0;
-        if (mat.topMaskType == 1) {
-            // 3D Noise masking
-            mask = smoothstep(0.3, 0.7, noise3D(worldPos * 10.0));
+        float3 p = worldPos * 10.0;
+        if (mat.topMaskType == 1) { // 3D Perlin Noise
+            mask = smoothstep(0.3, 0.7, noise3D(p));
+        } else if (mat.topMaskType == 2) { // Voronoi Noise
+            mask = smoothstep(0.1, 0.8, voronoi3D(p));
+        } else if (mat.topMaskType == 3) { // FBM Noise
+            mask = smoothstep(0.2, 0.8, fbm3D(p, 3));
+        } else if (mat.topMaskType == 4) { // Turbulence Noise
+            mask = smoothstep(0.2, 0.8, turbulence3D(p, 3));
+        } else if (mat.topMaskType == 5) { // Cavity (Path-traced ray occlusion)
+            float cavityHits = 0.0;
+            const int CAVITY_SAMPLES = 4;
+            if (push.hasGeometry != 0u) {
+                for (int c = 0; c < CAVITY_SAMPLES; c++) {
+                    float u1 = rand(seed);
+                    float u2 = rand(seed);
+                    float3 sampleDir = SampleCosineHemisphere(u1, u2, hitNormal, hitTangent, hitBitangent);
+                    
+                    RayDesc cavityRay;
+                    cavityRay.Origin = worldPos + hitNormal * 0.003;
+                    cavityRay.Direction = sampleDir;
+                    cavityRay.TMin = 0.001;
+                    cavityRay.TMax = 0.5; // Short-range crevice threshold
+                    
+                    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> cq;
+                    cq.TraceRayInline(tlas, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, cavityRay);
+                    cq.Proceed();
+                    if (cq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+                        cavityHits += 1.0;
+                    }
+                }
+                mask = cavityHits / float(CAVITY_SAMPLES);
+            } else {
+                float3 dN1 = n1 - n0;
+                float3 dN2 = n2 - n0;
+                float curvature = length(cross(dN1, dN2));
+                mask = smoothstep(0.05, 0.4, curvature);
+            }
+        } else if (mat.topMaskType == 6) { // Height
+            mask = smoothstep(-0.5, 0.5, worldPos.y);
+        } else if (mat.topMaskType == 7 && mat.topMaskTexIndex != 0xFFFFFFFF) { // Texture Mask
+            mask = bindless.textures[mat.topMaskTexIndex].SampleLevel(tex_sampler, uv, 0).r;
         }
-        
+
+
         if (rand(seed) < mask) {
-            // Evaluate Top Layer
             baseColor = mat.topColor.rgb;
             metallic = mat.topMetallic;
             roughness = mat.topRoughness;
         }
     }
+
     
     // Energy conservation: scale diffuse by (1 - subsurface) to allow SSS lobe room
     albedo = baseColor * (1.0 - mat.subsurface);

@@ -50,6 +50,68 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
 // Constants
 #include "disney_bsdf.slang"
 
+// Noise Functions for Material Masking
+float hash(float3 p) {
+    p = frac(p * float3(0.1311, 0.2811, 0.3811));
+    p += dot(p, p.zyx + 31.32);
+    return frac((p.x + p.y) * p.z);
+}
+
+float noise3D(float3 x) {
+    float3 i = floor(x);
+    float3 f = frac(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return lerp(
+        lerp(lerp(hash(i + float3(0,0,0)), hash(i + float3(1,0,0)), f.x),
+             lerp(hash(i + float3(0,1,0)), hash(i + float3(1,1,0)), f.x), f.y),
+        lerp(lerp(hash(i + float3(0,0,1)), hash(i + float3(1,0,1)), f.x),
+             lerp(hash(i + float3(0,1,1)), hash(i + float3(1,1,1)), f.x), f.y), f.z);
+}
+
+float voronoi3D(float3 p) {
+    float3 i = floor(p);
+    float3 f = frac(p);
+    float minDist = 1.0;
+    for (int z = -1; z <= 1; z++) {
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                float3 neighbor = float3(x, y, z);
+                float3 point = float3(hash(i + neighbor), hash(i + neighbor + 13.5), hash(i + neighbor + 27.1));
+                float3 diff = neighbor + point - f;
+                float dist = length(diff);
+                minDist = min(minDist, dist);
+            }
+        }
+    }
+    return minDist;
+}
+
+float fbm3D(float3 p, int octaves) {
+    float val = 0.0;
+    float amp = 0.5;
+    float3 pos = p;
+    for (int i = 0; i < 4; i++) {
+        if (i >= octaves) break;
+        val += amp * noise3D(pos);
+        pos *= 2.0;
+        amp *= 0.5;
+    }
+    return val;
+}
+
+float turbulence3D(float3 p, int octaves) {
+    float val = 0.0;
+    float amp = 0.5;
+    float3 pos = p;
+    for (int i = 0; i < 4; i++) {
+        if (i >= octaves) break;
+        val += amp * abs(noise3D(pos) * 2.0 - 1.0);
+        pos *= 2.0;
+        amp *= 0.5;
+    }
+    return val;
+}
+
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target 
 {
@@ -69,10 +131,41 @@ float4 fragmentMain(VertexOutput input) : SV_Target
         float3 rma = bindless.textures[mat.rmaTexIndex].Sample(tex_sampler, input.uv).rgb;
         ao = rma.r;
         roughness *= rma.g;
-        metallic *= rma.b;
     }
 
+    if (mat.topMaskType != 0) {
+        float mask = 0.0;
+        float3 p = input.worldPos * 10.0;
+        if (mat.topMaskType == 1) { // 3D Perlin Noise
+            mask = smoothstep(0.3, 0.7, noise3D(p));
+        } else if (mat.topMaskType == 2) { // Voronoi / Cellular
+            mask = smoothstep(0.1, 0.8, voronoi3D(p));
+        } else if (mat.topMaskType == 3) { // FBM Noise
+            mask = smoothstep(0.2, 0.8, fbm3D(p, 3));
+        } else if (mat.topMaskType == 4) { // Turbulence Noise
+            mask = smoothstep(0.2, 0.8, turbulence3D(p, 3));
+        } else if (mat.topMaskType == 5) { // Cavity
+            float3 dNdx = ddx(input.normal);
+            float3 dNdy = ddy(input.normal);
+            float curvature = length(dNdx) + length(dNdy);
+
+            float cavityFromCurvature = smoothstep(0.02, 0.4, curvature);
+            float cavityFromAO = 1.0 - ao;
+            mask = clamp(cavityFromCurvature * 0.7 + cavityFromAO * 0.8, 0.0, 1.0);
+        } else if (mat.topMaskType == 6) { // Height
+            mask = smoothstep(-0.5, 0.5, input.worldPos.y);
+        } else if (mat.topMaskType == 7 && mat.topMaskTexIndex != 0xFFFFFFFF) { // Texture Mask
+            mask = bindless.textures[mat.topMaskTexIndex].Sample(tex_sampler, input.uv).r;
+        }
+
+        albedo = lerp(albedo, mat.topColor.rgb, mask);
+        metallic = lerp(metallic, mat.topMetallic, mask);
+        roughness = lerp(roughness, mat.topRoughness, mask);
+    }
+
+
     float3 N = normalize(input.normal);
+
     
     // Build guarded tangent frame — runs before normal mapping so TBN is always valid
     float3 T = normalize(input.tangent.xyz);

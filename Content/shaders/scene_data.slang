@@ -49,7 +49,8 @@ struct MaterialData {
     float topMetallic;
     float topRoughness;
     uint topMaskType;
-    uint _pad0;
+    uint topMaskTexIndex;
+
 
     // Common/Other
     float4 emissiveColor;
