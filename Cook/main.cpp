@@ -737,7 +737,25 @@ int main(int argc, char** argv) {
                     p.min_x -= pivot_x; p.min_y -= pivot_y; p.min_z -= pivot_z;
                     p.max_x -= pivot_x; p.max_y -= pivot_y; p.max_z -= pivot_z;
 
-                    std::string msh_name = obj_name + "_part_" + std::to_string(i) + ".msh";
+                    std::string hash_suffix = "";
+                    {
+                        uint64_t h = 14695981039346656037ULL;
+                        auto fnv = [&](const void* data, size_t size) {
+                            const uint8_t* ptr = reinterpret_cast<const uint8_t*>(data);
+                            for (size_t k = 0; k < size; ++k) {
+                                h ^= ptr[k];
+                                h *= 1099511628211ULL;
+                            }
+                        };
+                        fnv(obj_name.data(), obj_name.size());
+                        if (!p.v.empty()) fnv(p.v.data(), p.v.size() * sizeof(Vertex));
+                        if (!p.i.empty()) fnv(p.i.data(), p.i.size() * sizeof(uint32_t));
+                        char buf[17];
+                        snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
+                        hash_suffix = std::string(buf).substr(0, 8);
+                    }
+
+                    std::string msh_name = obj_name + "_" + hash_suffix + "_part_" + std::to_string(i) + ".msh";
                     std::string msh_path = (fs::path(out_dir) / "models" / msh_name).string();
                     
                     std::ofstream out_file(msh_path, std::ios::binary);
@@ -775,7 +793,23 @@ int main(int argc, char** argv) {
 
         for (size_t i = 0; i < extracted.size(); ++i) {
             auto& p = extracted[i];
-            std::string msh_name = obj_name + "_part_" + std::to_string(i) + ".msh";
+            uint64_t h = 14695981039346656037ULL;
+            auto fnv = [&](const void* data, size_t size) {
+                const uint8_t* ptr = reinterpret_cast<const uint8_t*>(data);
+                for (size_t k = 0; k < size; ++k) {
+                    h ^= ptr[k];
+                    h *= 1099511628211ULL;
+                }
+            };
+            fnv(obj_name.data(), obj_name.size());
+            if (!p.v.empty()) fnv(p.v.data(), p.v.size() * sizeof(Vertex));
+            if (!p.i.empty()) fnv(p.i.data(), p.i.size() * sizeof(uint32_t));
+            char buf[17];
+            snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
+            std::string hash_suffix = std::string(buf).substr(0, 8);
+
+            std::string msh_name = obj_name + "_" + hash_suffix + "_part_" + std::to_string(i) + ".msh";
+
             
             mdl_file << "    { \"mesh\": \"" << msh_name << "\"";
             if (p.material_idx >= 0 && p.material_idx < cooked_materials.size()) {
