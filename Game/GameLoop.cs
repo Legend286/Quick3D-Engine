@@ -401,7 +401,7 @@ public sealed class GameLoop : IGameLoop
         _renderer.UsePathTracer = true; // Preview using path tracing
     }
 
-    public void UpdateMaterialPreview(float[] albedo, float metallic, float roughness, float subsurface, float[] subsurfaceColor, float[] subsurfaceRadius, float clearcoat, float clearcoatRoughness, float[] topColor, float topMetallic, float topRoughness, uint topMaskType)
+    public void UpdateMaterialPreview(float[] albedo, float metallic, float roughness, float subsurface, float[] subsurfaceColor, float[] subsurfaceRadius, float clearcoat, float clearcoatRoughness, float[] topColor, float topMetallic, float topRoughness, uint topMaskType, float noiseScale = 10.0f, float noiseThresholdMin = 0.3f, float noiseThresholdMax = 0.7f, float[]? layer2Color = null, float layer2Metallic = 0.0f, float layer2Roughness = 1.0f, uint layer2MaskType = 0, float layer2NoiseScale = 10.0f, float layer2NoiseMin = 0.3f, float layer2NoiseMax = 0.7f)
     {
         if (_previewMatId == 0) return;
         var mat = Engine.Assets.AssetRegistry.GetMaterial(_previewMatId);
@@ -419,6 +419,16 @@ public sealed class GameLoop : IGameLoop
             mat.TopMetallic = topMetallic;
             mat.TopRoughness = topRoughness;
             mat.TopMaskType = topMaskType;
+            mat.NoiseScale = noiseScale;
+            mat.NoiseThresholdMin = noiseThresholdMin;
+            mat.NoiseThresholdMax = noiseThresholdMax;
+            mat.Layer2Color = layer2Color ?? new float[] { 1, 1, 1, 1 };
+            mat.Layer2Metallic = layer2Metallic;
+            mat.Layer2Roughness = layer2Roughness;
+            mat.Layer2MaskType = layer2MaskType;
+            mat.Layer2NoiseScale = layer2NoiseScale;
+            mat.Layer2NoiseThresholdMin = layer2NoiseMin;
+            mat.Layer2NoiseThresholdMax = layer2NoiseMax;
         }
     }
 

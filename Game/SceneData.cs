@@ -42,7 +42,13 @@ public struct MaterialData
     public float TopMetallic;
     public float TopRoughness;
     public uint TopMaskType; // 0=None, 1=3D Noise
-    public uint _pad0;
+    public uint TopMaskTexIndex;
+
+    public Vector4 Layer2Color;
+    public float Layer2Metallic;
+    public float Layer2Roughness;
+    public uint Layer2MaskType;
+    public uint Layer2MaskTexIndex;
 
     public Vector4 EmissiveColor;
     public uint EmissiveTexIndex;
@@ -53,9 +59,14 @@ public struct MaterialData
     public Vector4 SubsurfaceRadius;
     public Vector4 SubsurfaceColor;
     public float ClearcoatRoughness;
-    public uint _pad1;
-    public uint _pad2;
-    public uint _pad3;
+    public float NoiseScale;
+    public float NoiseThresholdMin;
+    public float NoiseThresholdMax;
+
+    public float Layer2NoiseScale;
+    public float Layer2NoiseThresholdMin;
+    public float Layer2NoiseThresholdMax;
+    public uint _pad0;
 }
 
 [StructLayout(LayoutKind.Sequential)]

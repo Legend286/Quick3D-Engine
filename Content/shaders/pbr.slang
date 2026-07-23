@@ -133,34 +133,70 @@ float4 fragmentMain(VertexOutput input) : SV_Target
         roughness *= rma.g;
     }
 
+    // Blend Layer 2 (evaluated first under Layer 1)
+    if (mat.layer2MaskType != 0) {
+        float mask2 = 0.0;
+        float scale2 = mat.layer2NoiseScale > 0.0 ? mat.layer2NoiseScale : 10.0;
+        float tMin2 = mat.layer2NoiseThresholdMin;
+        float tMax2 = mat.layer2NoiseThresholdMax > tMin2 ? mat.layer2NoiseThresholdMax : tMin2 + 0.01;
+        float3 p2 = input.worldPos * scale2;
+        if (mat.layer2MaskType == 1) { // 3D Perlin Noise
+            mask2 = smoothstep(tMin2, tMax2, noise3D(p2));
+        } else if (mat.layer2MaskType == 2) { // Voronoi / Cellular
+            mask2 = smoothstep(tMin2, tMax2, voronoi3D(p2));
+        } else if (mat.layer2MaskType == 3) { // FBM Noise
+            mask2 = smoothstep(tMin2, tMax2, fbm3D(p2, 3));
+        } else if (mat.layer2MaskType == 4) { // Turbulence Noise
+            mask2 = smoothstep(tMin2, tMax2, turbulence3D(p2, 3));
+        } else if (mat.layer2MaskType == 5) { // Cavity
+            float3 dNdx = ddx(input.normal);
+            float3 dNdy = ddy(input.normal);
+            float curvature = length(dNdx) + length(dNdy);
+            float cavityFromCurvature = smoothstep(0.02, 0.4, curvature);
+            float cavityFromAO = 1.0 - ao;
+            mask2 = clamp(cavityFromCurvature * 0.7 + cavityFromAO * 0.8, 0.0, 1.0);
+        } else if (mat.layer2MaskType == 6) { // Height
+            mask2 = smoothstep(-0.5, 0.5, input.worldPos.y);
+        } else if (mat.layer2MaskType == 7 && mat.layer2MaskTexIndex != 0xFFFFFFFF) { // Texture Mask
+            mask2 = bindless.textures[mat.layer2MaskTexIndex].Sample(tex_sampler, input.uv).r;
+        }
+
+        albedo = lerp(albedo, mat.layer2Color.rgb, mask2);
+        metallic = lerp(metallic, mat.layer2Metallic, mask2);
+        roughness = lerp(roughness, mat.layer2Roughness, mask2);
+    }
+
+    // Blend Layer 1 / Top Layer (evaluated over Layer 2 and Base Layer)
     if (mat.topMaskType != 0) {
-        float mask = 0.0;
-        float3 p = input.worldPos * 10.0;
+        float mask1 = 0.0;
+        float scale1 = mat.noiseScale > 0.0 ? mat.noiseScale : 10.0;
+        float tMin1 = mat.noiseThresholdMin;
+        float tMax1 = mat.noiseThresholdMax > tMin1 ? mat.noiseThresholdMax : tMin1 + 0.01;
+        float3 p1 = input.worldPos * scale1;
         if (mat.topMaskType == 1) { // 3D Perlin Noise
-            mask = smoothstep(0.3, 0.7, noise3D(p));
+            mask1 = smoothstep(tMin1, tMax1, noise3D(p1));
         } else if (mat.topMaskType == 2) { // Voronoi / Cellular
-            mask = smoothstep(0.1, 0.8, voronoi3D(p));
+            mask1 = smoothstep(tMin1, tMax1, voronoi3D(p1));
         } else if (mat.topMaskType == 3) { // FBM Noise
-            mask = smoothstep(0.2, 0.8, fbm3D(p, 3));
+            mask1 = smoothstep(tMin1, tMax1, fbm3D(p1, 3));
         } else if (mat.topMaskType == 4) { // Turbulence Noise
-            mask = smoothstep(0.2, 0.8, turbulence3D(p, 3));
+            mask1 = smoothstep(tMin1, tMax1, turbulence3D(p1, 3));
         } else if (mat.topMaskType == 5) { // Cavity
             float3 dNdx = ddx(input.normal);
             float3 dNdy = ddy(input.normal);
             float curvature = length(dNdx) + length(dNdy);
-
             float cavityFromCurvature = smoothstep(0.02, 0.4, curvature);
             float cavityFromAO = 1.0 - ao;
-            mask = clamp(cavityFromCurvature * 0.7 + cavityFromAO * 0.8, 0.0, 1.0);
+            mask1 = clamp(cavityFromCurvature * 0.7 + cavityFromAO * 0.8, 0.0, 1.0);
         } else if (mat.topMaskType == 6) { // Height
-            mask = smoothstep(-0.5, 0.5, input.worldPos.y);
+            mask1 = smoothstep(-0.5, 0.5, input.worldPos.y);
         } else if (mat.topMaskType == 7 && mat.topMaskTexIndex != 0xFFFFFFFF) { // Texture Mask
-            mask = bindless.textures[mat.topMaskTexIndex].Sample(tex_sampler, input.uv).r;
+            mask1 = bindless.textures[mat.topMaskTexIndex].Sample(tex_sampler, input.uv).r;
         }
 
-        albedo = lerp(albedo, mat.topColor.rgb, mask);
-        metallic = lerp(metallic, mat.topMetallic, mask);
-        roughness = lerp(roughness, mat.topRoughness, mask);
+        albedo = lerp(albedo, mat.topColor.rgb, mask1);
+        metallic = lerp(metallic, mat.topMetallic, mask1);
+        roughness = lerp(roughness, mat.topRoughness, mask1);
     }
 
 

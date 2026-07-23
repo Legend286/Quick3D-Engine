@@ -320,6 +320,17 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
             float topMet = Layers.Count > 0 ? Layers[0].Metallic : 0.0f;
             float topRough = Layers.Count > 0 ? Layers[0].Roughness : 1.0f;
             uint topMask = Layers.Count > 0 ? (uint)Layers[0].MaskType : 0u;
+            float noiseScale = Layers.Count > 0 ? Layers[0].NoiseScale : 10.0f;
+            float noiseMin = Layers.Count > 0 ? Math.Max(0.0f, Layers[0].NoiseThreshold - 0.2f) : 0.3f;
+            float noiseMax = Layers.Count > 0 ? Math.Min(1.0f, Layers[0].NoiseThreshold + 0.2f) : 0.7f;
+
+            float[] l2Col = Layers.Count > 1 ? new[] { Layers[1].ColorR, Layers[1].ColorG, Layers[1].ColorB, 1.0f } : new[] { 1.0f, 1.0f, 1.0f, 1.0f };
+            float l2Met = Layers.Count > 1 ? Layers[1].Metallic : 0.0f;
+            float l2Rough = Layers.Count > 1 ? Layers[1].Roughness : 1.0f;
+            uint l2Mask = Layers.Count > 1 ? (uint)Layers[1].MaskType : 0u;
+            float l2NoiseScale = Layers.Count > 1 ? Layers[1].NoiseScale : 10.0f;
+            float l2NoiseMin = Layers.Count > 1 ? Math.Max(0.0f, Layers[1].NoiseThreshold - 0.2f) : 0.3f;
+            float l2NoiseMax = Layers.Count > 1 ? Math.Min(1.0f, Layers[1].NoiseThreshold + 0.2f) : 0.7f;
 
             _gameLoop.UpdateMaterialPreview(
                 new[] { BaseColorR, BaseColorG, BaseColorB, 1.0f },
@@ -333,7 +344,17 @@ public partial class MaterialEditorViewModel : ObservableObject, IDisposable
                 topCol,
                 topMet,
                 topRough,
-                topMask
+                topMask,
+                noiseScale,
+                noiseMin,
+                noiseMax,
+                l2Col,
+                l2Met,
+                l2Rough,
+                l2Mask,
+                l2NoiseScale,
+                l2NoiseMin,
+                l2NoiseMax
             );
         }
         SaveMaterialData();

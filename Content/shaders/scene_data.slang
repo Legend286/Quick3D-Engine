@@ -44,13 +44,19 @@ struct MaterialData {
     uint albedoTexIndex;
     uint normalTexIndex;
 
-    // Top Layer
+    // Layer 1 / Top Layer
     float4 topColor;
     float topMetallic;
     float topRoughness;
     uint topMaskType;
     uint topMaskTexIndex;
 
+    // Layer 2 / Secondary Layer
+    float4 layer2Color;
+    float layer2Metallic;
+    float layer2Roughness;
+    uint layer2MaskType;
+    uint layer2MaskTexIndex;
 
     // Common/Other
     float4 emissiveColor;
@@ -62,9 +68,14 @@ struct MaterialData {
     float4 subsurfaceRadius;
     float4 subsurfaceColor;
     float clearcoatRoughness;
-    uint _pad1;
-    uint _pad2;
-    uint _pad3;
+    float noiseScale;
+    float noiseThresholdMin;
+    float noiseThresholdMax;
+
+    float layer2NoiseScale;
+    float layer2NoiseThresholdMin;
+    float layer2NoiseThresholdMax;
+    uint _pad0;
 };
 
 struct LightData {

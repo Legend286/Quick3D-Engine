@@ -100,9 +100,38 @@ public static class SceneDataExtractor
             if (world.TryGet<ModelComponent>(id, out var modelComp))
             {
                 var transform = world.TryGet<Transform>(id, out var t) ? t : Transform.Default;
-                var modelMatrix = Matrix4x4.CreateScale(transform.Scale) *
-                                  Matrix4x4.CreateFromQuaternion(transform.Rotation) *
-                                  Matrix4x4.CreateTranslation(transform.Position);
+
+                Vector3 s = transform.Scale;
+                if (float.IsNaN(s.X) || float.IsInfinity(s.X) || MathF.Abs(s.X) < 1e-5f) s.X = 1f;
+                if (float.IsNaN(s.Y) || float.IsInfinity(s.Y) || MathF.Abs(s.Y) < 1e-5f) s.Y = 1f;
+                if (float.IsNaN(s.Z) || float.IsInfinity(s.Z) || MathF.Abs(s.Z) < 1e-5f) s.Z = 1f;
+
+                Vector3 pPos = transform.Position;
+                if (float.IsNaN(pPos.X) || float.IsInfinity(pPos.X)) pPos.X = 0f;
+                if (float.IsNaN(pPos.Y) || float.IsInfinity(pPos.Y)) pPos.Y = 0f;
+                if (float.IsNaN(pPos.Z) || float.IsInfinity(pPos.Z)) pPos.Z = 0f;
+
+                Quaternion q = transform.Rotation;
+                if (float.IsNaN(q.X) || float.IsNaN(q.Y) || float.IsNaN(q.Z) || float.IsNaN(q.W) ||
+                    float.IsInfinity(q.X) || float.IsInfinity(q.Y) || float.IsInfinity(q.Z) || float.IsInfinity(q.W) ||
+                    q.LengthSquared() < 1e-6f)
+                {
+                    q = Quaternion.Identity;
+                }
+                else
+                {
+                    q = Quaternion.Normalize(q);
+                }
+
+                var modelMatrix = Matrix4x4.CreateScale(s) *
+                                  Matrix4x4.CreateFromQuaternion(q) *
+                                  Matrix4x4.CreateTranslation(pPos);
+
+                if (float.IsNaN(modelMatrix.M11) || float.IsNaN(modelMatrix.M41) ||
+                    float.IsInfinity(modelMatrix.M11) || float.IsInfinity(modelMatrix.M41))
+                {
+                    modelMatrix = Matrix4x4.Identity;
+                }
 
                 var model = AssetRegistry.GetModel(modelComp.ModelId);
                 if (model != null && model.Parts != null)
@@ -148,8 +177,20 @@ public static class SceneDataExtractor
                                 TopMetallic = material.TopMetallic,
                                 TopRoughness = material.TopRoughness,
                                 TopMaskType = material.TopMaskType,
+                                TopMaskTexIndex = GetTexIndex(material.TopMaskTexture),
+                                Layer2Color = material.Layer2Color != null && material.Layer2Color.Length > 3 ? new Vector4(material.Layer2Color[0], material.Layer2Color[1], material.Layer2Color[2], material.Layer2Color[3]) : Vector4.One,
+                                Layer2Metallic = material.Layer2Metallic,
+                                Layer2Roughness = material.Layer2Roughness,
+                                Layer2MaskType = material.Layer2MaskType,
+                                Layer2MaskTexIndex = GetTexIndex(material.Layer2MaskTexture),
                                 Clearcoat = material.Clearcoat,
-                                ClearcoatRoughness = material.ClearcoatRoughness
+                                ClearcoatRoughness = material.ClearcoatRoughness,
+                                NoiseScale = material.NoiseScale,
+                                NoiseThresholdMin = material.NoiseThresholdMin,
+                                NoiseThresholdMax = material.NoiseThresholdMax,
+                                Layer2NoiseScale = material.Layer2NoiseScale,
+                                Layer2NoiseThresholdMin = material.Layer2NoiseThresholdMin,
+                                Layer2NoiseThresholdMax = material.Layer2NoiseThresholdMax
                             });
                         }
                         else

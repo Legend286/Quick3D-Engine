@@ -103,6 +103,15 @@ public class MaterialDefinition
     [JsonPropertyName("top_mask_texture")]
     public string? TopMaskTexture { get; set; }
 
+    [JsonPropertyName("noise_scale")]
+    public float NoiseScale { get; set; } = 10.0f;
+
+    [JsonPropertyName("noise_threshold_min")]
+    public float NoiseThresholdMin { get; set; } = 0.3f;
+
+    [JsonPropertyName("noise_threshold_max")]
+    public float NoiseThresholdMax { get; set; } = 0.7f;
+
     [JsonPropertyName("layers")]
     public List<MaterialLayerDefinition> Layers { get; set; } = new();
 }
@@ -120,6 +129,9 @@ public class MaterialLayer
     public float Metallic { get; set; } = 0.0f;
     public float Roughness { get; set; } = 1.0f;
     public uint MaskType { get; set; } = 0;
+    public float NoiseScale { get; set; } = 10.0f;
+    public int NoiseDetail { get; set; } = 3;
+    public float NoiseThreshold { get; set; } = 0.5f;
     public RhiTexture? MaskTexture { get; set; }
     public string? MaskTexturePath { get; set; }
 }
@@ -147,6 +159,21 @@ public class Material
     public uint TopMaskType { get; set; }
     public RhiTexture? TopMaskTexture { get; set; }
     public string? TopMaskTexturePath { get; set; }
+    public float NoiseScale { get; set; } = 10.0f;
+    public float NoiseThresholdMin { get; set; } = 0.3f;
+    public float NoiseThresholdMax { get; set; } = 0.7f;
+
+    // Secondary Layer (Layer 2)
+    public float[] Layer2Color { get; set; } = { 1, 1, 1, 1 };
+    public float Layer2Metallic { get; set; }
+    public float Layer2Roughness { get; set; } = 1.0f;
+    public uint Layer2MaskType { get; set; }
+    public RhiTexture? Layer2MaskTexture { get; set; }
+    public string? Layer2MaskTexturePath { get; set; }
+    public float Layer2NoiseScale { get; set; } = 10.0f;
+    public float Layer2NoiseThresholdMin { get; set; } = 0.3f;
+    public float Layer2NoiseThresholdMax { get; set; } = 0.7f;
+
     public List<MaterialLayer> Layers { get; set; } = new();
 }
 
@@ -183,6 +210,9 @@ public static class MaterialLoader
             TopMetallic      = def.TopMetallic,
             TopRoughness     = def.TopRoughness,
             TopMaskType      = def.TopMaskType,
+            NoiseScale       = def.NoiseScale,
+            NoiseThresholdMin = def.NoiseThresholdMin,
+            NoiseThresholdMax = def.NoiseThresholdMax,
             AlbedoTexturePath = def.AlbedoTexture,
             NormalTexturePath = def.NormalTexture,
             RmaTexturePath = def.RmaTexture,
@@ -222,6 +252,9 @@ public static class MaterialLoader
                     Metallic = ldef.Metallic,
                     Roughness = ldef.Roughness,
                     MaskType = ldef.MaskType,
+                    NoiseScale = ldef.NoiseScale,
+                    NoiseDetail = ldef.NoiseDetail,
+                    NoiseThreshold = ldef.NoiseThreshold,
                     AlbedoTexturePath = ldef.AlbedoTexture,
                     NormalTexturePath = ldef.NormalTexture,
                     RmaTexturePath = ldef.RmaTexture,
@@ -233,6 +266,34 @@ public static class MaterialLoader
                 if (!string.IsNullOrEmpty(ldef.MaskTexture)) layer.MaskTexture = TextureLoader.LoadTexture(device, Path.Combine(dir, ldef.MaskTexture));
                 mat.Layers.Add(layer);
             }
+        }
+
+        if (mat.Layers.Count > 0)
+        {
+            var l0 = mat.Layers[0];
+            mat.TopColor = l0.AlbedoColor;
+            mat.TopMetallic = l0.Metallic;
+            mat.TopRoughness = l0.Roughness;
+            mat.TopMaskType = l0.MaskType;
+            mat.TopMaskTexture = l0.MaskTexture;
+            mat.TopMaskTexturePath = l0.MaskTexturePath;
+            mat.NoiseScale = l0.NoiseScale;
+            mat.NoiseThresholdMin = Math.Max(0.0f, l0.NoiseThreshold - 0.2f);
+            mat.NoiseThresholdMax = Math.Min(1.0f, l0.NoiseThreshold + 0.2f);
+        }
+
+        if (mat.Layers.Count > 1)
+        {
+            var l1 = mat.Layers[1];
+            mat.Layer2Color = l1.AlbedoColor;
+            mat.Layer2Metallic = l1.Metallic;
+            mat.Layer2Roughness = l1.Roughness;
+            mat.Layer2MaskType = l1.MaskType;
+            mat.Layer2MaskTexture = l1.MaskTexture;
+            mat.Layer2MaskTexturePath = l1.MaskTexturePath;
+            mat.Layer2NoiseScale = l1.NoiseScale;
+            mat.Layer2NoiseThresholdMin = Math.Max(0.0f, l1.NoiseThreshold - 0.2f);
+            mat.Layer2NoiseThresholdMax = Math.Min(1.0f, l1.NoiseThreshold + 0.2f);
         }
 
         _cache[fullPath] = mat;

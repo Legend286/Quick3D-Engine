@@ -293,8 +293,20 @@ public class PathTracerPass : RenderPass
                             TopMetallic = material?.TopMetallic ?? 0.0f,
                             TopRoughness = material?.TopRoughness ?? 1.0f,
                             TopMaskType = material?.TopMaskType ?? 0,
+                            TopMaskTexIndex = GetTexIndex(material?.TopMaskTexture),
+                            Layer2Color = material?.Layer2Color != null && material.Layer2Color.Length >= 4 ? new Vector4(material.Layer2Color[0], material.Layer2Color[1], material.Layer2Color[2], material.Layer2Color[3]) : Vector4.One,
+                            Layer2Metallic = material?.Layer2Metallic ?? 0.0f,
+                            Layer2Roughness = material?.Layer2Roughness ?? 1.0f,
+                            Layer2MaskType = material?.Layer2MaskType ?? 0,
+                            Layer2MaskTexIndex = GetTexIndex(material?.Layer2MaskTexture),
                             Clearcoat = material?.Clearcoat ?? 0.0f,
-                            ClearcoatRoughness = material?.ClearcoatRoughness ?? 1.0f
+                            ClearcoatRoughness = material?.ClearcoatRoughness ?? 1.0f,
+                            NoiseScale = material?.NoiseScale ?? 10.0f,
+                            NoiseThresholdMin = material?.NoiseThresholdMin ?? 0.3f,
+                            NoiseThresholdMax = material?.NoiseThresholdMax ?? 0.7f,
+                            Layer2NoiseScale = material?.Layer2NoiseScale ?? 10.0f,
+                            Layer2NoiseThresholdMin = material?.Layer2NoiseThresholdMin ?? 0.3f,
+                            Layer2NoiseThresholdMax = material?.Layer2NoiseThresholdMax ?? 0.7f
                         });
 
                         Vector3 partMin = p.BoundsMin;

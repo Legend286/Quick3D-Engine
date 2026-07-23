@@ -66,3 +66,19 @@ The Editor implements a hardware-accelerated object selection and outline render
 - `Content/shaders/id_picking.slang`
 - `Content/shaders/outline_mask.slang`
 - `Content/shaders/outline_composite.slang`
+
+## Material Layer Stacking & 3D Noise Parameters
+
+The Material Editor supports multi-layer material stacking with procedural 3D noise and texture masking. The material pipeline evaluates:
+- `noise_scale` (`NoiseScale` / `Layer2NoiseScale`): Spatial frequency scaling factor for 3D procedural noise mask evaluation (default `10.0`).
+- `noise_threshold_min` (`NoiseThresholdMin` / `Layer2NoiseThresholdMin`): Lower threshold for noise mask smoothstep mapping (default `0.3`).
+- `noise_threshold_max` (`NoiseThresholdMax` / `Layer2NoiseThresholdMax`): Upper threshold for noise mask smoothstep mapping (default `0.7`).
+
+The GPU shaders (`pbr.slang` and `path_tracer.slang`) perform energy-conserving convex layer blending from bottom-to-top (`Layer 2` over `Base Material`, then `Layer 1` over `[Base Material + Layer 2]`).
+
+## Numeric Input Validation & Transform NaN Guarding
+
+To protect the selection outline pass and matrix pipeline from invalid inputs:
+1. `NumericInputBehavior` filters keystrokes on numeric inputs across Avalonia views (`NumericUpDown` and `TextBox`), constraining characters to digits `0-9`, `-`, and `.`.
+2. `InspectorViewModel` sanitizes transform positions, rotations, and scales against `NaN` and `Infinity`.
+3. `OutlineMaskPass` and `SceneDataExtractor` validate model and view-projection matrices prior to GPU buffer upload, preventing selection outline corruption.

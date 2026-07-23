@@ -184,17 +184,76 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics
     }
     
     // Layer Stacking (Stochastic BSDF Choice)
+    if (mat.layer2MaskType != 0) {
+        float mask2 = 0.0;
+        float scale2 = mat.layer2NoiseScale > 0.0 ? mat.layer2NoiseScale : 10.0;
+        float tMin2 = mat.layer2NoiseThresholdMin;
+        float tMax2 = mat.layer2NoiseThresholdMax > tMin2 ? mat.layer2NoiseThresholdMax : tMin2 + 0.01;
+        float3 p2 = worldPos * scale2;
+        if (mat.layer2MaskType == 1) { // 3D Perlin Noise
+            mask2 = smoothstep(tMin2, tMax2, noise3D(p2));
+        } else if (mat.layer2MaskType == 2) { // Voronoi Noise
+            mask2 = smoothstep(tMin2, tMax2, voronoi3D(p2));
+        } else if (mat.layer2MaskType == 3) { // FBM Noise
+            mask2 = smoothstep(tMin2, tMax2, fbm3D(p2, 3));
+        } else if (mat.layer2MaskType == 4) { // Turbulence Noise
+            mask2 = smoothstep(tMin2, tMax2, turbulence3D(p2, 3));
+        } else if (mat.layer2MaskType == 5) { // Cavity (Path-traced ray occlusion)
+            float cavityHits = 0.0;
+            const int CAVITY_SAMPLES = 4;
+            if (push.hasGeometry != 0u) {
+                for (int c = 0; c < CAVITY_SAMPLES; c++) {
+                    float u1 = rand(seed);
+                    float u2 = rand(seed);
+                    float3 sampleDir = SampleCosineHemisphere(u1, u2, hitNormal, hitTangent, hitBitangent);
+                    
+                    RayDesc cavityRay;
+                    cavityRay.Origin = worldPos + hitNormal * 0.003;
+                    cavityRay.Direction = sampleDir;
+                    cavityRay.TMin = 0.001;
+                    cavityRay.TMax = 0.5;
+                    
+                    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> cq;
+                    cq.TraceRayInline(tlas, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, cavityRay);
+                    cq.Proceed();
+                    if (cq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+                        cavityHits += 1.0;
+                    }
+                }
+                mask2 = cavityHits / float(CAVITY_SAMPLES);
+            } else {
+                float3 dN1 = n1 - n0;
+                float3 dN2 = n2 - n0;
+                float curvature = length(cross(dN1, dN2));
+                mask2 = smoothstep(0.05, 0.4, curvature);
+            }
+        } else if (mat.layer2MaskType == 6) { // Height
+            mask2 = smoothstep(-0.5, 0.5, worldPos.y);
+        } else if (mat.layer2MaskType == 7 && mat.layer2MaskTexIndex != 0xFFFFFFFF) { // Texture Mask
+            mask2 = bindless.textures[mat.layer2MaskTexIndex].SampleLevel(tex_sampler, uv, 0).r;
+        }
+
+        if (rand(seed) < mask2) {
+            baseColor = mat.layer2Color.rgb;
+            metallic = mat.layer2Metallic;
+            roughness = mat.layer2Roughness;
+        }
+    }
+
     if (mat.topMaskType != 0) {
-        float mask = 0.0;
-        float3 p = worldPos * 10.0;
+        float mask1 = 0.0;
+        float scale1 = mat.noiseScale > 0.0 ? mat.noiseScale : 10.0;
+        float tMin1 = mat.noiseThresholdMin;
+        float tMax1 = mat.noiseThresholdMax > tMin1 ? mat.noiseThresholdMax : tMin1 + 0.01;
+        float3 p1 = worldPos * scale1;
         if (mat.topMaskType == 1) { // 3D Perlin Noise
-            mask = smoothstep(0.3, 0.7, noise3D(p));
+            mask1 = smoothstep(tMin1, tMax1, noise3D(p1));
         } else if (mat.topMaskType == 2) { // Voronoi Noise
-            mask = smoothstep(0.1, 0.8, voronoi3D(p));
+            mask1 = smoothstep(tMin1, tMax1, voronoi3D(p1));
         } else if (mat.topMaskType == 3) { // FBM Noise
-            mask = smoothstep(0.2, 0.8, fbm3D(p, 3));
+            mask1 = smoothstep(tMin1, tMax1, fbm3D(p1, 3));
         } else if (mat.topMaskType == 4) { // Turbulence Noise
-            mask = smoothstep(0.2, 0.8, turbulence3D(p, 3));
+            mask1 = smoothstep(tMin1, tMax1, turbulence3D(p1, 3));
         } else if (mat.topMaskType == 5) { // Cavity (Path-traced ray occlusion)
             float cavityHits = 0.0;
             const int CAVITY_SAMPLES = 4;
@@ -208,7 +267,7 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics
                     cavityRay.Origin = worldPos + hitNormal * 0.003;
                     cavityRay.Direction = sampleDir;
                     cavityRay.TMin = 0.001;
-                    cavityRay.TMax = 0.5; // Short-range crevice threshold
+                    cavityRay.TMax = 0.5;
                     
                     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> cq;
                     cq.TraceRayInline(tlas, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, cavityRay);
@@ -217,21 +276,20 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics
                         cavityHits += 1.0;
                     }
                 }
-                mask = cavityHits / float(CAVITY_SAMPLES);
+                mask1 = cavityHits / float(CAVITY_SAMPLES);
             } else {
                 float3 dN1 = n1 - n0;
                 float3 dN2 = n2 - n0;
                 float curvature = length(cross(dN1, dN2));
-                mask = smoothstep(0.05, 0.4, curvature);
+                mask1 = smoothstep(0.05, 0.4, curvature);
             }
         } else if (mat.topMaskType == 6) { // Height
-            mask = smoothstep(-0.5, 0.5, worldPos.y);
+            mask1 = smoothstep(-0.5, 0.5, worldPos.y);
         } else if (mat.topMaskType == 7 && mat.topMaskTexIndex != 0xFFFFFFFF) { // Texture Mask
-            mask = bindless.textures[mat.topMaskTexIndex].SampleLevel(tex_sampler, uv, 0).r;
+            mask1 = bindless.textures[mat.topMaskTexIndex].SampleLevel(tex_sampler, uv, 0).r;
         }
 
-
-        if (rand(seed) < mask) {
+        if (rand(seed) < mask1) {
             baseColor = mat.topColor.rgb;
             metallic = mat.topMetallic;
             roughness = mat.topRoughness;
