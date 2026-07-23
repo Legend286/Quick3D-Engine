@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:Engine.Editor.ViewModels"
+        xmlns:behaviors="using:Engine.Editor.Behaviors"
         x:Class="Engine.Editor.Views.AssetImportWindow"
         x:DataType="vm:AssetImportViewModel"
         Width="600" SizeToContent="Height"
@@ -42,15 +43,15 @@
                     <Grid ColumnDefinitions="*,12,*,12,*">
                         <StackPanel Grid.Column="0">
                             <TextBlock Text="X" Foreground="#5a5f6b" FontSize="10" Margin="0,0,0,4"/>
-                            <TextBox Text="{Binding ScaleX}" Background="#12151c" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4" />
+                            <TextBox Text="{Binding ScaleX}" Background="#12151c" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                         </StackPanel>
                         <StackPanel Grid.Column="2">
                             <TextBlock Text="Y" Foreground="#5a5f6b" FontSize="10" Margin="0,0,0,4"/>
-                            <TextBox Text="{Binding ScaleY}" Background="#12151c" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4" />
+                            <TextBox Text="{Binding ScaleY}" Background="#12151c" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                         </StackPanel>
                         <StackPanel Grid.Column="4">
                             <TextBlock Text="Z" Foreground="#5a5f6b" FontSize="10" Margin="0,0,0,4"/>
-                            <TextBox Text="{Binding ScaleZ}" Background="#12151c" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4" />
+                            <TextBox Text="{Binding ScaleZ}" Background="#12151c" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                         </StackPanel>
                     </Grid>
                 </StackPanel>

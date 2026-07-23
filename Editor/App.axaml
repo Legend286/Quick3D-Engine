@@ -48,5 +48,15 @@
     <Style Selector=":is(Button), :is(MenuItem), :is(TabItem)">
       <Setter Property="FontSize" Value="13" />
     </Style>
+    <Style Selector="NumericUpDown">
+      <Setter Property="ParsingNumberStyle" Value="Float" />
+      <Setter Property="ClipValueToMinMax" Value="True" />
+      <Setter Property="AllowSpin" Value="True" />
+      <Setter Property="DataValidationErrors.ErrorTemplate">
+        <DataTemplate>
+          <Panel />
+        </DataTemplate>
+      </Setter>
+    </Style>
   </Application.Styles>
 </Application>

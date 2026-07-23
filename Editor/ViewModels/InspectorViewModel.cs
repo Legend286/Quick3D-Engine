@@ -40,17 +40,43 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
     partial void OnRotYChanged(decimal value) => UpdateWorldRotation();
     partial void OnRotZChanged(decimal value) => UpdateWorldRotation();
 
+    private static float SanitizeFloat(float v, float fallback = 0f)
+    {
+        return float.IsNaN(v) || float.IsInfinity(v) ? fallback : v;
+    }
+
+    private static float SanitizeScale(float v)
+    {
+        if (float.IsNaN(v) || float.IsInfinity(v) || MathF.Abs(v) < 1e-5f) return 1f;
+        return v;
+    }
+
+    private static System.Numerics.Quaternion SanitizeQuaternion(System.Numerics.Quaternion q)
+    {
+        if (float.IsNaN(q.X) || float.IsNaN(q.Y) || float.IsNaN(q.Z) || float.IsNaN(q.W) ||
+            float.IsInfinity(q.X) || float.IsInfinity(q.Y) || float.IsInfinity(q.Z) || float.IsInfinity(q.W) ||
+            q.LengthSquared() < 1e-6f)
+        {
+            return System.Numerics.Quaternion.Identity;
+        }
+        return System.Numerics.Quaternion.Normalize(q);
+    }
+
     private void UpdateWorldRotation()
     {
         if (_isUpdatingFromWorld || _isEditingRotation || _world == null || !_selectedEntity.HasValue) return;
         if (_world.TryGet<Transform>(_selectedEntity.Value, out var t))
         {
+            float rx = SanitizeFloat((float)RotX);
+            float ry = SanitizeFloat((float)RotY);
+            float rz = SanitizeFloat((float)RotZ);
+
             var q = System.Numerics.Quaternion.CreateFromYawPitchRoll(
-                (float)RotY * (MathF.PI / 180f),
-                (float)RotX * (MathF.PI / 180f),
-                (float)RotZ * (MathF.PI / 180f));
+                ry * (MathF.PI / 180f),
+                rx * (MathF.PI / 180f),
+                rz * (MathF.PI / 180f));
             
-            t.Rotation = q;
+            t.Rotation = SanitizeQuaternion(q);
             _lastSyncedRotation = t.Rotation;
             _world.Set(_selectedEntity.Value, t);
         }
@@ -66,8 +92,17 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
 
         if (_world.TryGet<Transform>(_selectedEntity.Value, out var t))
         {
-            t.Position = new System.Numerics.Vector3((float)PosX, (float)PosY, (float)PosZ);
-            t.Scale = new System.Numerics.Vector3((float)ScaleX, (float)ScaleY, (float)ScaleZ);
+            t.Position = new System.Numerics.Vector3(
+                SanitizeFloat((float)PosX),
+                SanitizeFloat((float)PosY),
+                SanitizeFloat((float)PosZ));
+
+            t.Scale = new System.Numerics.Vector3(
+                SanitizeScale((float)ScaleX),
+                SanitizeScale((float)ScaleY),
+                SanitizeScale((float)ScaleZ));
+
+            t.Rotation = SanitizeQuaternion(t.Rotation);
             _world.Set(_selectedEntity.Value, t);
         }
     }
@@ -121,29 +156,30 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
             _isUpdatingFromWorld = true;
 
             HasTransform = true;
-            PosX = (decimal)transform.Position.X;
-            PosY = (decimal)transform.Position.Y;
-            PosZ = (decimal)transform.Position.Z;
+            PosX = (decimal)SanitizeFloat(transform.Position.X);
+            PosY = (decimal)SanitizeFloat(transform.Position.Y);
+            PosZ = (decimal)SanitizeFloat(transform.Position.Z);
 
-            float dot = System.Numerics.Quaternion.Dot(transform.Rotation, _lastSyncedRotation);
+            var rot = SanitizeQuaternion(transform.Rotation);
+            float dot = System.Numerics.Quaternion.Dot(rot, _lastSyncedRotation);
             if (MathF.Abs(dot) < 0.9999f)
             {
-                var euler = ToEulerAngles(transform.Rotation);
+                var euler = ToEulerAngles(rot);
                 _isEditingRotation = true;
-                RotX = (decimal)euler.X;
-                RotY = (decimal)euler.Y;
-                RotZ = (decimal)euler.Z;
+                RotX = (decimal)SanitizeFloat(euler.X);
+                RotY = (decimal)SanitizeFloat(euler.Y);
+                RotZ = (decimal)SanitizeFloat(euler.Z);
                 _isEditingRotation = false;
-                _lastSyncedRotation = transform.Rotation;
+                _lastSyncedRotation = rot;
             }
             else
             {
-                _lastSyncedRotation = transform.Rotation;
+                _lastSyncedRotation = rot;
             }
 
-            ScaleX = (decimal)transform.Scale.X;
-            ScaleY = (decimal)transform.Scale.Y;
-            ScaleZ = (decimal)transform.Scale.Z;
+            ScaleX = (decimal)SanitizeScale(transform.Scale.X);
+            ScaleY = (decimal)SanitizeScale(transform.Scale.Y);
+            ScaleZ = (decimal)SanitizeScale(transform.Scale.Z);
             
             _isUpdatingFromWorld = false;
         }
@@ -175,14 +211,16 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
 
     private System.Numerics.Vector3 ToEulerAngles(System.Numerics.Quaternion q)
     {
-        // CreateFromYawPitchRoll applies Z (Roll), then X (Pitch), then Y (Yaw).
-        // Therefore, the middle rotation is X (Pitch), which means Pitch should use Asin and be constrained to [-90, 90].
-        // Yaw and Roll use Atan2 and can rotate fully to [-180, 180] without flipping.
-        float pitch = MathF.Asin(MathF.Max(-1f, MathF.Min(1f, 2 * (q.W * q.X - q.Y * q.Z))));
+        q = SanitizeQuaternion(q);
+        float sinPitch = 2 * (q.W * q.X - q.Y * q.Z);
+        float pitch = float.IsNaN(sinPitch) ? 0f : MathF.Asin(MathF.Max(-1f, MathF.Min(1f, sinPitch)));
         float yaw = MathF.Atan2(2 * (q.W * q.Y + q.Z * q.X), 1 - 2 * (q.X * q.X + q.Y * q.Y));
         float roll = MathF.Atan2(2 * (q.W * q.Z + q.X * q.Y), 1 - 2 * (q.X * q.X + q.Z * q.Z));
         
-        return new System.Numerics.Vector3(pitch, yaw, roll) * (180f / MathF.PI);
+        return new System.Numerics.Vector3(
+            SanitizeFloat(pitch * (180f / MathF.PI)),
+            SanitizeFloat(yaw * (180f / MathF.PI)),
+            SanitizeFloat(roll * (180f / MathF.PI)));
     }
 
     public void Dispose()

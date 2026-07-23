@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:Engine.Editor.ViewModels"
         xmlns:views="using:Engine.Editor.Views"
+        xmlns:behaviors="using:Engine.Editor.Behaviors"
         x:Class="Engine.Editor.MainWindow"
         x:DataType="vm:MainWindowViewModel"
         Width="1280" Height="800"
@@ -167,15 +168,15 @@
                   <Grid Grid.Row="0" Grid.Column="1" ColumnDefinitions="*,*,*" Margin="0,0,0,5">
                     <Grid Grid.Column="0" ColumnDefinitions="Auto,*" Margin="0,0,4,0">
                       <TextBlock Grid.Column="0" Text="X" VerticalAlignment="Center" Foreground="#ff6b6b" Margin="0,0,4,0"/>
-                      <NumericUpDown Grid.Column="1" Value="{Binding PosX}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" />
+                      <NumericUpDown Grid.Column="1" Value="{Binding PosX, TargetNullValue=0, FallbackValue=0}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                     </Grid>
                     <Grid Grid.Column="1" ColumnDefinitions="Auto,*" Margin="0,0,4,0">
                       <TextBlock Grid.Column="0" Text="Y" VerticalAlignment="Center" Foreground="#51cf66" Margin="0,0,4,0"/>
-                      <NumericUpDown Grid.Column="1" Value="{Binding PosY}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" />
+                      <NumericUpDown Grid.Column="1" Value="{Binding PosY, TargetNullValue=0, FallbackValue=0}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                     </Grid>
                     <Grid Grid.Column="2" ColumnDefinitions="Auto,*">
                       <TextBlock Grid.Column="0" Text="Z" VerticalAlignment="Center" Foreground="#339af0" Margin="0,0,4,0"/>
-                      <NumericUpDown Grid.Column="1" Value="{Binding PosZ}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" />
+                      <NumericUpDown Grid.Column="1" Value="{Binding PosZ, TargetNullValue=0, FallbackValue=0}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                     </Grid>
                   </Grid>
 
@@ -183,15 +184,15 @@
                   <Grid Grid.Row="1" Grid.Column="1" ColumnDefinitions="*,*,*" Margin="0,0,0,5">
                     <Grid Grid.Column="0" ColumnDefinitions="Auto,*" Margin="0,0,4,0">
                       <TextBlock Grid.Column="0" Text="X" VerticalAlignment="Center" Foreground="#ff6b6b" Margin="0,0,4,0"/>
-                      <NumericUpDown Grid.Column="1" Value="{Binding RotX}" Increment="1" FormatString="0.0" HorizontalAlignment="Stretch" />
+                      <NumericUpDown Grid.Column="1" Value="{Binding RotX, TargetNullValue=0, FallbackValue=0}" Increment="1" FormatString="0.0" HorizontalAlignment="Stretch" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                     </Grid>
                     <Grid Grid.Column="1" ColumnDefinitions="Auto,*" Margin="0,0,4,0">
                       <TextBlock Grid.Column="0" Text="Y" VerticalAlignment="Center" Foreground="#51cf66" Margin="0,0,4,0"/>
-                      <NumericUpDown Grid.Column="1" Value="{Binding RotY}" Increment="1" FormatString="0.0" HorizontalAlignment="Stretch" />
+                      <NumericUpDown Grid.Column="1" Value="{Binding RotY, TargetNullValue=0, FallbackValue=0}" Increment="1" FormatString="0.0" HorizontalAlignment="Stretch" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                     </Grid>
                     <Grid Grid.Column="2" ColumnDefinitions="Auto,*">
                       <TextBlock Grid.Column="0" Text="Z" VerticalAlignment="Center" Foreground="#339af0" Margin="0,0,4,0"/>
-                      <NumericUpDown Grid.Column="1" Value="{Binding RotZ}" Increment="1" FormatString="0.0" HorizontalAlignment="Stretch" />
+                      <NumericUpDown Grid.Column="1" Value="{Binding RotZ, TargetNullValue=0, FallbackValue=0}" Increment="1" FormatString="0.0" HorizontalAlignment="Stretch" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                     </Grid>
                   </Grid>
 
@@ -199,15 +200,15 @@
                   <Grid Grid.Row="2" Grid.Column="1" ColumnDefinitions="*,*,*" Margin="0,0,0,5">
                     <Grid Grid.Column="0" ColumnDefinitions="Auto,*" Margin="0,0,4,0">
                       <TextBlock Grid.Column="0" Text="X" VerticalAlignment="Center" Foreground="#ff6b6b" Margin="0,0,4,0"/>
-                      <NumericUpDown Grid.Column="1" Value="{Binding ScaleX}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" />
+                      <NumericUpDown Grid.Column="1" Value="{Binding ScaleX, TargetNullValue=1, FallbackValue=1}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                     </Grid>
                     <Grid Grid.Column="1" ColumnDefinitions="Auto,*" Margin="0,0,4,0">
                       <TextBlock Grid.Column="0" Text="Y" VerticalAlignment="Center" Foreground="#51cf66" Margin="0,0,4,0"/>
-                      <NumericUpDown Grid.Column="1" Value="{Binding ScaleY}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" />
+                      <NumericUpDown Grid.Column="1" Value="{Binding ScaleY, TargetNullValue=1, FallbackValue=1}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                     </Grid>
                     <Grid Grid.Column="2" ColumnDefinitions="Auto,*">
                       <TextBlock Grid.Column="0" Text="Z" VerticalAlignment="Center" Foreground="#339af0" Margin="0,0,4,0"/>
-                      <NumericUpDown Grid.Column="1" Value="{Binding ScaleZ}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" />
+                      <NumericUpDown Grid.Column="1" Value="{Binding ScaleZ, TargetNullValue=1, FallbackValue=1}" Increment="0.1" FormatString="0.00" HorizontalAlignment="Stretch" behaviors:NumericInputBehavior.IsNumericOnly="True" />
                     </Grid>
                   </Grid>
                 </Grid>
