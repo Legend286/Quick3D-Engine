@@ -19,6 +19,7 @@ public class IdPickingPass : RenderPass, IDisposable
     private readonly RhiDevice _device;
     private readonly IEntityStore _world;
     private readonly string _contentRoot;
+    private readonly Renderer? _renderer;
 
     private readonly RhiShader _vs;
     private readonly RhiShader _fs;
@@ -38,11 +39,12 @@ public class IdPickingPass : RenderPass, IDisposable
     public uint PickedPartIndex = 0;
 
 
-    public unsafe IdPickingPass(RhiDevice device, IEntityStore world, string contentRoot)
+    public unsafe IdPickingPass(RhiDevice device, IEntityStore world, string contentRoot, Renderer? renderer = null)
     {
         _device = device;
         _world = world;
         _contentRoot = contentRoot;
+        _renderer = renderer;
         Name = "Id Picking";
 
         string shaderDir = Path.Combine(_contentRoot, "shaders");
@@ -77,18 +79,11 @@ public class IdPickingPass : RenderPass, IDisposable
         CameraData camData = default;
         camData.ViewProj = Matrix4x4.Identity;
 
-        foreach (var id in _world.Entities)
+        if (!TryBuildCamera(_renderer?.ActiveCameraEntity ?? 0, aspect, out camData))
         {
-            if (_world.TryGet<Engine.Scene.Components.Camera>(id, out var cam))
+            foreach (var id in _world.Entities)
             {
-                if (_world.TryGet<Transform>(id, out var t))
-                {
-                    var view = Matrix4x4.CreateLookAt(t.Position, t.Position + Vector3.Transform(-Vector3.UnitZ, t.Rotation), Vector3.UnitY);
-                    Matrix4x4 proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, (float)w / h, cam.NearClip, cam.FarClip);
-                    camData.ViewProj = view * proj;
-                    camData.CameraPosition = new Vector4(t.Position, 1.0f);
-                }
-                break;
+                if (TryBuildCamera(id, aspect, out camData)) break;
             }
         }
 
@@ -216,6 +211,25 @@ public class IdPickingPass : RenderPass, IDisposable
         var bytes = pickTarget.Readback(1, 1, 4);
         PickedId = (uint)bytes[0] | ((uint)bytes[1] << 8);
         PickedPartIndex = (uint)bytes[2] | ((uint)bytes[3] << 8);
+    }
+
+    private bool TryBuildCamera(ulong entity, float aspect, out CameraData camData)
+    {
+        camData = default;
+        camData.ViewProj = Matrix4x4.Identity;
+
+        if (entity == 0 || !_world.TryGet<Engine.Scene.Components.Camera>(entity, out var cam))
+            return false;
+
+        var transform = _world.TryGet<Transform>(entity, out var t) ? t : Transform.Default;
+        var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
+        Matrix4x4 proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, aspect, cam.NearClip, cam.FarClip);
+        camData.ViewProj = view * proj;
+        Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
+        camData.InvViewProj = invVP;
+        camData.CameraPosition = new Vector4(transform.Position, 1.0f);
+        camData.CameraForward = new Vector4(Vector3.Transform(Vector3.UnitZ, transform.Rotation), 0.0f);
+        return true;
     }
 
 

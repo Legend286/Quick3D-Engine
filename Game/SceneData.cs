@@ -101,6 +101,10 @@ public struct ScenePushData
     public uint pad0;
     public uint pad1;
     public SkyParams Sky;
+    public ulong ClusterRecords;
+    public ulong ClusterLightIndices;
+    public Vector4 ClusterGrid;
+    public Vector4 ClusterParams;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -110,4 +114,11 @@ public struct CameraData
     public Matrix4x4 InvViewProj;
     public Vector4 CameraPosition; // w = exposure
     public Vector4 CameraForward;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct ClusterRecord
+{
+    public uint Offset;
+    public uint Count;
 }

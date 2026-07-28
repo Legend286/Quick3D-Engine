@@ -112,6 +112,37 @@ float turbulence3D(float3 p, int octaves) {
     return val;
 }
 
+float3 EvaluateLightContribution(LightData light, float3 worldPos, DisneyMaterial dmat, float3 N, float3 V, float3 T, float3 B)
+{
+    float lightType = light.direction.w;
+    float3 L;
+    float attenuation = 1.0;
+
+    if (lightType == 0.0) {
+        L = normalize(light.direction.xyz);
+    } else {
+        float3 delta = light.position.xyz - worldPos;
+        float dist = max(length(delta), 0.001);
+        L = delta / dist;
+
+        float range = max(light.position.w, 0.001);
+        float falloff = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
+        attenuation = (falloff * falloff) / (dist * dist + 1.0);
+
+        if (lightType == 2.0) {
+            float theta = dot(L, normalize(-light.direction.xyz));
+            float epsilon = max(light.spotParams.x - light.spotParams.y, 0.001);
+            float intensity = clamp((theta - light.spotParams.y) / epsilon, 0.0, 1.0);
+            attenuation *= intensity * intensity;
+        }
+    }
+
+    float3 radiance = light.color.rgb * light.color.w * attenuation;
+    float3 bsdf = EvaluateDisneyBSDF(dmat, N, V, L, T, B);
+    float dotNL = clamp(dot(N, L), 0.001, 1.0);
+    return bsdf * radiance * dotNL;
+}
+
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target 
 {
@@ -248,39 +279,26 @@ float4 fragmentMain(VertexOutput input) : SV_Target
     
     float3 Lo = float3(0.0);
 
-    for (uint i = 0; i < push.lightCount; i++) {
-        LightData light = push.lights[i];
-        float lightType = light.direction.w;
-        
-        float3 L;
-        float attenuation = 1.0;
-        
-        if (lightType == 0.0) { // Directional
-            L = normalize(light.direction.xyz);
-        } else { // Point or Spot
-            float3 delta = light.position.xyz - input.worldPos;
-            float dist = length(delta);
-            L = delta / dist;
-            
-            // Attenuation
-            float range = light.position.w;
-            float falloff = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
-            attenuation = (falloff * falloff) / (dist * dist + 1.0);
-            
-            if (lightType == 2.0) { // Spot
-                float theta = dot(L, normalize(-light.direction.xyz));
-                float epsilon = light.spotParams.x - light.spotParams.y;
-                float intensity = clamp((theta - light.spotParams.y) / epsilon, 0.0, 1.0);
-                attenuation *= intensity * intensity;
-            }
+    bool useClusters = push.clusterGrid.w > 0.0 && push.clusterParams.y > 0.0;
+    if (useClusters) {
+        uint gridX = (uint)push.clusterGrid.x;
+        uint gridY = (uint)push.clusterGrid.y;
+        uint gridZ = (uint)push.clusterGrid.z;
+        float tileSize = push.clusterParams.x;
+        uint tileX = min((uint)(input.position.x / tileSize), gridX - 1);
+        uint tileY = min((uint)(input.position.y / tileSize), gridY - 1);
+        uint tileZ = min((uint)(input.position.z * (float)gridZ), gridZ - 1);
+        uint clusterIndex = tileZ * gridX * gridY + tileY * gridX + tileX;
+        ClusterRecord record = push.clusterRecords[clusterIndex];
+
+        for (uint i = 0; i < record.count; i++) {
+            uint lightIndex = push.clusterLightIndices[record.offset + i];
+            Lo += EvaluateLightContribution(push.lights[lightIndex], input.worldPos, dmat, N, V, T, B);
         }
-        
-        float3 radiance = light.color.rgb * light.color.w * attenuation;
-        
-        float3 bsdf = EvaluateDisneyBSDF(dmat, N, V, L, T, B);
-        
-        float dotNL = clamp(dot(N, L), 0.001, 1.0);
-        Lo += bsdf * radiance * dotNL;
+    } else {
+        for (uint i = 0; i < push.lightCount; i++) {
+            Lo += EvaluateLightContribution(push.lights[i], input.worldPos, dmat, N, V, T, B);
+        }
     }
     
     float3 ambient = float3(0.03, 0.03, 0.03) * albedo * ao;

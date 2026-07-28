@@ -174,7 +174,7 @@ public sealed class Renderer : IDisposable
         passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));
         passes.Add(new OutlineCompositePass(_device, contentRoot, this, _sharedBindlessHeap));
 
-        passes.Add(new GridPass(_device, _world, contentRoot, clearScreen: scene.Passes.Count == 0));
+        passes.Add(new GridPass(_device, _world, contentRoot, this, clearScreen: scene.Passes.Count == 0));
 
         if (_imguiRenderer != null)
             passes.Add(new ImGuiPass(_imguiRenderer));
@@ -229,7 +229,7 @@ public sealed class Renderer : IDisposable
     public ulong Pick(uint x, uint y, uint w, uint h)
     {
         if (_currentScene == null) return 0;
-        using var pass = new IdPickingPass(_device, _world, _contentRoot);
+        using var pass = new IdPickingPass(_device, _world, _contentRoot, this);
         pass.PickRequested = true;
         pass.PickX = x;
         pass.PickY = y;
@@ -244,7 +244,7 @@ public sealed class Renderer : IDisposable
     public (ulong EntityId, uint PartIndex) PickSubmesh(uint x, uint y, uint w, uint h)
     {
         if (_currentScene == null) return (0, 0);
-        using var pass = new IdPickingPass(_device, _world, _contentRoot);
+        using var pass = new IdPickingPass(_device, _world, _contentRoot, this);
         pass.PickRequested = true;
         pass.PickX = x;
         pass.PickY = y;

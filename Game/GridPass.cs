@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 using System;
 using System.IO;
 using System.Numerics;
@@ -15,6 +16,7 @@ public sealed class GridPass : RenderPass, IDisposable
     private readonly RhiDevice _device;
     private readonly IEntityStore _world;
     private readonly string _contentRoot;
+    private readonly Renderer? _renderer;
 
     private RhiShader _vs;
     private RhiShader _fs;
@@ -37,12 +39,13 @@ public sealed class GridPass : RenderPass, IDisposable
         public Vector3 Position;
     }
 
-    public GridPass(RhiDevice device, IEntityStore world, string contentRoot, bool clearScreen = false)
+    public GridPass(RhiDevice device, IEntityStore world, string contentRoot, Renderer? renderer = null, bool clearScreen = false)
     {
         _device = device;
         _world = world;
         _clearScreen = clearScreen;
         _contentRoot = contentRoot;
+        _renderer = renderer;
         Name = "GridPass";
 
         string src = File.ReadAllText(Path.Combine(contentRoot, "shaders/grid.slang"));
@@ -103,18 +106,10 @@ public sealed class GridPass : RenderPass, IDisposable
         Matrix4x4 proj = Matrix4x4.Identity;
         Vector3 camPos = Vector3.Zero;
 
-        bool foundCam = false;
-        for (ulong id = 1; id < 1024; ++id)
+        bool foundCam = TryBuildCamera(_renderer?.ActiveCameraEntity ?? 0, aspect, out view, out proj, out camPos);
+        for (ulong id = 1; !foundCam && id < 1024; ++id)
         {
-            if (_world.TryGet<Engine.Scene.Components.Camera>(id, out var cam))
-            {
-                var transform = _world.TryGet<Transform>(id, out var t) ? t : Transform.Default;
-                view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
-                proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, aspect, cam.NearClip, cam.FarClip);
-                camPos = transform.Position;
-                foundCam = true;
-                break;
-            }
+            foundCam = TryBuildCamera(id, aspect, out view, out proj, out camPos);
         }
 
         if (!foundCam)
@@ -151,6 +146,22 @@ public sealed class GridPass : RenderPass, IDisposable
             sink.Draw(_vertexCount);
             sink.EndPass();
         }
+    }
+
+    private bool TryBuildCamera(ulong entity, float aspect, out Matrix4x4 view, out Matrix4x4 proj, out Vector3 camPos)
+    {
+        view = Matrix4x4.Identity;
+        proj = Matrix4x4.Identity;
+        camPos = Vector3.Zero;
+
+        if (entity == 0 || !_world.TryGet<Engine.Scene.Components.Camera>(entity, out var cam))
+            return false;
+
+        var transform = _world.TryGet<Transform>(entity, out var t) ? t : Transform.Default;
+        view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
+        proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, aspect, cam.NearClip, cam.FarClip);
+        camPos = transform.Position;
+        return true;
     }
 
     public void Dispose()

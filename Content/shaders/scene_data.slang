@@ -90,6 +90,11 @@ struct SkyParams {
     float4 intensityTurbidityAlbedoPad;
 };
 
+struct ClusterRecord {
+    uint offset;
+    uint count;
+};
+
 struct ScenePushData {
     PartData* parts;
     InstanceData* instances;
@@ -102,4 +107,8 @@ struct ScenePushData {
     uint debugFlags;
     uint hasGeometry;
     SkyParams sky;
+    ClusterRecord* clusterRecords;
+    uint* clusterLightIndices;
+    float4 clusterGrid;
+    float4 clusterParams;
 };

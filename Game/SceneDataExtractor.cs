@@ -11,9 +11,22 @@ using Engine.CBindings;
 
 namespace Engine.Game;
 
-public static class SceneDataExtractor
+internal sealed class SceneFrameData
 {
-    public static unsafe void Extract(
+    public CameraData Camera;
+    public Vector3 SkySunDir;
+    public float SkySunRadius;
+    public List<LightData> Lights { get; } = new();
+    public List<InstanceData> Instances { get; } = new();
+    public List<PartData> Parts { get; } = new();
+    public List<MaterialData> Materials { get; } = new();
+    public HashSet<Engine.Assets.Mesh> UniqueMeshes { get; } = new();
+    public ScenePushData PushData;
+}
+
+internal static class SceneDataExtractor
+{
+    internal static unsafe void Extract(
         RhiDevice device,
         IEntityStore world,
         SceneGraph scene,
@@ -25,27 +38,38 @@ public static class SceneDataExtractor
         ref RhiBuffer partBuffer,
         ref RhiBuffer materialBuffer,
         ulong activeCameraId,
+        Vector3 localCameraForward,
+        uint frameCount,
+        uint debugFlags,
+        uint width,
+        uint height,
+        out SceneFrameData frameData,
         out ScenePushData pushData)
     {
+        frameData = new SceneFrameData();
         CameraData camData = default;
         camData.ViewProj = Matrix4x4.Identity;
-        camData.CameraPosition = new Vector4(0, 0, 0, 1.0f); // 1.0f exposure default
+        camData.CameraPosition = new Vector4(0, 0, 0, 1.0f);
 
         if (world.TryGet<Engine.Scene.Components.Camera>(activeCameraId, out var cam))
         {
             var transform = world.TryGet<Transform>(activeCameraId, out var t) ? t : Transform.Default;
-            var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(-Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
+            var forward = Vector3.Transform(localCameraForward, transform.Rotation);
+            var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + forward, Vector3.UnitY);
             var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, aspect, cam.NearClip, cam.FarClip);
             camData.ViewProj = view * proj;
             Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
             camData.InvViewProj = invVP;
             camData.CameraPosition = new Vector4(transform.Position, 1.0f);
+            camData.CameraForward = new Vector4(forward, 0.0f);
         }
 
         if (camData.ViewProj == Matrix4x4.Identity)
         {
             camData.CameraPosition = new Vector4(0, 0, -5, 1.0f);
-            var view = Matrix4x4.CreateLookAt(new Vector3(0, 0, -5), Vector3.Zero, Vector3.UnitY);
+            var fallbackForward = Vector3.UnitZ;
+            camData.CameraForward = new Vector4(fallbackForward, 0.0f);
+            var view = Matrix4x4.CreateLookAt(new Vector3(0, 0, -5), new Vector3(0, 0, -5) + fallbackForward, Vector3.UnitY);
             var proj = Matrix4x4.CreatePerspectiveFieldOfView(60.0f * (MathF.PI / 180.0f), aspect, 0.1f, 100.0f);
             camData.ViewProj = view * proj;
             Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
@@ -56,18 +80,30 @@ public static class SceneDataExtractor
         cameraBuffer.Upload(new ReadOnlySpan<CameraData>(ref camData));
 
         var lights = new List<LightData>();
+        Vector3 skySunDir = Vector3.Normalize(new Vector3(0.5f, 1.0f, 0.5f));
+        float skySunRadius = 0.00465f;
+
         foreach (var l in scene.Lights)
         {
             float type = 0.0f;
+            float p1 = l.InnerCone;
+            float p2 = l.OuterCone;
             if (l.Type == "point") type = 1.0f;
             else if (l.Type == "spot") type = 2.0f;
+            else if (l.Type == "directional")
+            {
+                type = 0.0f;
+                p1 = l.SunRadius;
+                skySunDir = Vector3.Normalize(new Vector3(-l.Direction[0], -l.Direction[1], -l.Direction[2]));
+                skySunRadius = l.SunRadius;
+            }
 
             lights.Add(new LightData
             {
                 Position = new Vector4(l.Position[0], l.Position[1], l.Position[2], l.Range),
                 Direction = new Vector4(l.Direction[0], l.Direction[1], l.Direction[2], type),
                 Color = new Vector4(l.Color[0], l.Color[1], l.Color[2], l.Intensity),
-                SpotParams = new Vector4(l.InnerCone, l.OuterCone, 0, 0)
+                SpotParams = new Vector4(p1, p2, 0, 0)
             });
         }
         if (lights.Count == 0)
@@ -75,7 +111,7 @@ public static class SceneDataExtractor
             lights.Add(new LightData
             {
                 Position = new Vector4(0, 0, 0, 10.0f),
-                Direction = new Vector4(Vector3.Normalize(new Vector3(-1, 1, -1)), 0.0f), // Dir Light
+                Direction = new Vector4(Vector3.Normalize(new Vector3(-1, 1, -1)), 0.0f),
                 Color = new Vector4(1, 1, 1, 2.0f),
                 SpotParams = Vector4.Zero
             });
@@ -95,7 +131,10 @@ public static class SceneDataExtractor
             return bindlessHeap.Register(tex);
         }
 
-        foreach (var id in world.Entities)
+        var sortedEntities = new List<ulong>(world.Entities);
+        sortedEntities.Sort();
+
+        foreach (var id in sortedEntities)
         {
             if (world.TryGet<ModelComponent>(id, out var modelComp))
             {
@@ -148,6 +187,7 @@ public static class SceneDataExtractor
                         var material = AssetRegistry.GetMaterial(p.MaterialId);
 
                         if (mesh == null) continue;
+                        frameData.UniqueMeshes.Add(mesh);
 
                         var aabbMin = p.BoundsMin;
                         var aabbMax = p.BoundsMax;
@@ -158,12 +198,10 @@ public static class SceneDataExtractor
                         uint matIdx = (uint)materials.Count;
                         if (material != null)
                         {
-                            var sr = material.SubsurfaceRadius;
-                            var sc = material.SubsurfaceColor;
                             materials.Add(new MaterialData
                             {
-                                BaseColor = new Vector4(material.AlbedoColor[0], material.AlbedoColor[1], material.AlbedoColor[2], material.AlbedoColor[3]),
-                                EmissiveColor = new Vector4(material.EmissiveColor[0], material.EmissiveColor[1], material.EmissiveColor[2], 1.0f),
+                                BaseColor = ReadColor(material.AlbedoColor, Vector4.One),
+                                EmissiveColor = ReadColor(material.EmissiveColor, new Vector4(0, 0, 0, 1)),
                                 Metallic = material.Metallic,
                                 Roughness = material.Roughness,
                                 AlbedoTexIndex = GetTexIndex(material.AlbedoTexture),
@@ -171,14 +209,14 @@ public static class SceneDataExtractor
                                 RmaTexIndex = GetTexIndex(material.RmaTexture),
                                 EmissiveTexIndex = 0xFFFFFFFF,
                                 Subsurface = material.Subsurface,
-                                SubsurfaceRadius = new Vector4(sr.Length > 2 ? sr[0] : 1f, sr.Length > 2 ? sr[1] : 0.2f, sr.Length > 2 ? sr[2] : 0.1f, 0f),
-                                SubsurfaceColor = new Vector4(sc.Length > 2 ? sc[0] : 1f, sc.Length > 2 ? sc[1] : 1f, sc.Length > 2 ? sc[2] : 1f, 0f),
-                                TopColor = material.TopColor != null && material.TopColor.Length > 3 ? new Vector4(material.TopColor[0], material.TopColor[1], material.TopColor[2], material.TopColor[3]) : Vector4.One,
+                                SubsurfaceRadius = ReadVector3(material.SubsurfaceRadius, new Vector3(1.0f, 0.2f, 0.1f)),
+                                SubsurfaceColor = ReadVector3(material.SubsurfaceColor, Vector3.One),
+                                TopColor = ReadColor(material.TopColor, Vector4.One),
                                 TopMetallic = material.TopMetallic,
                                 TopRoughness = material.TopRoughness,
                                 TopMaskType = material.TopMaskType,
                                 TopMaskTexIndex = GetTexIndex(material.TopMaskTexture),
-                                Layer2Color = material.Layer2Color != null && material.Layer2Color.Length > 3 ? new Vector4(material.Layer2Color[0], material.Layer2Color[1], material.Layer2Color[2], material.Layer2Color[3]) : Vector4.One,
+                                Layer2Color = ReadColor(material.Layer2Color, Vector4.One),
                                 Layer2Metallic = material.Layer2Metallic,
                                 Layer2Roughness = material.Layer2Roughness,
                                 Layer2MaskType = material.Layer2MaskType,
@@ -206,18 +244,24 @@ public static class SceneDataExtractor
                             Indices = mesh.IndexBuffer.DeviceAddress,
                             IndexCount = mesh.IndexCount,
                             MaterialIdx = matIdx,
-                            InstanceIdx = instIdx
+                            InstanceIdx = instIdx,
+                            Flags = mesh.IndexFormat == 32 ? 1u : 0u
                         });
                     }
 
-                    instances.Add(new InstanceData
+                    if (parts.Count > firstPart)
                     {
-                        ModelMatrix = modelMatrix,
-                        AabbMin = new Vector4(instAabbMin, 1.0f),
-                        AabbMax = new Vector4(instAabbMax, 1.0f),
-                        PartCount = (uint)model.Parts.Length,
-                        FirstPartIndex = firstPart
-                    });
+                        instances.Add(new InstanceData
+                        {
+                            ModelMatrix = modelMatrix,
+                            AabbMin = new Vector4(instAabbMin, 1.0f),
+                            AabbMax = new Vector4(instAabbMax, 1.0f),
+                            PartCount = (uint)(parts.Count - firstPart),
+                            FirstPartIndex = firstPart,
+                            EntityIdLow = (uint)(id & 0xFFFFFFFF),
+                            EntityIdHigh = (uint)(id >> 32)
+                        });
+                    }
                 }
             }
         }
@@ -230,6 +274,14 @@ public static class SceneDataExtractor
         if (parts.Count > 0) partBuffer.Upload(CollectionsMarshal.AsSpan(parts));
         if (materials.Count > 0) materialBuffer.Upload(CollectionsMarshal.AsSpan(materials));
 
+        frameData.Camera = camData;
+        frameData.SkySunDir = skySunDir;
+        frameData.SkySunRadius = skySunRadius;
+        frameData.Lights.AddRange(lights);
+        frameData.Instances.AddRange(instances);
+        frameData.Parts.AddRange(parts);
+        frameData.Materials.AddRange(materials);
+
         pushData = new ScenePushData
         {
             Parts = partBuffer?.DeviceAddress ?? 0,
@@ -238,11 +290,19 @@ public static class SceneDataExtractor
             Camera = cameraBuffer?.DeviceAddress ?? 0,
             Lights = lightBuffer?.DeviceAddress ?? 0,
             LightCount = (uint)lights.Count,
-            FrameCount = 0, // Should be populated by caller
-            Resolution = new Vector4(0, 0, 0, 0), // Should be populated by caller
+            FrameCount = frameCount,
+            Resolution = new Vector4(width, height, width > 0 ? 1.0f / width : 0.0f, height > 0 ? 1.0f / height : 0.0f),
+            DebugFlags = debugFlags,
+            HasGeometry = instances.Count > 0 ? 1u : 0u,
             pad0 = 0,
-            pad1 = 0
+            pad1 = 0,
+            Sky = new SkyParams
+            {
+                SunDirAndRadius = new Vector4(skySunDir, skySunRadius),
+                IntensityTurbidityAlbedoPad = new Vector4(1.0f, 2.0f, 0.1f, 0.0f)
+            }
         };
+        frameData.PushData = pushData;
     }
 
     private static void EnsureBuffer(RhiDevice device, ref RhiBuffer buffer, ulong requiredSize, RhiNative.BufferUsage usage)
@@ -254,5 +314,25 @@ public static class SceneDataExtractor
             ulong newSize = Math.Max(requiredSize, buffer == null ? requiredSize : buffer.Size * 2);
             buffer = RhiBuffer.Create(device, newSize, usage);
         }
+    }
+
+    private static Vector4 ReadColor(float[]? values, Vector4 fallback)
+    {
+        if (values == null || values.Length == 0) return fallback;
+        return new Vector4(
+            values.Length > 0 ? values[0] : fallback.X,
+            values.Length > 1 ? values[1] : fallback.Y,
+            values.Length > 2 ? values[2] : fallback.Z,
+            values.Length > 3 ? values[3] : fallback.W);
+    }
+
+    private static Vector4 ReadVector3(float[]? values, Vector3 fallback)
+    {
+        if (values == null || values.Length == 0) return new Vector4(fallback, 0.0f);
+        return new Vector4(
+            values.Length > 0 ? values[0] : fallback.X,
+            values.Length > 1 ? values[1] : fallback.Y,
+            values.Length > 2 ? values[2] : fallback.Z,
+            0.0f);
     }
 }

@@ -1,5 +1,4 @@
-// cull.slang
-// Compute shader for frustum culling and generating indirect draw commands.
+#include "scene_data.slang"
 
 struct DrawIndirectCommand {
     uint vertexCount;
@@ -8,39 +7,20 @@ struct DrawIndirectCommand {
     uint baseInstance;
 };
 
-struct PartData {
-    float4 aabbMin;
-    float4 aabbMax;
-    uint64_t vertices;
-    uint64_t indices;
-    uint indexCount;
-    uint materialIdx;
-    uint instanceIdx;
-};
-
-struct InstanceData {
-    float4x4 modelMatrix;
-    float4 aabbMin;
-    float4 aabbMax;
-    uint partCount;
-    uint firstPartIndex;
-};
-
 struct CullPushData {
     InstanceData* instances;
     PartData* parts;
     DrawIndirectCommand* drawCmds;
     uint* drawCount;
-    float4 frustumPlanes[6]; // Left, Right, Bottom, Top, Near, Far (normals point inwards)
+    float4 frustumPlanes[6];
     uint instanceCount;
 };
 
 [push_constant]
 ConstantBuffer<CullPushData> push;
 
-// Returns 0 if outside, 1 if intersecting, 2 if fully inside
 int TestAABB(float3 bmin, float3 bmax, float4 planes[6]) {
-    int result = 2; // Assume inside
+    int result = 2;
     for (int i = 0; i < 6; ++i) {
         float4 plane = planes[i];
         
@@ -57,14 +37,38 @@ int TestAABB(float3 bmin, float3 bmax, float4 planes[6]) {
         );
         
         if (dot(plane.xyz, p) + plane.w < 0.0) {
-            return 0; // Outside
+            return 0;
         }
         
         if (dot(plane.xyz, n) + plane.w < 0.0) {
-            result = 1; // Intersecting
+            result = 1;
         }
     }
     return result;
+}
+
+void TransformAABB(float3 localMin, float3 localMax, float4x4 modelMatrix, out float3 worldMin, out float3 worldMax)
+{
+    float3 corners[8] = {
+        float3(localMin.x, localMin.y, localMin.z),
+        float3(localMax.x, localMin.y, localMin.z),
+        float3(localMin.x, localMax.y, localMin.z),
+        float3(localMax.x, localMax.y, localMin.z),
+        float3(localMin.x, localMin.y, localMax.z),
+        float3(localMax.x, localMin.y, localMax.z),
+        float3(localMin.x, localMax.y, localMax.z),
+        float3(localMax.x, localMax.y, localMax.z)
+    };
+
+    float3 first = mul(modelMatrix, float4(corners[0], 1.0)).xyz;
+    worldMin = first;
+    worldMax = first;
+
+    for (int i = 1; i < 8; ++i) {
+        float3 p = mul(modelMatrix, float4(corners[i], 1.0)).xyz;
+        worldMin = min(worldMin, p);
+        worldMax = max(worldMax, p);
+    }
 }
 
 [shader("compute")]
@@ -75,14 +79,18 @@ void computeMain(uint3 threadId : SV_DispatchThreadID)
     if (instIdx >= push.instanceCount) return;
 
     InstanceData inst = push.instances[instIdx];
+    float3 instWorldMin;
+    float3 instWorldMax;
+    TransformAABB(inst.aabbMin.xyz, inst.aabbMax.xyz, inst.modelMatrix, instWorldMin, instWorldMax);
+    bool visible = TestAABB(instWorldMin, instWorldMax, push.frustumPlanes) != 0;
     
     for (uint p = 0; p < inst.partCount; ++p) {
         uint partIdx = inst.firstPartIndex + p;
         PartData part = push.parts[partIdx];
         
         DrawIndirectCommand cmd;
-        cmd.vertexCount = part.indexCount;
-        cmd.instanceCount = 1;
+        cmd.vertexCount = visible ? part.indexCount : 0;
+        cmd.instanceCount = visible ? 1 : 0;
         cmd.vertexStart = 0;
         cmd.baseInstance = partIdx; 
         
