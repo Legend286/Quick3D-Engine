@@ -1,0 +1,326 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Engine.Editor.ViewModels"
+             x:Class="Engine.Editor.Views.RenderGraphExplorerView"
+             x:DataType="vm:RenderGraphExplorerViewModel">
+  <UserControl.Styles>
+    <Style Selector="Border.MetricCard">
+      <Setter Property="Background" Value="#171C24" />
+      <Setter Property="BorderBrush" Value="#2C3442" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="Padding" Value="12,7" />
+    </Style>
+    <Style Selector="TextBlock.MetricLabel">
+      <Setter Property="Foreground" Value="#7E8999" />
+      <Setter Property="FontSize" Value="10" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="TextBlock.MetricValue">
+      <Setter Property="Foreground" Value="#E7ECF3" />
+      <Setter Property="FontSize" Value="15" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid RowDefinitions="Auto,*" Background="#0E1218">
+    <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="10,8,10,6" ColumnSpacing="10">
+      <UniformGrid Grid.Column="0" Columns="5" Rows="1">
+        <Border Classes="MetricCard" Margin="0,0,6,0">
+          <StackPanel>
+            <TextBlock Classes="MetricLabel" Text="CAPTURE" />
+            <TextBlock Classes="MetricValue" Text="{Binding FrameText}" />
+          </StackPanel>
+        </Border>
+        <Border Classes="MetricCard" Margin="0,0,6,0">
+          <StackPanel>
+            <TextBlock Classes="MetricLabel" Text="CPU RECORD" />
+            <TextBlock Classes="MetricValue" Text="{Binding CpuText}" Foreground="#55D6BE" />
+          </StackPanel>
+        </Border>
+        <Border Classes="MetricCard" Margin="0,0,6,0">
+          <StackPanel>
+            <TextBlock Classes="MetricLabel" Text="GPU FRAME" />
+            <TextBlock Classes="MetricValue" Text="{Binding GpuText}" Foreground="#7AA2F7" />
+          </StackPanel>
+        </Border>
+        <Border Classes="MetricCard">
+          <StackPanel>
+            <TextBlock Classes="MetricLabel" Text="TRANSIENT HEAP" />
+            <TextBlock Classes="MetricValue" Text="{Binding HeapText}" Foreground="#F6C177" />
+          </StackPanel>
+        </Border>
+        <Border Classes="MetricCard" Margin="6,0,0,0">
+          <StackPanel>
+            <TextBlock Classes="MetricLabel" Text="GPU COMMITTED" />
+            <TextBlock Classes="MetricValue" Text="{Binding GraphMemoryText}" Foreground="#E88DAD" />
+          </StackPanel>
+        </Border>
+      </UniformGrid>
+
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+        <TextBox Width="210"
+                 Text="{Binding FilterText}"
+                 PlaceholderText="Filter graph"
+                 VerticalAlignment="Center" />
+        <Button Command="{Binding TogglePausedCommand}"
+                Content="{Binding PauseButtonText}"
+                MinWidth="82"
+                Padding="14,7" />
+      </StackPanel>
+    </Grid>
+
+    <Border Grid.Row="1"
+            IsVisible="{Binding !HasData}"
+            Margin="10"
+            BorderBrush="#2C3442"
+            BorderThickness="1"
+            CornerRadius="8">
+      <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="5">
+        <TextBlock Text="Render graph waiting for a frame" Foreground="#D7DEE8" FontSize="15" />
+        <TextBlock Text="The explorer will attach after the game renderer is ready." Foreground="#778293" />
+      </StackPanel>
+    </Border>
+
+    <TabControl Grid.Row="1" IsVisible="{Binding HasData}" Margin="10,0,10,10">
+      <TabItem Header="Overview">
+        <Grid ColumnDefinitions="*,*" Margin="8" ColumnSpacing="12">
+          <StackPanel Grid.Column="0" Spacing="8">
+            <TextBlock Text="GRAPH SNAPSHOT" Foreground="#7E8999" FontSize="10" FontWeight="SemiBold" />
+            <Border Classes="MetricCard">
+              <StackPanel Spacing="9">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="Plan" Foreground="#8995A5" />
+                  <TextBlock Grid.Column="1" Text="{Binding PlanText}" Foreground="#E7ECF3" FontWeight="SemiBold" />
+                </Grid>
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="Passes" Foreground="#8995A5" />
+                  <TextBlock Grid.Column="1" Text="{Binding PassCountText}" Foreground="#E7ECF3" FontWeight="SemiBold" />
+                </Grid>
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="Resources" Foreground="#8995A5" />
+                  <TextBlock Grid.Column="1" Text="{Binding ResourceCountText}" Foreground="#E7ECF3" FontWeight="SemiBold" />
+                </Grid>
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="Transitions" Foreground="#8995A5" />
+                  <TextBlock Grid.Column="1" Text="{Binding BarrierCountText}" Foreground="#E7ECF3" FontWeight="SemiBold" />
+                </Grid>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+
+          <StackPanel Grid.Column="1" Spacing="8">
+            <TextBlock Text="RECENT FRAMES" Foreground="#7E8999" FontSize="10" FontWeight="SemiBold" />
+            <Border Classes="MetricCard">
+              <ItemsControl ItemsSource="{Binding FrameHistory}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:RenderGraphFrameRowViewModel">
+                    <Grid ColumnDefinitions="80,*,65,65" Height="22">
+                      <TextBlock Text="{Binding Frame}" Foreground="#8B96A6" FontSize="10" VerticalAlignment="Center" />
+                      <Grid Grid.Column="1" VerticalAlignment="Center">
+                        <Border Width="{Binding CpuBarWidth}" Height="3" HorizontalAlignment="Left" Background="#55D6BE" CornerRadius="2" />
+                        <Border Width="{Binding GpuBarWidth}" Height="3" Margin="0,7,0,0" HorizontalAlignment="Left" Background="#7AA2F7" CornerRadius="2" />
+                      </Grid>
+                      <TextBlock Grid.Column="2" Text="{Binding CpuTime}" Foreground="#55D6BE" FontSize="10" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="3" Text="{Binding GpuTime}" Foreground="#7AA2F7" FontSize="10" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </Border>
+          </StackPanel>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Timeline">
+        <ScrollViewer Margin="8">
+          <StackPanel Spacing="5">
+            <Grid ColumnDefinitions="210,*,120,120" Margin="8,0,8,5">
+              <TextBlock Text="PASS" Foreground="#697586" FontSize="10" />
+              <TextBlock Grid.Column="1" Text="RELATIVE GPU / CPU COST" Foreground="#697586" FontSize="10" />
+              <TextBlock Grid.Column="2" Text="CPU" Foreground="#55D6BE" FontSize="10" HorizontalAlignment="Right" />
+              <TextBlock Grid.Column="3" Text="GPU" Foreground="#7AA2F7" FontSize="10" HorizontalAlignment="Right" />
+            </Grid>
+            <ItemsControl ItemsSource="{Binding Passes}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:RenderGraphPassRowViewModel">
+                  <Border Background="#171C24" BorderBrush="#252D39" BorderThickness="1" CornerRadius="5" Padding="8,5">
+                    <Grid ColumnDefinitions="210,*,120,120" Height="28">
+                      <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <Border Width="4" Height="20" Background="{Binding Accent}" CornerRadius="2" />
+                        <TextBlock Text="{Binding Name}" Foreground="#DDE4ED" VerticalAlignment="Center" />
+                      </StackPanel>
+                      <Grid Grid.Column="1" VerticalAlignment="Center">
+                        <Border Width="{Binding TimingBarWidth}" MaxWidth="600" Height="9" HorizontalAlignment="Left" Background="{Binding Accent}" Opacity="0.78" CornerRadius="4" />
+                      </Grid>
+                      <TextBlock Grid.Column="2" Text="{Binding CpuTime}" Foreground="#AAB4C2" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="3" Text="{Binding GpuTime}" Foreground="#AAB4C2" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Passes">
+        <ScrollViewer Margin="8">
+          <ItemsControl ItemsSource="{Binding Passes}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:RenderGraphPassRowViewModel">
+                <Expander IsExpanded="{Binding IsExpanded, Mode=TwoWay}" Margin="0,0,0,6">
+                  <Expander.Header>
+                    <Grid ColumnDefinitions="5,220,*,120,130" Height="36">
+                      <Border Grid.Column="0" Background="{Binding Accent}" CornerRadius="3" Margin="0,4" />
+                      <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Name}" Foreground="#E7ECF3" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding Queue}" Foreground="#697586" FontSize="10" />
+                      </StackPanel>
+                      <Grid Grid.Column="2" VerticalAlignment="Center">
+                        <Border Width="{Binding TimingBarWidth}" MaxWidth="500" Height="8" HorizontalAlignment="Left" Background="{Binding Accent}" Opacity="0.72" CornerRadius="4" />
+                      </Grid>
+                      <TextBlock Grid.Column="3" Text="{Binding CpuTime}" Foreground="#B5BFCC" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                      <TextBlock Grid.Column="4" Text="{Binding GpuTime}" Foreground="#7E8999" VerticalAlignment="Center" HorizontalAlignment="Right" Margin="8,0" />
+                    </Grid>
+                  </Expander.Header>
+                  <Grid ColumnDefinitions="*,*,*" Margin="15,5,8,12" ColumnSpacing="20">
+                    <StackPanel Grid.Column="0" Spacing="4">
+                      <TextBlock Text="RESOURCE ACCESS" Foreground="#7E8999" FontSize="10" FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding AccessSummary}" FontFamily="Menlo,Consolas,monospace" FontSize="11" Foreground="#C8D0DC" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="4">
+                      <TextBlock Text="BARRIERS" Foreground="#7E8999" FontSize="10" FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding BarrierSummary}" FontFamily="Menlo,Consolas,monospace" FontSize="11" Foreground="#C8D0DC" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Spacing="4">
+                      <TextBlock Text="DEPENDENCIES" Foreground="#7E8999" FontSize="10" FontWeight="SemiBold" />
+                      <TextBlock Text="{Binding DependencySummary}" FontFamily="Menlo,Consolas,monospace" FontSize="11" Foreground="#C8D0DC" />
+                    </StackPanel>
+                  </Grid>
+                </Expander>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Resources">
+        <ScrollViewer Margin="8">
+          <StackPanel Spacing="5">
+            <Grid ColumnDefinitions="*,110,130,160,190" Margin="10,0,10,5">
+              <TextBlock Text="RESOURCE" Foreground="#697586" FontSize="10" />
+              <TextBlock Grid.Column="1" Text="KIND" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+              <TextBlock Grid.Column="2" Text="SIZE" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+              <TextBlock Grid.Column="3" Text="ALIAS" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+              <TextBlock Grid.Column="4" Text="LIFETIME" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+            </Grid>
+            <ItemsControl ItemsSource="{Binding Resources}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:RenderGraphResourceRowViewModel">
+                  <Border Background="#171C24" BorderBrush="#252D39" BorderThickness="1" CornerRadius="5" Padding="10,7">
+                    <Grid ColumnDefinitions="*,110,130,160,190">
+                      <TextBlock Text="{Binding Name}" Foreground="#DDE4ED" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Grid.Column="1" Text="{Binding Kind}" Foreground="#8995A5" HorizontalAlignment="Right" />
+                      <TextBlock Grid.Column="2" Text="{Binding Size}" Foreground="#F6C177" HorizontalAlignment="Right" />
+                      <TextBlock Grid.Column="3" Text="{Binding AliasOffset}" Foreground="#697586" HorizontalAlignment="Right" />
+                      <TextBlock Grid.Column="4" Text="{Binding Lifetime}" Foreground="#697586" HorizontalAlignment="Right" />
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Budgets">
+        <ScrollViewer Margin="8">
+          <StackPanel Spacing="5">
+            <Grid ColumnDefinitions="*,150,170,110,110" Margin="10,0,10,5">
+              <TextBlock Text="DOMAIN" Foreground="#697586" FontSize="10" />
+              <TextBlock Grid.Column="1" Text="FRAME BUDGET" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+              <TextBlock Grid.Column="2" Text="LEARNED COST" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+              <TextBlock Grid.Column="3" Text="ADMITTED" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+              <TextBlock Grid.Column="4" Text="DEFERRED" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+            </Grid>
+            <ItemsControl ItemsSource="{Binding Budgets}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:RenderGraphBudgetRowViewModel">
+                  <Border Background="#171C24" BorderBrush="#252D39" BorderThickness="1" CornerRadius="5" Padding="10,8">
+                    <Grid ColumnDefinitions="*,150,170,110,110">
+                      <TextBlock Text="{Binding Name}" Foreground="#DDE4ED" />
+                      <TextBlock Grid.Column="1" Text="{Binding Budget}" Foreground="#F6C177" HorizontalAlignment="Right" />
+                      <TextBlock Grid.Column="2" Text="{Binding EstimatedCost}" Foreground="#7AA2F7" HorizontalAlignment="Right" />
+                      <TextBlock Grid.Column="3" Text="{Binding Admitted}" Foreground="#55D6BE" HorizontalAlignment="Right" />
+                      <TextBlock Grid.Column="4" Text="{Binding Deferred}" Foreground="#E88DAD" HorizontalAlignment="Right" />
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Shadows">
+        <Grid RowDefinitions="Auto,*" Margin="8" RowSpacing="8">
+          <UniformGrid Grid.Row="0" Columns="3" Rows="1">
+            <Border Classes="MetricCard" Margin="0,0,6,0">
+              <StackPanel>
+                <TextBlock Classes="MetricLabel" Text="ATLAS MEMORY" />
+                <TextBlock Classes="MetricValue" Text="{Binding ShadowMemoryText}" Foreground="#F6C177" />
+              </StackPanel>
+            </Border>
+            <Border Classes="MetricCard" Margin="0,0,6,0">
+              <StackPanel>
+                <TextBlock Classes="MetricLabel" Text="RESIDENCY" />
+                <TextBlock Classes="MetricValue" Text="{Binding ShadowResidencyText}" Foreground="#7AA2F7" />
+              </StackPanel>
+            </Border>
+            <Border Classes="MetricCard">
+              <StackPanel>
+                <TextBlock Classes="MetricLabel" Text="ALLOCATIONS" />
+                <TextBlock Classes="MetricValue" Text="{Binding ShadowLightCountText}" Foreground="#55D6BE" />
+              </StackPanel>
+            </Border>
+          </UniformGrid>
+          <ScrollViewer Grid.Row="1">
+            <StackPanel Spacing="5">
+              <Grid ColumnDefinitions="*,70,160,130,130,100" Margin="10,0,10,5">
+                <TextBlock Text="LIGHT / ENTITY" Foreground="#697586" FontSize="10" />
+                <TextBlock Grid.Column="1" Text="FACE" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+                <TextBlock Grid.Column="2" Text="CACHE STATE" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+                <TextBlock Grid.Column="3" Text="STATIC TILE" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+                <TextBlock Grid.Column="4" Text="MOVABLE TILE" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+                <TextBlock Grid.Column="5" Text="SIZE" Foreground="#697586" FontSize="10" HorizontalAlignment="Right" />
+              </Grid>
+              <ItemsControl ItemsSource="{Binding ShadowFaces}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:RenderGraphShadowFaceRowViewModel">
+                    <Border Background="#171C24"
+                            BorderBrush="#252D39"
+                            BorderThickness="1"
+                            CornerRadius="5"
+                            Padding="10,7"
+                            Cursor="Hand"
+                            PointerPressed="OnShadowFacePressed">
+                      <Grid ColumnDefinitions="*,70,160,130,130,100">
+                        <TextBlock Text="{Binding Light}" Foreground="#DDE4ED" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="1" Text="{Binding Face}" Foreground="#8995A5" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="2" Text="{Binding State}" Foreground="#F6C177" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="3" Text="{Binding StaticTile}" FontFamily="Menlo,Consolas,monospace" Foreground="#55D6BE" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="4" Text="{Binding DynamicTile}" FontFamily="Menlo,Consolas,monospace" Foreground="#7AA2F7" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="5" Text="{Binding Resolution}" Foreground="#8995A5" HorizontalAlignment="Right" />
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </ScrollViewer>
+        </Grid>
+      </TabItem>
+    </TabControl>
+  </Grid>
+</UserControl>

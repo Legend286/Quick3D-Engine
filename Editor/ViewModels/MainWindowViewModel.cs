@@ -15,6 +15,7 @@ public partial class MainWindowViewModel : ObservableObject
     public HierarchyViewModel HierarchyVm { get; } = new();
     public InspectorViewModel InspectorVm { get; } = new();
     public ContentBrowserViewModel ContentBrowserVm { get; } = new();
+    public RenderGraphExplorerViewModel? RenderGraphVm { get; }
 
     /// <summary>Bound to the central viewport panel. Owns the Metal swapchain
     /// + WriteableBitmap pipeline on macOS. Null on Windows until Phase 2
@@ -28,6 +29,7 @@ public partial class MainWindowViewModel : ObservableObject
             string contentRoot = System.IO.Path.Combine(App.ProjectRoot, "Content");
             Engine.CBindings.Log.Info($"[MainWindowViewModel] ContentRoot: '{contentRoot}'", "Editor");
             ViewportVm = new ViewportPanelViewModel(contentRoot: contentRoot, sceneName: "New Scene");
+            RenderGraphVm = new RenderGraphExplorerViewModel(ViewportVm);
 
             HierarchyVm.Bind(ViewportVm);
             HierarchyVm.OnEntitySelected += (ent) => {

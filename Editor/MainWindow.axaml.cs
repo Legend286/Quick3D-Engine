@@ -228,6 +228,7 @@ public partial class MainWindow : Window
         // Release the Metal swapchain + device before tearing down the logger.
         if (DataContext is MainWindowViewModel vm)
         {
+            vm.RenderGraphVm?.Dispose();
             vm.ViewportVm?.DisposeOnClose();
             vm.ConsoleVm?.DisposeOnClose();
         }

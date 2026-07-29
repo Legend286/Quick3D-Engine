@@ -1,0 +1,64 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="using:Engine.Editor.Views"
+        x:Class="Engine.Editor.Views.ShadowAtlasInspectorWindow"
+        Width="548"
+        Height="620"
+        MinWidth="420"
+        MinHeight="480"
+        ShowInTaskbar="False"
+        Topmost="True"
+        WindowStartupLocation="CenterOwner"
+        Title="Shadow Atlas Inspector"
+        Background="#0E1218">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="14" RowSpacing="12">
+    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+      <StackPanel>
+        <TextBlock x:Name="TitleText"
+                   FontSize="16"
+                   FontWeight="SemiBold"
+                   Foreground="#EEF2F7" />
+        <TextBlock x:Name="AllocationText"
+                   FontFamily="Menlo,Consolas,monospace"
+                   FontSize="11"
+                   Foreground="#8995A5" />
+      </StackPanel>
+      <StackPanel Grid.Column="1"
+                  Orientation="Horizontal"
+                  Spacing="6">
+        <Button x:Name="StaticButton"
+                Content="Static"
+                Click="OnStaticClicked"
+                Padding="12,6" />
+        <Button x:Name="DynamicButton"
+                Content="Movable"
+                Click="OnDynamicClicked"
+                Padding="12,6" />
+      </StackPanel>
+    </Grid>
+
+    <Border Grid.Row="1"
+            Background="#111722"
+            BorderBrush="#394150"
+            BorderThickness="1"
+            CornerRadius="9">
+      <views:RoundedClipPanel Radius="8">
+        <views:GpuExternalImageControl
+            x:Name="PreviewControl"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Stretch" />
+      </views:RoundedClipPanel>
+    </Border>
+
+    <Grid Grid.Row="2" ColumnDefinitions="*,Auto">
+      <TextBlock x:Name="StateText"
+                 Foreground="#7AA2F7"
+                 VerticalAlignment="Center" />
+      <TextBlock Grid.Column="1"
+                 Text="Live GPU depth preview"
+                 Foreground="#697586"
+                 FontSize="11"
+                 VerticalAlignment="Center" />
+    </Grid>
+  </Grid>
+</Window>

@@ -124,17 +124,15 @@
 
       <TabControl x:Name="ConsolesTabControl" Grid.Row="2"
                   MinHeight="80" MaxHeight="800"
-                  Height="300" IsVisible="True">
+                  Height="375" IsVisible="True">
         <TabItem Header="Content Browser">
           <views:ContentBrowserView DataContext="{Binding ContentBrowserVm}" />
         </TabItem>
         <TabItem Header="Console">
           <views:ConsolePanelView DataContext="{Binding ConsoleVm}" />
         </TabItem>
-        <TabItem Header="Profiler">
-          <Border Padding="8">
-            <TextBlock Text="(empty - Phase 4)" FontSize="13" />
-          </Border>
+        <TabItem Header="Render Graph">
+          <views:RenderGraphExplorerView DataContext="{Binding RenderGraphVm}" />
         </TabItem>
         <TabItem Header="Localization">
           <Border Padding="8">
@@ -222,9 +220,11 @@
 
               <!-- Model Component -->
               <Expander Header="Model Component" IsVisible="{Binding HasModel}" IsExpanded="True">
-                <Grid ColumnDefinitions="Auto,*">
-                  <TextBlock Grid.Column="0" Text="Model ID:" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                  <TextBox Grid.Column="1" Text="{Binding ModelId}" HorizontalAlignment="Stretch" IsReadOnly="True" />
+                <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto">
+                  <TextBlock Grid.Row="0" Grid.Column="0" Text="Model ID:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                  <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding ModelId}" HorizontalAlignment="Stretch" IsReadOnly="True" />
+                  <TextBlock Grid.Row="1" Grid.Column="0" Text="Shadow Mobility:" VerticalAlignment="Center" Margin="0,8,10,0"/>
+                  <CheckBox Grid.Row="1" Grid.Column="1" Content="Static Caster" IsChecked="{Binding StaticShadowCaster}" Margin="0,8,0,0"/>
                 </Grid>
               </Expander>
 

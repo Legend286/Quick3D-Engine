@@ -52,6 +52,13 @@ scale changes. That keeps `RenderFrame(width, height)` and the
 outline/composite passes on the same physical pixel dimensions as
 the visible viewport instead of the initial attach-time size.
 
+`ViewportPanelView` frames the native host with separate scene/status and
+navigation chrome rows. No Avalonia visual overlaps the native rectangle, so
+the layout retains correct platform composition and pointer routing. The Metal
+host layer uses continuous rounded clipping matching the inset render well;
+the swapchain drawable size still derives only from the native host bounds and
+active DPI scale.
+
 There is no `WriteableBitmap` + `Image` readback path
 anymore on macOS - Metal draws straight to the embedded
 NSView, so the Avl Skia round-trip is bypassed entirely.
@@ -111,10 +118,73 @@ renderer per frame. Folder changes now cancel the active hover session before
 the asset list is rebuilt, which prevents stale preview state from surviving
 into a new content view.
 
+`RoundedClipPanel` applies one rounded geometry to the bitmap fallback and the
+composition child visual. The transparent top-level surface and the preview
+clip therefore match the card geometry without square backing corners or a
+GPU layer crossing the interior border.
+
 This avoids the previous failure mode where the preview camera looked away from
 the asset and the sky pass filled the icon instead, while also avoiding the
 native-view occlusion problem from embedding another platform surface above the
 editor UI.
+
+## Render Graph Explorer
+
+**Purpose**: Displays the active renderer pass sequence and live execution
+telemetry without coupling Avalonia to the hot-reloaded renderer assembly.
+
+### Public API Surface
+- `RenderGraphExplorerViewModel`: Polls immutable diagnostics snapshots and
+  prepares pass/resource rows for the editor.
+- `RenderGraphExplorerView`: Displays frame totals, proportional pass timing
+  bars, resource accesses, barriers, dependencies, memory sizes, lifetimes,
+  alias groups, rolling frame history, and GPU work admission across dedicated
+  Overview, Timeline, Passes, Resources, Budgets, and Shadows tabs. Shadow
+  diagnostics include atlas memory, page residency, cache state, and stable
+  page-slot identities for every punctual-light face.
+- `IGameLoop.GetRenderGraphDiagnostics()`: Transfers the current snapshot
+  across the assembly hot-reload boundary.
+
+### Usage Example
+Open the `Render Graph` bottom-panel tab while the viewport is rendering.
+Expand a pass to inspect its declared resource accesses, upstream writers, and
+incoming barriers. Filter by pass, resource, or alias-group name. Use `Pause`
+to hold the current capture while retaining the last 60 sampled frames.
+Live polling updates persistent pass rows in place, so expanded pass details do
+not collapse between samples. Renderer plan versions invalidate stale rows and
+history when switching between raster and path tracing.
+
+The Shadows tab reads immutable allocator diagnostics. Moving a light changes
+the face cache state to `transform queued` while page and slot labels remain
+stable; a changed label indicates an actual allocation lifecycle event.
+Clicking a face opens the Shadow Atlas Inspector. Static and Movable select
+the cached layer for that light face. The inspector blits the selected depth
+tile through the main RHI device into one reused composition target; it creates
+no swapchain, secondary device, scene renderer, or CPU bitmap.
+
+### Performance Characteristics
+The explorer refreshes at 4 Hz. Per-pass CPU timestamps are collected during
+normal graph execution. Metal GPU timings use draw and dispatch boundary
+counter samples plus completed command-buffer duration, resolved
+asynchronously through a triple-buffered timestamp pool; the render thread
+never waits for profiling results. Unsupported backends keep GPU fields
+explicitly pending.
+
+The Transient Heap metric reports the physical alias heap allocated by the
+render graph. GPU Committed reports live RHI allocation ownership. The
+Resources tab shows graph-lifetime rows separately from committed heaps,
+buffers, textures, model geometry, shadow pages, and editor preview targets.
+Heap aliases remain visible without being counted twice. All metrics select
+`B`, `KB`, `MB`, or `GB` based on magnitude.
+
+The Budgets tab reports each GPU work domain's target milliseconds, learned
+unit cost, current-frame admitted/deferred units, and cumulative totals. The
+cumulative values remain observable even when the 4 Hz editor poll misses the
+specific frame that performed an update.
+
+The editor bottom panel opens at 375 logical pixels, providing 25 percent more
+vertical space for the content browser and diagnostics tools than the previous
+300-pixel layout.
 
 ### Related Files
 - `Game/IdPickingPass.cs`
