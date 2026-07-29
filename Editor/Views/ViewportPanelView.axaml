@@ -5,6 +5,125 @@
              x:Class="Engine.Editor.Views.ViewportPanelView"
              x:CompileBindings="False"
              x:DataType="vm:ViewportPanelViewModel"
-             Background="#101418">
-    <views:ViewportMetalLayerHost x:Name="MetalHost" />
+             Background="Transparent">
+  <UserControl.Styles>
+    <Style Selector="Border.ViewportPill">
+      <Setter Property="Background" Value="#202834" />
+      <Setter Property="BorderBrush" Value="#364151" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="8,3" />
+    </Style>
+    <Style Selector="TextBlock.ViewportLabel">
+      <Setter Property="Foreground" Value="#8996A8" />
+      <Setter Property="FontSize" Value="10" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="LetterSpacing" Value="0.7" />
+    </Style>
+  </UserControl.Styles>
+
+  <Border Background="#090D12"
+          BorderBrush="#303947"
+          BorderThickness="1"
+          CornerRadius="10"
+          BoxShadow="0 10 26 0 #50000000">
+    <Grid RowDefinitions="38,*,28">
+      <Border Grid.Row="0"
+              Background="#171D26"
+              BorderBrush="#303947"
+              BorderThickness="0,0,0,1"
+              CornerRadius="9,9,0,0"
+              Padding="11,0">
+        <Grid ColumnDefinitions="Auto,*,Auto">
+          <StackPanel Orientation="Horizontal"
+                      Spacing="8"
+                      VerticalAlignment="Center">
+            <Border Width="8"
+                    Height="8"
+                    Background="#55D6BE"
+                    CornerRadius="4"
+                    BoxShadow="0 0 8 0 #8055D6BE" />
+            <TextBlock Classes="ViewportLabel"
+                       Text="SCENE VIEW" />
+          </StackPanel>
+          <StackPanel Grid.Column="1"
+                      Orientation="Horizontal"
+                      Spacing="7"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center">
+            <TextBlock Text="{Binding CurrentSceneName}"
+                       Foreground="#E4EAF2"
+                       FontWeight="SemiBold"
+                       MaxWidth="260"
+                       TextTrimming="CharacterEllipsis" />
+            <Border Width="5"
+                    Height="5"
+                    Background="#F6C177"
+                    CornerRadius="3"
+                    IsVisible="{Binding IsDirty}" />
+          </StackPanel>
+          <StackPanel Grid.Column="2"
+                      Orientation="Horizontal"
+                      Spacing="6"
+                      VerticalAlignment="Center">
+            <Border Classes="ViewportPill">
+              <TextBlock Classes="ViewportLabel"
+                         Text="PERSPECTIVE"
+                         Foreground="#AEB9C8" />
+            </Border>
+            <Border Classes="ViewportPill">
+              <StackPanel Orientation="Horizontal" Spacing="5">
+                <Border Width="5"
+                        Height="5"
+                        Background="#7AA2F7"
+                        CornerRadius="3"
+                        VerticalAlignment="Center" />
+                <TextBlock Classes="ViewportLabel"
+                           Text="REALTIME"
+                           Foreground="#AEB9C8" />
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <Border Grid.Row="1"
+              Margin="8,8,8,7"
+              Background="#05070A"
+              BorderBrush="#343E4C"
+              BorderThickness="1"
+              CornerRadius="8"
+              Padding="1">
+        <views:ViewportMetalLayerHost x:Name="MetalHost" />
+      </Border>
+
+      <Border Grid.Row="2"
+              Background="#111720"
+              BorderBrush="#303947"
+              BorderThickness="0,1,0,0"
+              CornerRadius="0,0,9,9"
+              Padding="11,0">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel Orientation="Horizontal"
+                      Spacing="14"
+                      VerticalAlignment="Center">
+            <TextBlock Classes="ViewportLabel"
+                       Text="RMB  LOOK"
+                       Foreground="#7E8A9B" />
+            <TextBlock Classes="ViewportLabel"
+                       Text="WASD  MOVE"
+                       Foreground="#7E8A9B" />
+            <TextBlock Classes="ViewportLabel"
+                       Text="LMB  SELECT"
+                       Foreground="#7E8A9B" />
+          </StackPanel>
+          <TextBlock Grid.Column="1"
+                     Classes="ViewportLabel"
+                     Text="RHI NATIVE SURFACE"
+                     Foreground="#647083"
+                     VerticalAlignment="Center" />
+        </Grid>
+      </Border>
+    </Grid>
+  </Border>
 </UserControl>
