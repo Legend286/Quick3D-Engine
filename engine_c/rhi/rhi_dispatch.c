@@ -98,6 +98,11 @@ int32_t rhi_create_fence(RhiDevice* d, RhiFence** out) {
     if (g_active < 0) return -1;
     return g_backends[g_active].create_fence(d, out);
 }
+int32_t rhi_create_timestamp_query_pool(RhiDevice* d, uint32_t sample_count,
+                                        RhiTimestampQueryPool** out) {
+    if (g_active < 0 || !g_backends[g_active].create_timestamp_query_pool) return -1;
+    return g_backends[g_active].create_timestamp_query_pool(d, sample_count, out);
+}
 
 int32_t rhi_create_heap(RhiDevice* d, const RhiHeapDesc* desc, RhiHeap** out) {
     return g_backends[g_active].create_heap(d, desc, out);
@@ -115,6 +120,11 @@ void rhi_destroy_shader(RhiShader* s) { g_backends[g_active].destroy_shader(s); 
 void rhi_destroy_pipeline(RhiPipeline* p) { if (g_active >= 0) g_backends[g_active].destroy_pipeline(p); }
 void rhi_destroy_heap(RhiHeap* h) { if (g_active >= 0) g_backends[g_active].destroy_heap(h); }
 void rhi_destroy_fence(RhiFence* f) { if (g_active >= 0) g_backends[g_active].destroy_fence(f); }
+void rhi_destroy_timestamp_query_pool(RhiTimestampQueryPool* pool) {
+    if (g_active >= 0 && g_backends[g_active].destroy_timestamp_query_pool) {
+        g_backends[g_active].destroy_timestamp_query_pool(pool);
+    }
+}
 
 /* ----- Acceleration Structures forwarders ----- */
 
@@ -223,6 +233,32 @@ void rhi_cmd_signal_fence(RhiCommandList* cl, RhiFence* f, uint64_t value) {
 }
 void rhi_cmd_wait_fence(RhiCommandList* cl, RhiFence* f, uint64_t value) {
     g_backends[g_active].cmd_wait_fence(cl, f, value);
+}
+int32_t rhi_cmd_write_timestamp(RhiCommandList* cl, RhiTimestampQueryPool* pool,
+                                uint32_t sample_index) {
+    if (g_active < 0 || !g_backends[g_active].cmd_write_timestamp) return -1;
+    return g_backends[g_active].cmd_write_timestamp(cl, pool, sample_index);
+}
+int32_t rhi_cmd_resolve_timestamps(RhiCommandList* cl, RhiTimestampQueryPool* pool,
+                                   uint32_t sample_count) {
+    if (g_active < 0 || !g_backends[g_active].cmd_resolve_timestamps) return -1;
+    return g_backends[g_active].cmd_resolve_timestamps(cl, pool, sample_count);
+}
+int32_t rhi_timestamp_query_pool_read_durations(
+    RhiTimestampQueryPool* pool,
+    uint32_t duration_count,
+    uint64_t* out_duration_nanoseconds) {
+    if (g_active < 0 || !g_backends[g_active].timestamp_query_pool_read_durations) return -1;
+    return g_backends[g_active].timestamp_query_pool_read_durations(
+        pool, duration_count, out_duration_nanoseconds);
+}
+int32_t rhi_timestamp_query_pool_read_frame_duration(
+    RhiTimestampQueryPool* pool,
+    uint64_t* out_duration_nanoseconds) {
+    if (g_active < 0 ||
+        !g_backends[g_active].timestamp_query_pool_read_frame_duration) return -1;
+    return g_backends[g_active].timestamp_query_pool_read_frame_duration(
+        pool, out_duration_nanoseconds);
 }
 
 RhiEncoder* rhi_begin_render_pass(RhiCommandList* cl, const RhiPassDesc* desc) {

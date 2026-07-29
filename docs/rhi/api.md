@@ -31,6 +31,12 @@ interop. On macOS that handle is an `IOSurfaceRef`. The caller keeps owning the
 `RhiTexture`; the exported handle is released independently through
 `rhi_release_external_image_handle`.
 
+Depth textures created with both `RHI_TEXTURE_RENDER_TARGET` and
+`RHI_TEXTURE_SHADER_READ` may be rendered and sampled in later passes. A
+depth-only `RhiPassDesc` sets `color_count` to zero and supplies only
+`depth_attachment`; this maps directly to a Metal render pass without a color
+attachment and to a Vulkan depth-only rendering scope.
+
 ## Exports — by category
 
 ### Device
@@ -98,6 +104,10 @@ int32_t rhi_texture_export_external_image(RhiTexture*, void** out_handle,
 void    rhi_release_external_image_handle(void* handle);
 ```
 
+`RhiGraphicsPipelineDesc.depth_compare` selects `LESS_EQUAL` for normal depth
+testing or `ALWAYS` for operations such as scissored shadow-atlas tile clears.
+The compare mode is pipeline state and is rebound with the graphics pipeline.
+
 `rhi_texture_export_external_image` is intended for editor/compositor interop,
 not general gameplay readback. The current Metal implementation supports
 BGRA8 render targets only and expects the source texture to be created with
@@ -132,6 +142,40 @@ The lifetime contract: every `rhi_begin_*_pass` is matched by exactly one
 `rhi_end_pass`. `rhi_begin_cmdlist` is matched by exactly one `rhi_submit`.
 The C# managed wrappers (`engine_cs/Engine.RHI/`) enforce this with the
 `CommandRecorder` class: `Submit()` runs once at the end of a frame.
+
+Managed code uses `RhiPipeline.CreateDepthOnly`,
+`RhiTexture.CreateDepth(..., shaderReadable: true)`, and
+`CommandRecorder.BeginDepthOnlyPass` for portable shadow-map rendering.
+
+### Timestamp queries
+
+```c
+int32_t rhi_create_timestamp_query_pool(
+    RhiDevice* device, uint32_t sample_count,
+    RhiTimestampQueryPool** out_pool);
+void rhi_destroy_timestamp_query_pool(RhiTimestampQueryPool* pool);
+int32_t rhi_cmd_write_timestamp(
+    RhiCommandList* command_list, RhiTimestampQueryPool* pool,
+    uint32_t sample_index);
+int32_t rhi_cmd_resolve_timestamps(
+    RhiCommandList* command_list, RhiTimestampQueryPool* pool,
+    uint32_t sample_count);
+int32_t rhi_timestamp_query_pool_read_durations(
+    RhiTimestampQueryPool* pool, uint32_t duration_count,
+    uint64_t* out_duration_nanoseconds);
+int32_t rhi_timestamp_query_pool_read_frame_duration(
+    RhiTimestampQueryPool* pool,
+    uint64_t* out_duration_nanoseconds);
+```
+
+Duration `i` is formed from samples `2*i` and `2*i+1`. Reads are non-blocking:
+`1` means ready, `0` means still in flight, and `-1` means unsupported or
+invalid. Metal records timestamp counters at draw and dispatch encoder
+boundaries, resolves them to shared memory, and converts the completed command
+buffer's timestamp domain to nanoseconds. The frame-duration read uses Metal's
+completed command-buffer GPU start and end times, so total GPU timing remains
+available independently of per-pass counter sampling. Vulkan can map the same
+API to query pools and `timestampPeriod`.
 
 ## Backend registration
 
@@ -189,3 +233,13 @@ void    rhi_destroy_fence(RhiFence* fence);
 void    rhi_fence_wait(RhiFence* fence, uint64_t timeout_ns);
 void    rhi_cmd_signal_fence(RhiCommandList* cmd, RhiFence* fence);
 ```
+
+`CommandRecorder.BeginTimestampScope` and
+`CommandRecorder.EndTimestampScope` bracket one logical render-graph pass.
+Backends sample the first and final internal encoders rather than reusing the
+same counter slot at every internal encoder boundary.
+
+`GpuResourceRegistry` records live committed managed RHI allocations.
+`RhiBuffer.SetDebugName` and `RhiTexture.SetDebugName` attach diagnostic names
+and categories. Heap-backed wrappers remain visible through graph declarations
+but do not register duplicate committed allocations.

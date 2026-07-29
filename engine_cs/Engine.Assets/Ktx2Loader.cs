@@ -172,6 +172,7 @@ public static class Ktx2Loader
                 Math.Max(1, pixelHeight),
                 rhiFormat,
                 levelCount);
+            tex.SetDebugName(Path.GetFileName(path), "Texture");
         }
         catch (Exception ex)
         {

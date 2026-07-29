@@ -132,6 +132,12 @@ public static partial class RhiNative
         LineList = 1,
     }
 
+    public enum CompareOp : uint
+    {
+        LessEqual = 0,
+        Always = 1,
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct GraphicsPipelineDesc
     {
@@ -144,6 +150,7 @@ public static partial class RhiNative
         public int EnableBlend;
         public int SampleCount;
         public uint PrimitiveTopology;
+        public CompareOp DepthCompare;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -317,6 +324,15 @@ public static partial class RhiNative
     [LibraryImport(Library, EntryPoint = "rhi_create_fence")]
     public static partial int RhiCreateFence(IntPtr device, out IntPtr outFence);
 
+    [LibraryImport(Library, EntryPoint = "rhi_create_timestamp_query_pool")]
+    public static partial int RhiCreateTimestampQueryPool(
+        IntPtr device,
+        uint sampleCount,
+        out IntPtr outPool);
+
+    [LibraryImport(Library, EntryPoint = "rhi_destroy_timestamp_query_pool")]
+    public static partial void RhiDestroyTimestampQueryPool(IntPtr pool);
+
     [LibraryImport(Library, EntryPoint = "rhi_destroy_heap")]
     public static partial void RhiDestroyHeap(IntPtr h);
     
@@ -424,6 +440,29 @@ public static partial class RhiNative
 
     [LibraryImport(Library, EntryPoint = "rhi_cmd_wait_fence")]
     public static partial void RhiCmdWaitFence(IntPtr cmdlist, IntPtr fence, ulong value);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_write_timestamp")]
+    public static partial int RhiCmdWriteTimestamp(
+        IntPtr cmdlist,
+        IntPtr pool,
+        uint sampleIndex);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_resolve_timestamps")]
+    public static partial int RhiCmdResolveTimestamps(
+        IntPtr cmdlist,
+        IntPtr pool,
+        uint sampleCount);
+
+    [LibraryImport(Library, EntryPoint = "rhi_timestamp_query_pool_read_durations")]
+    public static partial int RhiTimestampQueryPoolReadDurations(
+        IntPtr pool,
+        uint durationCount,
+        IntPtr outDurationNanoseconds);
+
+    [LibraryImport(Library, EntryPoint = "rhi_timestamp_query_pool_read_frame_duration")]
+    public static partial int RhiTimestampQueryPoolReadFrameDuration(
+        IntPtr pool,
+        out ulong outDurationNanoseconds);
 
     // ---- macOS embed helpers ----
     //

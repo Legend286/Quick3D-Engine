@@ -78,6 +78,9 @@ public static class MeshLoader
 
             RhiBuffer vb = RhiBuffer.Create(device, vSizeTarget, RhiNative.BufferUsage.Vertex | RhiNative.BufferUsage.Storage);
             RhiBuffer ib = RhiBuffer.Create(device, iSize, RhiNative.BufferUsage.Index | RhiNative.BufferUsage.Storage);
+            string meshName = Path.GetFileName(path);
+            vb.SetDebugName($"{meshName} vertices", "Model");
+            ib.SetDebugName($"{meshName} indices", "Model");
 
             if (stride == 32)
             {

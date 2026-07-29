@@ -54,6 +54,7 @@ public static class TextureLoader
             var result = ImageResult.FromStream(stream, ColorComponents.RedGreenBlueAlpha);
 
             var tex = RhiTexture.Create2D(device, (uint)result.Width, (uint)result.Height, RhiNative.TextureFormat.Rgba8Unorm);
+            tex.SetDebugName(Path.GetFileName(path), "Texture");
 
             unsafe
             {

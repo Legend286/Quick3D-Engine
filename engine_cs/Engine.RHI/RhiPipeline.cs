@@ -13,11 +13,11 @@ public sealed class RhiPipeline : IDisposable
     internal RhiPipeline(IntPtr handle) { Handle = handle; }
 
     public static RhiPipeline CreateGraphics(RhiDevice device, RhiShader vertexShader, RhiShader fragmentShader,
-        RhiNative.TextureFormat colorFormat, bool enableDepth = true, bool enableDepthWrite = true, bool enableBlend = false, RhiNative.PrimitiveTopology topology = RhiNative.PrimitiveTopology.TriangleList)
+        RhiNative.TextureFormat colorFormat, bool enableDepth = true, bool enableDepthWrite = true, bool enableBlend = false, RhiNative.PrimitiveTopology topology = RhiNative.PrimitiveTopology.TriangleList, RhiNative.CompareOp depthCompare = RhiNative.CompareOp.LessEqual)
     {
         var desc = new RhiNative.GraphicsPipelineDesc
         {
-            Abi = 3, // Bumped ABI version
+            Abi = 4,
             VertexShader = vertexShader.Handle,
             FragmentShader = fragmentShader.Handle,
             ColorFormat = colorFormat,
@@ -25,13 +25,31 @@ public sealed class RhiPipeline : IDisposable
             EnableDepthWrite = enableDepthWrite ? 1 : 0,
             EnableBlend = enableBlend ? 1 : 0,
             SampleCount = 1,
-            PrimitiveTopology = (uint)topology
+            PrimitiveTopology = (uint)topology,
+            DepthCompare = depthCompare,
         };
         int res = RhiNative.RhiCreateGraphicsPipeline(device.Handle, in desc, out IntPtr handle);
         if (res != 0 || handle == IntPtr.Zero)
             throw new Exception("Failed to create graphics pipeline.");
         return new RhiPipeline(handle);
     }
+
+    /// <summary>
+    /// Creates a graphics pipeline with a depth attachment and no color attachment.
+    /// </summary>
+    public static RhiPipeline CreateDepthOnly(RhiDevice device, RhiShader vertexShader, RhiShader fragmentShader)
+        => CreateGraphics(device, vertexShader, fragmentShader, RhiNative.TextureFormat.Undefined);
+
+    public static RhiPipeline CreateDepthClear(
+        RhiDevice device,
+        RhiShader vertexShader,
+        RhiShader fragmentShader)
+        => CreateGraphics(
+            device,
+            vertexShader,
+            fragmentShader,
+            RhiNative.TextureFormat.Undefined,
+            depthCompare: RhiNative.CompareOp.Always);
 
     public static RhiPipeline CreateCompute(RhiDevice device, RhiShader computeShader)
     {

@@ -17,6 +17,8 @@ public sealed class CommandRecorder : IDisposable
     public IntPtr CurrentEncoder { get; private set; }
     public RhiNative.QueueType QueueType { get; }
     private bool _submitted;
+    private bool _timestampScopeActive;
+    private bool _passEndDeferred;
 
     public CommandRecorder(RhiDevice device, RhiNative.QueueType queue = RhiNative.QueueType.Graphics)
     {
@@ -34,6 +36,9 @@ public sealed class CommandRecorder : IDisposable
                                 RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
                                 RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store)
     {
+        FlushDeferredPass();
+        if (CurrentEncoder != IntPtr.Zero)
+            throw new InvalidOperationException("Pass already active");
         var color = new RhiNative.PassAttachment
         {
             Texture = colorAttachment.Handle,
@@ -75,8 +80,38 @@ public sealed class CommandRecorder : IDisposable
             throw new InvalidOperationException("rhi_begin_render_pass returned null");
     }
 
+    /// <summary>
+    /// Begins a render pass with a depth attachment and no color attachments.
+    /// </summary>
+    public unsafe void BeginDepthOnlyPass(
+        RhiTexture depth,
+        RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
+        RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store)
+    {
+        FlushDeferredPass();
+        if (CurrentEncoder != IntPtr.Zero)
+            throw new InvalidOperationException("Pass already active");
+        var depthAttachment = new RhiNative.PassAttachment
+        {
+            Texture = depth.Handle,
+            LoadOp = depthLoad,
+            StoreOp = depthStore,
+        };
+        var desc = new RhiNative.PassDesc
+        {
+            Abi = 1,
+            ColorAttachments = IntPtr.Zero,
+            ColorCount = 0,
+            DepthAttachment = (IntPtr)(&depthAttachment),
+        };
+        CurrentEncoder = RhiNative.RhiBeginRenderPass(CmdList, in desc);
+        if (CurrentEncoder == IntPtr.Zero)
+            throw new InvalidOperationException("rhi_begin_render_pass returned null");
+    }
+
     public void BeginComputePass(string? name = null)
     {
+        FlushDeferredPass();
         if (CurrentEncoder != IntPtr.Zero)
             throw new InvalidOperationException("Pass already active");
 
@@ -95,8 +130,66 @@ public sealed class CommandRecorder : IDisposable
     public void EndPass()
     {
         if (CurrentEncoder == IntPtr.Zero) return;
+        if (_timestampScopeActive)
+        {
+            _passEndDeferred = true;
+            return;
+        }
+        CloseCurrentEncoder();
+    }
+
+    /// <summary>
+    /// Begins a GPU timestamp scope spanning every encoder recorded by one
+    /// logical render-graph pass.
+    /// </summary>
+    public bool BeginTimestampScope(
+        RhiTimestampQueryPool pool,
+        uint startSampleIndex)
+    {
+        if (_timestampScopeActive || CurrentEncoder != IntPtr.Zero)
+            return false;
+        bool started =
+            RhiNative.RhiCmdWriteTimestamp(
+                CmdList,
+                pool.Handle,
+                startSampleIndex) == 0;
+        _timestampScopeActive = started;
+        return started;
+    }
+
+    /// <summary>
+    /// Ends a logical render-graph timestamp scope at its final encoder.
+    /// </summary>
+    public bool EndTimestampScope(
+        RhiTimestampQueryPool pool,
+        uint endSampleIndex)
+    {
+        if (!_timestampScopeActive)
+            return false;
+        bool ended =
+            RhiNative.RhiCmdWriteTimestamp(
+                CmdList,
+                pool.Handle,
+                endSampleIndex) == 0;
+        CloseCurrentEncoder();
+        _timestampScopeActive = false;
+        _passEndDeferred = false;
+        return ended;
+    }
+
+    private void FlushDeferredPass()
+    {
+        if (_passEndDeferred)
+            CloseCurrentEncoder();
+    }
+
+    private void CloseCurrentEncoder()
+    {
+        if (CurrentEncoder == IntPtr.Zero)
+            return;
         RhiNative.RhiEndPass(CurrentEncoder);
         CurrentEncoder = IntPtr.Zero;
+        _passEndDeferred = false;
     }
 
     public void BindPipeline(RhiPipeline pipeline)
@@ -237,12 +330,7 @@ public sealed class CommandRecorder : IDisposable
     public void PipelineBarrier(ReadOnlySpan<RhiNative.Barrier> barriers)
     {
         if (barriers.Length == 0) return;
-        // End current encoder if active, barriers are recorded at the command-list level.
-        if (CurrentEncoder != IntPtr.Zero)
-        {
-            RhiNative.RhiEndPass(CurrentEncoder);
-            CurrentEncoder = IntPtr.Zero;
-        }
+        CloseCurrentEncoder();
 
         unsafe
         {
@@ -255,32 +343,44 @@ public sealed class CommandRecorder : IDisposable
 
     public void SignalFence(RhiFence fence, ulong value)
     {
-        if (CurrentEncoder != IntPtr.Zero)
-        {
-            RhiNative.RhiEndPass(CurrentEncoder);
-            CurrentEncoder = IntPtr.Zero;
-        }
+        CloseCurrentEncoder();
         RhiNative.RhiCmdSignalFence(CmdList, fence.Handle, value);
     }
 
     public void WaitFence(RhiFence fence, ulong value)
     {
-        if (CurrentEncoder != IntPtr.Zero)
-        {
-            RhiNative.RhiEndPass(CurrentEncoder);
-            CurrentEncoder = IntPtr.Zero;
-        }
+        CloseCurrentEncoder();
         RhiNative.RhiCmdWaitFence(CmdList, fence.Handle, value);
+    }
+
+    /// <summary>
+    /// Records a timestamp sample outside an active render or compute pass.
+    /// </summary>
+    public bool WriteTimestamp(RhiTimestampQueryPool pool, uint sampleIndex)
+    {
+        if (CurrentEncoder != IntPtr.Zero)
+            throw new InvalidOperationException("Cannot write a timestamp inside a pass");
+        return RhiNative.RhiCmdWriteTimestamp(CmdList, pool.Handle, sampleIndex) == 0;
+    }
+
+    /// <summary>
+    /// Resolves timestamp samples for asynchronous CPU access after submission.
+    /// </summary>
+    public bool ResolveTimestamps(RhiTimestampQueryPool pool, uint sampleCount)
+    {
+        if (CurrentEncoder != IntPtr.Zero)
+            throw new InvalidOperationException("Cannot resolve timestamps inside a pass");
+        bool resolved =
+            RhiNative.RhiCmdResolveTimestamps(CmdList, pool.Handle, sampleCount) == 0;
+        if (resolved)
+            pool.MarkPending();
+        return resolved;
     }
 
     public void Submit()
     {
         if (_submitted) return;
-        if (CurrentEncoder != IntPtr.Zero)
-        {
-            RhiNative.RhiEndPass(CurrentEncoder);
-            CurrentEncoder = IntPtr.Zero;
-        }
+        CloseCurrentEncoder();
         RhiNative.RhiSubmitCmdList(_device.Handle, CmdList);
         _submitted = true;
     }
@@ -288,11 +388,7 @@ public sealed class CommandRecorder : IDisposable
     public void SubmitAndWait()
     {
         if (_submitted) return;
-        if (CurrentEncoder != IntPtr.Zero)
-        {
-            RhiNative.RhiEndPass(CurrentEncoder);
-            CurrentEncoder = IntPtr.Zero;
-        }
+        CloseCurrentEncoder();
         RhiNative.RhiSubmitAndWait(_device.Handle, CmdList);
         _submitted = true;
     }

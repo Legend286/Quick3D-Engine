@@ -27,6 +27,7 @@ public sealed class RhiTexture : IDisposable
 
     public IntPtr Handle { get; private set; }
     private readonly bool _owns;
+    private long _allocationId;
 
     internal RhiTexture(IntPtr handle, bool ownsHandle)
     {
@@ -48,7 +49,13 @@ public sealed class RhiTexture : IDisposable
         };
         int rc = RhiNative.RhiCreateTexture(device.Handle, in desc, out IntPtr tex);
         if (rc != 0) throw new InvalidOperationException($"rhi_create_texture rc={rc}");
-        return new RhiTexture(tex, ownsHandle: true);
+        return CreateTracked(
+            tex,
+            w,
+            h,
+            1,
+            format,
+            "Render Target");
     }
 
     public static RhiTexture CreateExternalRenderTarget(RhiDevice device, uint w, uint h,
@@ -65,7 +72,13 @@ public sealed class RhiTexture : IDisposable
         };
         int rc = RhiNative.RhiCreateTexture(device.Handle, in desc, out IntPtr tex);
         if (rc != 0) throw new InvalidOperationException($"rhi_create_texture rc={rc}");
-        return new RhiTexture(tex, ownsHandle: true);
+        return CreateTracked(
+            tex,
+            w,
+            h,
+            1,
+            format,
+            "External Render Target");
     }
 
     /// <summary>
@@ -86,7 +99,13 @@ public sealed class RhiTexture : IDisposable
         };
         int rc = RhiNative.RhiCreateTexture(device.Handle, in desc, out IntPtr tex);
         if (rc != 0) throw new InvalidOperationException($"rhi_create_texture rc={rc}");
-        return new RhiTexture(tex, ownsHandle: true);
+        return CreateTracked(
+            tex,
+            w,
+            h,
+            1,
+            format,
+            "Storage Texture");
     }
 
     public static RhiTexture Create2D(RhiDevice device, uint w, uint h,
@@ -110,7 +129,13 @@ public sealed class RhiTexture : IDisposable
         };
         int rc = RhiNative.RhiCreateTexture(device.Handle, in desc, out IntPtr tex);
         if (rc != 0) throw new InvalidOperationException($"rhi_create_texture rc={rc}");
-        return new RhiTexture(tex, ownsHandle: true);
+        return CreateTracked(
+            tex,
+            w,
+            h,
+            mipLevels,
+            format,
+            "Texture");
     }
 
     public void Upload(IntPtr bytes, ulong size, uint stride)
@@ -192,7 +217,10 @@ public sealed class RhiTexture : IDisposable
         }
     }
 
-    public static RhiTexture CreateDepth(RhiDevice device, uint w, uint h)
+    /// <summary>
+    /// Creates a depth render target which can optionally be sampled by shaders.
+    /// </summary>
+    public static RhiTexture CreateDepth(RhiDevice device, uint w, uint h, bool shaderReadable = false)
     {
         var desc = new RhiNative.TextureDesc
         {
@@ -201,11 +229,86 @@ public sealed class RhiTexture : IDisposable
             Height = h,
             MipLevels = 1,
             Format = RhiNative.TextureFormat.Depth32Float,
-            UsageFlags = RhiNative.TextureRenderTarget,
+            UsageFlags = RhiNative.TextureRenderTarget |
+                (shaderReadable ? RhiNative.TextureShaderRead : 0),
         };
         int rc = RhiNative.RhiCreateTexture(device.Handle, in desc, out IntPtr tex);
         if (rc != 0) throw new InvalidOperationException($"rhi_depth_create rc={rc}");
-        return new RhiTexture(tex, ownsHandle: true);
+        return CreateTracked(
+            tex,
+            w,
+            h,
+            1,
+            RhiNative.TextureFormat.Depth32Float,
+            "Depth Target");
+    }
+
+    /// <summary>
+    /// Assigns an allocation label and category shown by GPU diagnostics.
+    /// </summary>
+    public void SetDebugName(string name, string category = "Texture")
+        => GpuResourceRegistry.Rename(
+            _allocationId,
+            name,
+            category);
+
+    private static RhiTexture CreateTracked(
+        IntPtr handle,
+        uint width,
+        uint height,
+        uint mipLevels,
+        RhiNative.TextureFormat format,
+        string category)
+    {
+        var texture = new RhiTexture(handle, ownsHandle: true);
+        texture._allocationId = GpuResourceRegistry.Register(
+            $"{category} {width}x{height}",
+            "Texture",
+            category,
+            EstimateSizeBytes(
+                width,
+                height,
+                mipLevels,
+                format));
+        return texture;
+    }
+
+    private static ulong EstimateSizeBytes(
+        uint width,
+        uint height,
+        uint mipLevels,
+        RhiNative.TextureFormat format)
+    {
+        BlockInfo block = GetBlockInfo(format);
+        ulong total = 0;
+        uint mipWidth = Math.Max(width, 1);
+        uint mipHeight = Math.Max(height, 1);
+        for (uint level = 0;
+             level < Math.Max(mipLevels, 1);
+             ++level)
+        {
+            if (block.IsBlockCompressed)
+            {
+                ulong blocksWide =
+                    (mipWidth + block.BlockWidth - 1) /
+                    block.BlockWidth;
+                ulong blocksHigh =
+                    (mipHeight + block.BlockHeight - 1) /
+                    block.BlockHeight;
+                total += blocksWide * blocksHigh * block.BytesPerBlock;
+            }
+            else
+            {
+                ulong bytesPerPixel =
+                    format == RhiNative.TextureFormat.Rgba16Float
+                        ? 8ul
+                        : 4ul;
+                total += (ulong)mipWidth * mipHeight * bytesPerPixel;
+            }
+            mipWidth = Math.Max(mipWidth >> 1, 1);
+            mipHeight = Math.Max(mipHeight >> 1, 1);
+        }
+        return total;
     }
 
     /// <summary>Read back the texture's bytes into a managed byte[].
@@ -233,6 +336,7 @@ public sealed class RhiTexture : IDisposable
         // failed/partial C-side free doesn't get repeated by the finalizer.
         var h = Handle;
         Handle = IntPtr.Zero;
+        GpuResourceRegistry.Unregister(_allocationId);
         RhiNative.RhiDestroyTexture(h);
         GC.SuppressFinalize(this);
     }

@@ -8,6 +8,7 @@ public sealed class RhiHeap : IDisposable
 {
     public IntPtr Handle { get; private set; }
     public bool IsInitialized => Handle != IntPtr.Zero;
+    private readonly long _allocationId;
 
     public RhiHeap(RhiDevice device, ulong size, uint usageFlags)
     {
@@ -19,6 +20,11 @@ public sealed class RhiHeap : IDisposable
         int rc = RhiNative.RhiCreateHeap(device.Handle, in desc, out IntPtr h);
         if (rc != 0) throw new InvalidOperationException($"rhi_create_heap failed: {rc}");
         Handle = h;
+        _allocationId = GpuResourceRegistry.Register(
+            $"Heap 0x{h.ToInt64():X}",
+            "Heap",
+            "Transient",
+            size);
     }
 
     public RhiTexture CreateTexture(RhiDevice device, in RhiNative.TextureDesc desc, ulong offset)
@@ -32,7 +38,11 @@ public sealed class RhiHeap : IDisposable
     {
         int rc = RhiNative.RhiCreateBufferFromHeap(device.Handle, Handle, in desc, offset, out IntPtr buf);
         if (rc != 0) throw new InvalidOperationException($"rhi_create_buffer_from_heap failed: {rc}");
-        return new RhiBuffer(buf, desc.Size, ownsHandle: true);
+        return new RhiBuffer(
+            buf,
+            desc.Size,
+            ownsHandle: true,
+            trackAllocation: false);
     }
 
     public void Dispose()
@@ -41,6 +51,7 @@ public sealed class RhiHeap : IDisposable
         {
             RhiNative.RhiDestroyHeap(Handle);
             Handle = IntPtr.Zero;
+            GpuResourceRegistry.Unregister(_allocationId);
         }
     }
 }

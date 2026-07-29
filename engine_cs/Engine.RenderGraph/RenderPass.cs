@@ -32,6 +32,11 @@ public interface ICommandSink
                                 RhiTexture? depth = null,
                                 RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
                                 RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store);
+
+    public void BeginDepthOnlyPass(
+        RhiTexture depth,
+        RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
+        RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store);
  
     public void BeginComputePass(string? name = null);
     public void EndComputePass();
@@ -78,6 +83,7 @@ public sealed class RenderGraphContext
     // hand-bound by the Renderer.
     public uint Width;
     public uint Height;
+    public long FrameNumber;
 
     public bool TryGetTexture(ResourceHandle h, out RhiTexture t) => Textures.TryGetValue(h, out t!);
     public bool TryGetBuffer(ResourceHandle h, out RhiBuffer b) => Buffers.TryGetValue(h, out b!);

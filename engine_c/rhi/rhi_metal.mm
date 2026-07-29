@@ -80,6 +80,17 @@ struct RhiFenceImpl {
     __strong id<MTLSharedEvent> event;
 };
 
+struct RhiTimestampQueryPoolImpl {
+    __strong id<MTLCounterSampleBuffer> samples;
+    __strong id<MTLBuffer> results;
+    __strong id<MTLCommandBuffer> pending;
+    std::vector<uint8_t> sampled;
+    uint32_t sample_count;
+    uint32_t resolved_count;
+    bool supports_draw_sampling;
+    bool supports_dispatch_sampling;
+};
+
 struct RhiTextureImpl {
     __strong id<MTLTexture> tex;
     __strong id<CAMetalDrawable> drawable;
@@ -129,12 +140,18 @@ struct RhiShaderImpl {
 struct RhiPipelineImpl {
     __strong id<MTLRenderPipelineState> g;
     __strong id<MTLComputePipelineState> c;
+    __strong id<MTLDepthStencilState> depth_stencil;
     MTLPrimitiveType primitive_type;
 };
 
 struct RhiCommandListImpl {
     __strong id<MTLCommandBuffer> buf;
     __strong id<CAMetalDrawable> drawable_to_present;
+    RhiTimestampQueryPoolImpl* timing_pool;
+    uint32_t timing_start_index;
+    uint32_t timing_end_index;
+    bool timing_started;
+    bool timing_end_requested;
 };
 
 struct RhiEncoderImpl {
@@ -147,6 +164,7 @@ struct RhiEncoderImpl {
     __strong id<MTLBuffer> active_index_buffer;
     uint64_t active_index_buffer_offset;
     bool active_index_buffer_is_32bit;
+    RhiCommandListImpl* command_list;
 };
 
 // ----- trampolines (no overloads; all explicit argument lists) -----
@@ -174,6 +192,8 @@ static int32_t  metal_create_heap(RhiDevice* d, const RhiHeapDesc* desc, RhiHeap
 static int32_t  metal_create_texture_from_heap(RhiDevice* d, RhiHeap* h, const RhiTextureDesc* desc, uint64_t offset, RhiTexture** out);
 static int32_t  metal_create_buffer_from_heap(RhiDevice* d, RhiHeap* h, const RhiBufferDesc* desc, uint64_t offset, RhiBuffer** out);
 static int32_t  metal_create_fence(RhiDevice* d, RhiFence** out);
+static int32_t  metal_create_timestamp_query_pool(
+    RhiDevice* d, uint32_t sample_count, RhiTimestampQueryPool** out);
 
 static void  metal_destroy_buffer(RhiBuffer* b);
 static void  metal_destroy_texture(RhiTexture* t);
@@ -181,6 +201,7 @@ static void  metal_destroy_shader(RhiShader* s);
 static void  metal_destroy_pipeline(RhiPipeline* p);
 static void  metal_destroy_heap(RhiHeap* h);
 static void  metal_destroy_fence(RhiFence* f);static int32_t metal_buffer_upload(RhiBuffer* b, const void* data, uint64_t size);
+static void  metal_destroy_timestamp_query_pool(RhiTimestampQueryPool* pool);
 static int32_t metal_texture_readback(RhiTexture* t, void* out, uint64_t out_size, uint32_t stride);
 static int32_t metal_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride);
 static int32_t metal_texture_upload_mip(RhiTexture* t, uint32_t mip_level,
@@ -202,6 +223,15 @@ static void            metal_cmd_pipeline_barrier(RhiCommandList* cl,
                                                    const RhiBarrier* barriers);
 static void            metal_cmd_signal_fence(RhiCommandList* cl, RhiFence* f, uint64_t value);
 static void            metal_cmd_wait_fence(RhiCommandList* cl, RhiFence* f, uint64_t value);
+static int32_t         metal_cmd_write_timestamp(
+    RhiCommandList* cl, RhiTimestampQueryPool* pool, uint32_t sample_index);
+static int32_t         metal_cmd_resolve_timestamps(
+    RhiCommandList* cl, RhiTimestampQueryPool* pool, uint32_t sample_count);
+static int32_t         metal_timestamp_query_pool_read_durations(
+    RhiTimestampQueryPool* pool, uint32_t duration_count,
+    uint64_t* out_duration_nanoseconds);
+static int32_t         metal_timestamp_query_pool_read_frame_duration(
+    RhiTimestampQueryPool* pool, uint64_t* out_duration_nanoseconds);
 static RhiEncoder*     metal_begin_render_pass(RhiCommandList* cl,
                                                 const RhiPassDesc* desc);
 static RhiEncoder*     metal_begin_compute_pass(RhiCommandList* cl,
@@ -733,14 +763,16 @@ static int32_t metal_create_graphics_pipeline(RhiDevice* d,
         MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
         pd.vertexFunction   = vs->fn;
         pd.fragmentFunction = fs->fn;
-        MTLPixelFormat color = MTLPixelFormatBGRA8Unorm;
-        switch (desc->color_attachment_format) {
-            case RHI_FORMAT_RGBA8_UNORM:  color = MTLPixelFormatRGBA8Unorm; break;
-            case RHI_FORMAT_BGRA8_UNORM:  color = MTLPixelFormatBGRA8Unorm; break;
-            case RHI_FORMAT_RGBA8_SRGB:   color = MTLPixelFormatRGBA8Unorm_sRGB; break;
-            default: break;
+        if (desc->color_attachment_format != RHI_FORMAT_UNDEFINED) {
+            MTLPixelFormat color = MTLPixelFormatBGRA8Unorm;
+            switch (desc->color_attachment_format) {
+                case RHI_FORMAT_RGBA8_UNORM:  color = MTLPixelFormatRGBA8Unorm; break;
+                case RHI_FORMAT_BGRA8_UNORM:  color = MTLPixelFormatBGRA8Unorm; break;
+                case RHI_FORMAT_RGBA8_SRGB:   color = MTLPixelFormatRGBA8Unorm_sRGB; break;
+                default: break;
+            }
+            pd.colorAttachments[0].pixelFormat = color;
         }
-        pd.colorAttachments[0].pixelFormat      = color;
         if (desc->enable_blend) {
             pd.colorAttachments[0].blendingEnabled = YES;
             pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -764,6 +796,19 @@ static int32_t metal_create_graphics_pipeline(RhiDevice* d,
         RhiPipelineImpl* pi = new RhiPipelineImpl();
         pi->g = state;
         pi->c = nil;
+        pi->depth_stencil = nil;
+        if (desc->enable_depth) {
+            MTLDepthStencilDescriptor* depth_desc =
+                [[MTLDepthStencilDescriptor alloc] init];
+            depth_desc.depthCompareFunction =
+                desc->depth_compare == RHI_COMPARE_ALWAYS
+                    ? MTLCompareFunctionAlways
+                    : MTLCompareFunctionLessEqual;
+            depth_desc.depthWriteEnabled =
+                desc->enable_depth_write ? YES : NO;
+            pi->depth_stencil =
+                [di->device newDepthStencilStateWithDescriptor:depth_desc];
+        }
         if (desc->primitive_topology == 1 /* RHI_TOPOLOGY_LINE_LIST */) {
             pi->primitive_type = MTLPrimitiveTypeLine;
         } else {
@@ -791,6 +836,7 @@ static int32_t metal_create_compute_pipeline(RhiDevice* d,
         RhiPipelineImpl* pi = new RhiPipelineImpl();
         pi->g = nil;
         pi->c = state;
+        pi->depth_stencil = nil;
         *out = reinterpret_cast<RhiPipeline*>(pi);
         return 0;
     }
@@ -889,6 +935,69 @@ static int32_t metal_create_fence(RhiDevice* device, RhiFence** out) {
     }
 }
 
+static int32_t metal_create_timestamp_query_pool(
+    RhiDevice* device, uint32_t sample_count, RhiTimestampQueryPool** out) {
+    if (!device || !out || sample_count == 0) return -1;
+    if (@available(macOS 11.0, iOS 14.0, *)) {
+        @autoreleasepool {
+            RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(device);
+            id<MTLCounterSet> timestamp_set = nil;
+            for (id<MTLCounterSet> counter_set in di->device.counterSets) {
+                if ([counter_set.name isEqualToString:MTLCommonCounterSetTimestamp]) {
+                    timestamp_set = counter_set;
+                    break;
+                }
+            }
+            bool supports_draw =
+                [di->device supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
+            bool supports_dispatch =
+                [di->device supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
+
+            id<MTLCounterSampleBuffer> samples = nil;
+            id<MTLBuffer> results = nil;
+            if (timestamp_set && (supports_draw || supports_dispatch)) {
+                MTLCounterSampleBufferDescriptor* descriptor =
+                    [[MTLCounterSampleBufferDescriptor alloc] init];
+                descriptor.counterSet = timestamp_set;
+                descriptor.storageMode = MTLStorageModePrivate;
+                descriptor.sampleCount = sample_count;
+                descriptor.label = @"Quick3D Render Graph Timestamps";
+
+                NSError* error = nil;
+                samples =
+                    [di->device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+                results = [di->device
+                    newBufferWithLength:sizeof(MTLCounterResultTimestamp) * sample_count
+                               options:MTLResourceStorageModeShared];
+                if (!samples || !results) {
+                    const char* error_message = error
+                        ? error.localizedDescription.UTF8String
+                        : "allocation failed";
+                    ENGINE_LOG_WARN(
+                        "rhi_metal",
+                        "per-pass timestamp counters unavailable: %s",
+                        error_message);
+                    samples = nil;
+                    results = nil;
+                }
+            }
+
+            RhiTimestampQueryPoolImpl* pool = new RhiTimestampQueryPoolImpl();
+            pool->samples = samples;
+            pool->results = results;
+            pool->pending = nil;
+            pool->sampled.resize(sample_count, 0);
+            pool->sample_count = sample_count;
+            pool->resolved_count = 0;
+            pool->supports_draw_sampling = supports_draw;
+            pool->supports_dispatch_sampling = supports_dispatch;
+            *out = reinterpret_cast<RhiTimestampQueryPool*>(pool);
+            return 0;
+        }
+    }
+    return -1;
+}
+
 struct RhiSamplerImpl {
     id<MTLSamplerState> samp;
 };
@@ -904,7 +1013,9 @@ static __strong id<MTLDepthStencilState> g_depth_stencil_state_write = nil;
 static __strong id<MTLDepthStencilState> g_depth_stencil_state_no_write = nil;
 static __weak id<MTLDevice>             g_dss_owner_device = nil;
 
-static id<MTLDepthStencilState> GetOrCreateDepthStencilState(id<MTLDevice> device, bool enable_depth_write) {
+static id<MTLDepthStencilState> GetOrCreateDepthStencilState(
+    id<MTLDevice> device,
+    bool enable_depth_write) {
     @autoreleasepool {
         if (g_dss_owner_device != device) {
             g_depth_stencil_state_write = nil;
@@ -987,6 +1098,11 @@ static void metal_destroy_heap(RhiHeap* h) {
 static void metal_destroy_fence(RhiFence* f) {
     if (!f) return;
     delete reinterpret_cast<RhiFenceImpl*>(f);
+}
+
+static void metal_destroy_timestamp_query_pool(RhiTimestampQueryPool* pool) {
+    if (!pool) return;
+    delete reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
 }
 
 static int32_t metal_fence_export_external_handle(RhiFence* f, void** out_handle) {
@@ -1177,6 +1293,11 @@ static RhiCommandList* metal_begin_cmdlist(RhiDevice* device, RhiQueueType queue
         if (!cb) return nullptr;
         RhiCommandListImpl* cli = new RhiCommandListImpl();
         cli->buf = cb;
+        cli->timing_pool = nullptr;
+        cli->timing_start_index = 0;
+        cli->timing_end_index = 0;
+        cli->timing_started = false;
+        cli->timing_end_requested = false;
         return reinterpret_cast<RhiCommandList*>(cli);
     }
 }
@@ -1228,6 +1349,147 @@ static void metal_cmd_wait_fence(RhiCommandList* cl, RhiFence* f, uint64_t value
     }
 }
 
+static int32_t metal_cmd_write_timestamp(
+    RhiCommandList* cl, RhiTimestampQueryPool* pool, uint32_t sample_index) {
+    if (!cl || !pool) return -1;
+    if (@available(macOS 11.0, iOS 14.0, *)) {
+        @autoreleasepool {
+            RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
+            RhiTimestampQueryPoolImpl* pi =
+                reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
+            if (sample_index >= pi->sample_count || pi->pending) return -1;
+            if ((sample_index & 1u) == 0) {
+                if (sample_index == 0) {
+                    std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
+                }
+                cli->timing_pool = pi;
+                cli->timing_start_index = sample_index;
+                cli->timing_end_index = sample_index + 1;
+                cli->timing_started = false;
+                cli->timing_end_requested = false;
+            } else if (cli->timing_pool == pi &&
+                       cli->timing_end_index == sample_index) {
+                cli->timing_end_requested = true;
+            }
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int32_t metal_cmd_resolve_timestamps(
+    RhiCommandList* cl, RhiTimestampQueryPool* pool, uint32_t sample_count) {
+    if (!cl || !pool || sample_count == 0) return -1;
+    if (@available(macOS 11.0, iOS 14.0, *)) {
+        @autoreleasepool {
+            RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
+            RhiTimestampQueryPoolImpl* pi =
+                reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
+            if (sample_count > pi->sample_count || pi->pending) return -1;
+            if (pi->samples && pi->results) {
+                id<MTLBlitCommandEncoder> encoder = [cli->buf blitCommandEncoder];
+                if (!encoder) return -1;
+                [encoder resolveCounters:pi->samples
+                                 inRange:NSMakeRange(0, sample_count)
+                       destinationBuffer:pi->results
+                       destinationOffset:0];
+                [encoder endEncoding];
+            }
+            pi->resolved_count = sample_count;
+            pi->pending = cli->buf;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int32_t metal_timestamp_query_pool_read_durations(
+    RhiTimestampQueryPool* pool, uint32_t duration_count,
+    uint64_t* out_duration_nanoseconds) {
+    if (!pool || !out_duration_nanoseconds) return -1;
+    if (@available(macOS 11.0, iOS 14.0, *)) {
+        @autoreleasepool {
+            RhiTimestampQueryPoolImpl* pi =
+                reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
+            if (!pi->pending) return 0;
+            if (pi->pending.status < MTLCommandBufferStatusCompleted) return 0;
+            if (!pi->samples ||
+                pi->pending.status == MTLCommandBufferStatusError ||
+                duration_count * 2 > pi->resolved_count) {
+                pi->pending = nil;
+                std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
+                return -1;
+            }
+
+            const MTLCounterResultTimestamp* values =
+                reinterpret_cast<const MTLCounterResultTimestamp*>(pi->results.contents);
+            uint32_t first_sample = pi->resolved_count;
+            uint32_t last_sample = 0;
+            for (uint32_t i = 0; i < pi->resolved_count; ++i) {
+                if (!pi->sampled[i] ||
+                    values[i].timestamp == MTLCounterErrorValue) {
+                    continue;
+                }
+                if (first_sample == pi->resolved_count) first_sample = i;
+                last_sample = i;
+            }
+            if (first_sample == pi->resolved_count ||
+                last_sample <= first_sample) {
+                pi->pending = nil;
+                std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
+                return -1;
+            }
+            uint64_t raw_begin = values[first_sample].timestamp;
+            uint64_t raw_end = values[last_sample].timestamp;
+            if (raw_end <= raw_begin) {
+                pi->pending = nil;
+                std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
+                return -1;
+            }
+
+            double gpu_nanoseconds =
+                (pi->pending.GPUEndTime - pi->pending.GPUStartTime) * 1000000000.0;
+            double nanoseconds_per_tick =
+                gpu_nanoseconds / static_cast<double>(raw_end - raw_begin);
+            for (uint32_t i = 0; i < duration_count; ++i) {
+                uint64_t begin = values[i * 2].timestamp;
+                uint64_t end = values[i * 2 + 1].timestamp;
+                if (!pi->sampled[i * 2] ||
+                    !pi->sampled[i * 2 + 1] ||
+                    begin == MTLCounterErrorValue ||
+                    end == MTLCounterErrorValue ||
+                    end < begin) {
+                    out_duration_nanoseconds[i] = UINT64_MAX;
+                    continue;
+                }
+                out_duration_nanoseconds[i] = static_cast<uint64_t>(
+                    static_cast<double>(end - begin) * nanoseconds_per_tick);
+            }
+            pi->pending = nil;
+            std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
+            return 1;
+        }
+    }
+    return -1;
+}
+
+static int32_t metal_timestamp_query_pool_read_frame_duration(
+    RhiTimestampQueryPool* pool, uint64_t* out_duration_nanoseconds) {
+    if (!pool || !out_duration_nanoseconds) return -1;
+    @autoreleasepool {
+        RhiTimestampQueryPoolImpl* pi =
+            reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
+        if (!pi->pending) return 0;
+        if (pi->pending.status < MTLCommandBufferStatusCompleted) return 0;
+        if (pi->pending.status == MTLCommandBufferStatusError) return -1;
+        double duration =
+            (pi->pending.GPUEndTime - pi->pending.GPUStartTime) * 1000000000.0;
+        *out_duration_nanoseconds =
+            duration > 0.0 ? static_cast<uint64_t>(duration) : 0;
+        return 1;
+    }
+}
+
 static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc* desc) {
     @autoreleasepool {
         RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
@@ -1276,6 +1538,17 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
         ri->render  = enc;
         ri->compute = nil;
         ri->is_compute = false;
+        ri->command_list = cli;
+        if (cli->timing_pool &&
+            !cli->timing_started &&
+            cli->timing_pool->samples &&
+            cli->timing_pool->supports_draw_sampling) {
+            [enc sampleCountersInBuffer:cli->timing_pool->samples
+                          atSampleIndex:cli->timing_start_index
+                            withBarrier:YES];
+            cli->timing_pool->sampled[cli->timing_start_index] = 1;
+            cli->timing_started = true;
+        }
         return reinterpret_cast<RhiEncoder*>(ri);
     }
 }
@@ -1289,6 +1562,17 @@ static RhiEncoder* metal_begin_compute_pass(RhiCommandList* cl, const char* name
         ri->render  = nil;
         ri->compute = enc;
         ri->is_compute = true;
+        ri->command_list = cli;
+        if (cli->timing_pool &&
+            !cli->timing_started &&
+            cli->timing_pool->samples &&
+            cli->timing_pool->supports_dispatch_sampling) {
+            [enc sampleCountersInBuffer:cli->timing_pool->samples
+                          atSampleIndex:cli->timing_start_index
+                            withBarrier:YES];
+            cli->timing_pool->sampled[cli->timing_start_index] = 1;
+            cli->timing_started = true;
+        }
         return reinterpret_cast<RhiEncoder*>(ri);
     }
 }
@@ -1296,6 +1580,26 @@ static RhiEncoder* metal_begin_compute_pass(RhiCommandList* cl, const char* name
 static void metal_end_pass(RhiEncoder* enc) {
     @autoreleasepool {
         RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
+        RhiCommandListImpl* cli = ri->command_list;
+        if (cli && cli->timing_pool && cli->timing_end_requested) {
+            if (cli->timing_started && cli->timing_pool->samples) {
+                if (ri->render && cli->timing_pool->supports_draw_sampling) {
+                    [ri->render sampleCountersInBuffer:cli->timing_pool->samples
+                                         atSampleIndex:cli->timing_end_index
+                                           withBarrier:YES];
+                    cli->timing_pool->sampled[cli->timing_end_index] = 1;
+                } else if (ri->compute &&
+                           cli->timing_pool->supports_dispatch_sampling) {
+                    [ri->compute sampleCountersInBuffer:cli->timing_pool->samples
+                                          atSampleIndex:cli->timing_end_index
+                                            withBarrier:YES];
+                    cli->timing_pool->sampled[cli->timing_end_index] = 1;
+                }
+            }
+            cli->timing_pool = nullptr;
+            cli->timing_started = false;
+            cli->timing_end_requested = false;
+        }
         [ri->render  endEncoding];
         [ri->compute endEncoding];
         delete ri;
@@ -1307,6 +1611,8 @@ static void metal_cmd_bind_pipeline(RhiEncoder* enc, RhiPipeline* p) {
     RhiPipelineImpl* pi = reinterpret_cast<RhiPipelineImpl*>(p);
     if (ri->render && pi->g)  {
         [ri->render  setRenderPipelineState:pi->g];
+        if (pi->depth_stencil)
+            [ri->render setDepthStencilState:pi->depth_stencil];
         ri->current_primitive_type = pi->primitive_type;
         // The MTLDepthStencilState is bound at render-pass begin (in
         // metal_begin_render_pass) and persists for the life of the
@@ -1949,6 +2255,8 @@ extern "C" void* metal_create_macos_metal_view(void* parent_view_handle,
         metal_view.wantsLayer = YES;
         if (metal_view.layer) {
             metal_view.layer.masksToBounds = YES;
+            metal_view.layer.cornerRadius = 7.0;
+            metal_view.layer.cornerCurve = kCACornerCurveContinuous;
         }
         parent.wantsLayer = YES;
         if (parent.layer) {
@@ -1994,12 +2302,14 @@ extern "C" void rhi_metal_register(void) {
     b.destroy_sampler            = metal_destroy_sampler;
     b.create_buffer_from_heap    = metal_create_buffer_from_heap;
     b.create_fence               = metal_create_fence;
+    b.create_timestamp_query_pool = metal_create_timestamp_query_pool;
     b.destroy_buffer             = metal_destroy_buffer;
     b.destroy_texture            = metal_destroy_texture;
     b.destroy_shader             = metal_destroy_shader;
     b.destroy_pipeline           = metal_destroy_pipeline;
     b.destroy_heap               = metal_destroy_heap;
     b.destroy_fence              = metal_destroy_fence;
+    b.destroy_timestamp_query_pool = metal_destroy_timestamp_query_pool;
     b.buffer_upload              = metal_buffer_upload;
     b.texture_readback           = metal_texture_readback;
     b.texture_upload             = metal_texture_upload;
@@ -2018,6 +2328,12 @@ extern "C" void rhi_metal_register(void) {
     b.cmd_pipeline_barrier       = metal_cmd_pipeline_barrier;
     b.cmd_signal_fence           = metal_cmd_signal_fence;
     b.cmd_wait_fence             = metal_cmd_wait_fence;
+    b.cmd_write_timestamp        = metal_cmd_write_timestamp;
+    b.cmd_resolve_timestamps     = metal_cmd_resolve_timestamps;
+    b.timestamp_query_pool_read_durations =
+        metal_timestamp_query_pool_read_durations;
+    b.timestamp_query_pool_read_frame_duration =
+        metal_timestamp_query_pool_read_frame_duration;
     b.begin_render_pass          = metal_begin_render_pass;
     b.begin_compute_pass         = metal_begin_compute_pass;
     b.end_pass                   = metal_end_pass;

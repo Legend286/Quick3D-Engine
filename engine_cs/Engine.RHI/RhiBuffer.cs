@@ -13,12 +13,25 @@ public sealed class RhiBuffer : IDisposable
     public ulong Size { get; }
     public ulong DeviceAddress => RhiNative.RhiGetBufferDeviceAddress(Handle);
     private readonly bool _owns;
+    private readonly long _allocationId;
 
-    internal RhiBuffer(IntPtr handle, ulong size, bool ownsHandle = true)
+    internal RhiBuffer(
+        IntPtr handle,
+        ulong size,
+        bool ownsHandle = true,
+        bool trackAllocation = true)
     {
         Handle = handle;
         Size = size;
         _owns = ownsHandle;
+        if (ownsHandle && trackAllocation)
+        {
+            _allocationId = GpuResourceRegistry.Register(
+                $"Buffer 0x{handle.ToInt64():X}",
+                "Buffer",
+                "Buffer",
+                size);
+        }
     }
 
     public static RhiBuffer Create(RhiDevice device, ulong size, RhiNative.BufferUsage usage)
@@ -55,6 +68,15 @@ public sealed class RhiBuffer : IDisposable
         if (rc != 0) throw new InvalidOperationException($"rhi_buffer_upload rc={rc}");
     }
 
+    /// <summary>
+    /// Assigns an allocation label and category shown by GPU diagnostics.
+    /// </summary>
+    public void SetDebugName(string name, string category = "Buffer")
+        => GpuResourceRegistry.Rename(
+            _allocationId,
+            name,
+            category);
+
     public void Dispose()
     {
         if (Handle == IntPtr.Zero || !_owns) return;
@@ -62,6 +84,7 @@ public sealed class RhiBuffer : IDisposable
         // failed/partial C-side free doesn't get repeated by the finalizer.
         var h = Handle;
         Handle = IntPtr.Zero;
+        GpuResourceRegistry.Unregister(_allocationId);
         RhiNative.RhiDestroyBuffer(h);
         GC.SuppressFinalize(this);
     }

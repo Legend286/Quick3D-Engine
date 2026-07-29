@@ -29,7 +29,7 @@ extern "C" {
 #  endif
 #endif
 
-#define ENGINE_ABI_VERSION_RHI 10
+#define ENGINE_ABI_VERSION_RHI 11
 
 typedef struct RhiDevice         RhiDevice;
 typedef struct RhiSwapchain      RhiSwapchain;
@@ -44,6 +44,7 @@ typedef struct RhiHeap           RhiHeap;
 typedef struct RhiFence          RhiFence;
 typedef struct RhiBindlessHeap   RhiBindlessHeap;
 typedef struct RhiAccelStruct    RhiAccelStruct;
+typedef struct RhiTimestampQueryPool RhiTimestampQueryPool;
 
 /** Stable resource handle used by the C# render graph. u64 = (generation << 32) | slot_index. */
 typedef uint64_t RhiResourceHandle;
@@ -163,7 +164,13 @@ typedef struct RhiGraphicsPipelineDesc {
     int32_t           enable_blend;
     int32_t           sample_count;       /* MSAA; 1 = off */
     uint32_t          primitive_topology; /* RhiPrimitiveTopology */
+    uint32_t          depth_compare;      /* RhiCompareOp */
 } RhiGraphicsPipelineDesc;
+
+typedef enum RhiCompareOp {
+    RHI_COMPARE_LESS_EQUAL = 0,
+    RHI_COMPARE_ALWAYS = 1,
+} RhiCompareOp;
 
 typedef struct RhiComputePipelineDesc {
     uint32_t   abi;
@@ -350,6 +357,13 @@ ENGINE_API int32_t  rhi_create_compute_pipeline(RhiDevice* device, const RhiComp
 
 ENGINE_API int32_t  rhi_create_fence(RhiDevice* device, RhiFence** out);
 
+/** Create a timestamp pool with one sample slot per requested timestamp. */
+ENGINE_API int32_t rhi_create_timestamp_query_pool(
+    RhiDevice* device,
+    uint32_t sample_count,
+    RhiTimestampQueryPool** out_pool);
+ENGINE_API void rhi_destroy_timestamp_query_pool(RhiTimestampQueryPool* pool);
+
 ENGINE_API int32_t  rhi_create_heap(RhiDevice* device,
                                     const RhiHeapDesc* desc,
                                     RhiHeap** out_heap);
@@ -483,6 +497,31 @@ ENGINE_API void            rhi_cmd_pipeline_barrier(RhiCommandList* cl,
 
 ENGINE_API void            rhi_cmd_signal_fence(RhiCommandList* cl, RhiFence* fence, uint64_t value);
 ENGINE_API void            rhi_cmd_wait_fence(RhiCommandList* cl, RhiFence* fence, uint64_t value);
+ENGINE_API int32_t         rhi_cmd_write_timestamp(
+    RhiCommandList* cl,
+    RhiTimestampQueryPool* pool,
+    uint32_t sample_index);
+ENGINE_API int32_t         rhi_cmd_resolve_timestamps(
+    RhiCommandList* cl,
+    RhiTimestampQueryPool* pool,
+    uint32_t sample_count);
+
+/**
+ * Read adjacent timestamp-pair durations without waiting for the GPU.
+ * Returns 1 when results are ready, 0 while pending, and -1 on error.
+ */
+ENGINE_API int32_t rhi_timestamp_query_pool_read_durations(
+    RhiTimestampQueryPool* pool,
+    uint32_t duration_count,
+    uint64_t* out_duration_nanoseconds);
+
+/**
+ * Read the completed command buffer's total GPU duration without waiting.
+ * Returns 1 when ready, 0 while pending, and -1 on error.
+ */
+ENGINE_API int32_t rhi_timestamp_query_pool_read_frame_duration(
+    RhiTimestampQueryPool* pool,
+    uint64_t* out_duration_nanoseconds);
 
 /* Inside a cmdlist, encoders model render-pass + compute-pass scopes. */
 ENGINE_API RhiEncoder*     rhi_begin_render_pass(RhiCommandList* cl,

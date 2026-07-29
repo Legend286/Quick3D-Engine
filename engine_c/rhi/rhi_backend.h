@@ -43,12 +43,15 @@ typedef struct RhiBackend {
     int32_t (*create_buffer_from_heap)(RhiDevice *d, RhiHeap *h, const RhiBufferDesc *desc, uint64_t offset,
                                        RhiBuffer **out);
     int32_t (*create_fence)(RhiDevice *d, RhiFence **out);
+    int32_t (*create_timestamp_query_pool)(RhiDevice *d, uint32_t sample_count,
+                                           RhiTimestampQueryPool **out);
     void (*destroy_buffer)(RhiBuffer *buf);
     void (*destroy_texture)(RhiTexture *tex);
     void (*destroy_shader)(RhiShader *sh);
     void (*destroy_pipeline)(RhiPipeline *p);
     void (*destroy_heap)(RhiHeap *h);
     void (*destroy_fence)(RhiFence *f);
+    void (*destroy_timestamp_query_pool)(RhiTimestampQueryPool *pool);
     int32_t (*buffer_upload)(RhiBuffer *buf, const void *data, uint64_t size);
     int32_t (*texture_readback)(RhiTexture *tex, void *out, uint64_t out_size, uint32_t stride);
     int32_t (*texture_upload)(RhiTexture *tex, const void *data, uint64_t size, uint32_t stride);
@@ -71,6 +74,15 @@ typedef struct RhiBackend {
     void (*cmd_pipeline_barrier)(RhiCommandList *cl, uint32_t count, const RhiBarrier *barriers);
     void (*cmd_signal_fence)(RhiCommandList *cl, RhiFence *f, uint64_t value);
     void (*cmd_wait_fence)(RhiCommandList *cl, RhiFence *f, uint64_t value);
+    int32_t (*cmd_write_timestamp)(RhiCommandList *cl, RhiTimestampQueryPool *pool,
+                                   uint32_t sample_index);
+    int32_t (*cmd_resolve_timestamps)(RhiCommandList *cl, RhiTimestampQueryPool *pool,
+                                      uint32_t sample_count);
+    int32_t (*timestamp_query_pool_read_durations)(RhiTimestampQueryPool *pool,
+                                                    uint32_t duration_count,
+                                                    uint64_t *out_duration_nanoseconds);
+    int32_t (*timestamp_query_pool_read_frame_duration)(
+        RhiTimestampQueryPool *pool, uint64_t *out_duration_nanoseconds);
     RhiEncoder *(*begin_render_pass)(RhiCommandList *cl, const RhiPassDesc *desc);
     RhiEncoder *(*begin_compute_pass)(RhiCommandList *cl, const char *debug_name);
     void (*end_pass)(RhiEncoder *enc);
