@@ -10,7 +10,7 @@
         Topmost="True"
         WindowDecorations="None"
         Background="Transparent"
-        TransparencyLevelHint="None">
+        TransparencyLevelHint="Transparent">
   <Border Background="#0f141c"
           BorderBrush="#394150"
           BorderThickness="1"
@@ -24,9 +24,9 @@
               CornerRadius="8"
               Width="336"
               Height="336">
-        <Grid>
+        <views:RoundedClipPanel Radius="7">
           <Image x:Name="PreviewImage"
-                 Stretch="Uniform"
+                 Stretch="UniformToFill"
                  HorizontalAlignment="Stretch"
                  VerticalAlignment="Stretch" />
           <views:GpuExternalImageControl x:Name="GpuPreviewControl"
@@ -34,7 +34,7 @@
                                          Opacity="0"
                                          HorizontalAlignment="Stretch"
                                          VerticalAlignment="Stretch" />
-        </Grid>
+        </views:RoundedClipPanel>
       </Border>
       <StackPanel Spacing="2">
         <TextBlock x:Name="TitleText"

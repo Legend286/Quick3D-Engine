@@ -20,6 +20,7 @@ public partial class ContentBrowserView : UserControl
     private ContentBrowserViewModel? _vm;
     private static readonly DataFormat<string> AssetPathFormat = DataFormat.CreateInProcessFormat<string>("quick3d.asset-path");
     private AssetHoverPopupWindow? _hoverPopupWindow;
+    private ContentAsset? _pointerHoverAsset;
     private PixelPoint _hoverPreviewScreenPosition;
 
     public ContentBrowserView()
@@ -55,7 +56,11 @@ public partial class ContentBrowserView : UserControl
     private void OnDetachedFromVisualTree(object? sender, Avalonia.VisualTreeAttachmentEventArgs e)
     {
         if (_vm != null)
+        {
             _vm.PropertyChanged -= OnViewModelPropertyChanged;
+            _vm.EndAssetHover(_pointerHoverAsset);
+        }
+        _pointerHoverAsset = null;
         CloseHoverPopupWindow();
     }
 
@@ -357,6 +362,10 @@ public partial class ContentBrowserView : UserControl
             return;
         if (DataContext is ContentBrowserViewModel vm && sender is Control control && control.DataContext is ContentAsset asset)
         {
+            if (_pointerHoverAsset != null && _pointerHoverAsset != asset)
+                vm.EndAssetHover(_pointerHoverAsset);
+
+            _pointerHoverAsset = asset;
             UpdateHoverPreviewPosition(e, control);
             vm.BeginAssetHover(asset, vm.HoverPreviewLeft, vm.HoverPreviewTop);
         }
@@ -369,10 +378,11 @@ public partial class ContentBrowserView : UserControl
 
         Dispatcher.UIThread.Post(() =>
         {
-            if (_hoverPopupWindow?.IsVisible == true)
-                return;
-            if (!control.IsPointerOver)
+            if (!control.IsPointerOver && _pointerHoverAsset == asset)
+            {
+                _pointerHoverAsset = null;
                 vm.EndAssetHover(asset);
+            }
         }, DispatcherPriority.Background);
     }
 

@@ -42,7 +42,6 @@ public partial class AssetHoverPopupWindow : Window
         StopLivePreview();
         var image = this.FindControl<Image>("PreviewImage")!;
         var gpuPreview = this.FindControl<GpuExternalImageControl>("GpuPreviewControl")!;
-        gpuPreview.ResetExternalImage();
         image.Source = bitmap;
         image.IsVisible = true;
         gpuPreview.IsVisible = true;
@@ -81,26 +80,30 @@ public partial class AssetHoverPopupWindow : Window
 
             if (assetChanged)
             {
-                DisposeLiveTexture();
+                if (viewportChanged)
+                    DisposeLiveTexture();
                 DisposePreviewLoop();
                 if (viewport.Device == null || viewport.Swapchain == null || viewport.GameLoop == null)
                     return;
 
                 _previewWorld = new EcsWorld();
                 _previewLoop = CreatePreviewLoop(viewport, _previewWorld);
-                _liveTexture = RhiTexture.CreateExternalRenderTarget(viewport.Device, LivePreviewSize, LivePreviewSize, RhiNative.TextureFormat.Bgra8Unorm);
-                _liveFence = new RhiFence(viewport.Device);
-                var exported = _liveTexture.ExportExternalImage();
-                var exportedSemaphore = _liveFence.ExportExternalHandle();
-                _externalImageHandle = exported.Handle;
-                _externalSemaphoreHandle = exportedSemaphore.Handle;
-                _nextWaitValue = 0;
-                _nextSignalValue = 1;
+                if (_liveTexture == null || _liveFence == null)
+                {
+                    _liveTexture = RhiTexture.CreateExternalRenderTarget(viewport.Device, LivePreviewSize, LivePreviewSize, RhiNative.TextureFormat.Bgra8Unorm);
+                    _liveFence = new RhiFence(viewport.Device);
+                    var exported = _liveTexture.ExportExternalImage();
+                    var exportedSemaphore = _liveFence.ExportExternalHandle();
+                    _externalImageHandle = exported.Handle;
+                    _externalSemaphoreHandle = exportedSemaphore.Handle;
+                    _nextWaitValue = 0;
+                    _nextSignalValue = 1;
+                    await gpuPreview.SetExternalImageAsync(exported.Handle, exported.Width, exported.Height, MapExternalImageFormat(exported.Format), exportedSemaphore.Handle);
+                }
                 if (assetType == "Model")
                     _previewLoop.LoadModelPreview(viewport.ContentRoot, assetPath);
                 else
                     _previewLoop.LoadMaterialPreview(viewport.ContentRoot, assetPath, usePathTracer: false);
-                await gpuPreview.SetExternalImageAsync(exported.Handle, exported.Width, exported.Height, MapExternalImageFormat(exported.Format), exportedSemaphore.Handle);
             }
 
             if (!_refreshInFlight && RenderLivePreviewFrame())
@@ -137,6 +140,8 @@ public partial class AssetHoverPopupWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         StopLivePreview();
+        DisposeLiveTexture();
+        _viewport = null;
     }
 
     private async void OnLivePreviewTick(object? sender, EventArgs e)
@@ -184,13 +189,9 @@ public partial class AssetHoverPopupWindow : Window
     {
         _livePreviewTimer.Stop();
         _refreshInFlight = false;
-        _viewport = null;
         _liveAssetPath = null;
         _liveAssetType = null;
         _orbitRadians = 0.0f;
-        _nextWaitValue = 0;
-        _nextSignalValue = 0;
-        DisposeLiveTexture();
         DisposePreviewLoop();
     }
 

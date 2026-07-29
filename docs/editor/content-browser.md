@@ -15,5 +15,17 @@ The Content Browser is a core editor panel responsible for displaying and managi
 ## Implementation Details
 The content browser is built using Avalonia UI (`ContentBrowserView.axaml` and `ContentBrowserViewModel.cs`). It uses standard .NET file system APIs (`System.IO.FileSystemWatcher` and `DirectoryInfo`) to enumerate and track file changes.
 
+Asset hover previews are owned by the asset tile currently under the pointer.
+Leaving that tile closes the preview and releases its preview-scene resources.
+Moving directly between tiles transfers ownership without allowing a delayed exit
+event from the previous tile to close the newly requested preview.
+
+The popup keeps one external RHI render target and synchronization primitive
+for its lifetime. Model and material changes rebuild only the preview scene;
+they do not repeatedly export and import GPU resources through the compositor.
+
+Offscreen thumbnail workers initialize `IGameLoop` with ImGui disabled.
+Dear ImGui owns process-global font-atlas state that cannot be built safely
+from a thumbnail thread while the interactive viewport is rendering.
 
 It is registered as a dockable panel in the main editor window layout.

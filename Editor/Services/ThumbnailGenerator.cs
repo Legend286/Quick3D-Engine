@@ -65,7 +65,11 @@ public static class ThumbnailGenerator
                 var assembly = loadContext.LoadFromAssemblyName(new AssemblyName("Engine.Game"));
                 var loopType = assembly.GetTypes().First(t => typeof(IGameLoop).IsAssignableFrom(t) && !t.IsInterface);
                 var loop = (IGameLoop)Activator.CreateInstance(loopType, false)!;
-                loop.Init(device.Handle, dummySwap.Handle, null!);
+                loop.Init(
+                    device.Handle,
+                    dummySwap.Handle,
+                    null!,
+                    enableImGui: false);
 
                 _availableWorkers.Enqueue(new ThumbnailWorker
                 {
