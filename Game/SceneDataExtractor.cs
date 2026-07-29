@@ -17,6 +17,7 @@ internal sealed class SceneFrameData
     public Vector3 SkySunDir;
     public float SkySunRadius;
     public List<LightData> Lights { get; } = new();
+    public List<ulong> LightEntityIds { get; } = new();
     public List<InstanceData> Instances { get; } = new();
     public List<PartData> Parts { get; } = new();
     public List<MaterialData> Materials { get; } = new();
@@ -104,6 +105,7 @@ internal static class SceneDataExtractor
                     Color = new Vector4(directional.Color, directional.Intensity),
                     ShapeParams = new Vector4(0.0f, 0.0f, directional.AngularRadius, directional.CastShadows ? 1.0f : 0.0f)
                 });
+                frameData.LightEntityIds.Add(entity);
                 continue;
             }
 
@@ -116,6 +118,7 @@ internal static class SceneDataExtractor
                     Color = new Vector4(pointLight.Color, pointLight.Intensity),
                     ShapeParams = new Vector4(0.0f, 0.0f, pointLight.SourceRadius, pointLight.CastShadows ? 1.0f : 0.0f)
                 });
+                frameData.LightEntityIds.Add(entity);
                 continue;
             }
 
@@ -129,6 +132,7 @@ internal static class SceneDataExtractor
                     Color = new Vector4(spotLight.Color, spotLight.Intensity),
                     ShapeParams = new Vector4(spotLight.InnerCone, spotLight.OuterCone, spotLight.SourceRadius, spotLight.CastShadows ? 1.0f : 0.0f)
                 });
+                frameData.LightEntityIds.Add(entity);
             }
         }
 
@@ -158,6 +162,7 @@ internal static class SceneDataExtractor
                     Color = new Vector4(l.Color[0], l.Color[1], l.Color[2], l.Intensity),
                     ShapeParams = new Vector4(innerCone, outerCone, sourceRadius, flags)
                 });
+                frameData.LightEntityIds.Add((ulong)frameData.LightEntityIds.Count);
             }
         }
 
@@ -166,10 +171,11 @@ internal static class SceneDataExtractor
             lights.Add(new LightData
             {
                 Position = new Vector4(0, 0, 0, 10.0f),
-                Direction = new Vector4(Vector3.Normalize(new Vector3(-1, 1, -1)), 0.0f),
+                Direction = new Vector4(Vector3.Normalize(new Vector3(1, -1, 1)), 0.0f),
                 Color = new Vector4(1, 1, 1, 2.0f),
                 ShapeParams = new Vector4(0.0f, 0.0f, 0.00465f, 0.0f)
             });
+            frameData.LightEntityIds.Add(0);
         }
 
         EnsureBuffer(device, ref lightBuffer, (ulong)lights.Count * (ulong)sizeof(LightData), RhiNative.BufferUsage.Storage);
@@ -314,7 +320,8 @@ internal static class SceneDataExtractor
                             PartCount = (uint)(parts.Count - firstPart),
                             FirstPartIndex = firstPart,
                             EntityIdLow = (uint)(id & 0xFFFFFFFF),
-                            EntityIdHigh = (uint)(id >> 32)
+                            EntityIdHigh = (uint)(id >> 32),
+                            Flags = modelComp.StaticShadowCaster ? 1u : 0u,
                         });
                     }
                 }

@@ -34,6 +34,10 @@ struct InstanceData {
     uint firstPartIndex;
     uint entityIdLow;
     uint entityIdHigh;
+    uint flags;
+    uint pad0;
+    uint pad1;
+    uint pad2;
 };
 
 struct MaterialData {
@@ -95,6 +99,13 @@ struct ClusterRecord {
     uint count;
 };
 
+struct PunctualShadowFaceData {
+    float4x4 viewProjection;
+    float4 staticUvScaleBias;
+    float4 dynamicUvScaleBias;
+    float4 textureIndicesAndFlags;
+};
+
 struct ScenePushData {
     PartData* parts;
     InstanceData* instances;
@@ -111,4 +122,14 @@ struct ScenePushData {
     uint* clusterLightIndices;
     float4 clusterGrid;
     float4 clusterParams;
+    float4x4 directionalShadowViewProj;
+    float4 directionalShadowParams;
+    float4x4 directionalShadowViewProj1;
+    float4x4 directionalShadowViewProj2;
+    float4x4 directionalShadowViewProj3;
+    float4 directionalShadowSplits;
+    float4 directionalShadowTextureIndices;
+    PunctualShadowFaceData* punctualShadowFaces;
+    uint punctualShadowFaceCount;
+    uint punctualShadowPad;
 };

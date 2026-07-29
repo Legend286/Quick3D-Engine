@@ -1,0 +1,37 @@
+{
+  "name": "shadow_stress",
+  "passes": [
+    {
+      "name": "PbrPass",
+      "shader_vs": "shaders/pbr.slang",
+      "shader_fs": "shaders/pbr.slang",
+      "entry": "main",
+      "clear_color": [0.012, 0.016, 0.024, 1.0],
+      "draws": []
+    }
+  ],
+  "cameras": [
+    {
+      "name": "default",
+      "near": 0.1,
+      "far": 1000.0
+    }
+  ],
+  "models": [],
+  "lights": [
+    {
+      "type": "directional",
+      "direction": [-0.42, -1.0, -0.28],
+      "color": [1.0, 0.93, 0.82],
+      "intensity": 1.8,
+      "sun_radius": 0.012,
+      "cast_shadows": true
+    }
+  ],
+  "procedural_demo": {
+    "enabled": true,
+    "point_light_count": 28,
+    "spot_light_count": 8,
+    "animate_lights": true
+  }
+}

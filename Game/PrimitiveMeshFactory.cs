@@ -146,6 +146,173 @@ public static class PrimitiveMeshFactory
         return outputPath;
     }
 
+    /// <summary>
+    /// Writes a tangent-space torus mesh to the runtime mesh format.
+    /// </summary>
+    public static string GenerateTorus(
+        string outputPath,
+        int segments = 64,
+        int sides = 32,
+        float majorRadius = 1.0f,
+        float minorRadius = 0.35f)
+    {
+        var vertices =
+            new System.Collections.Generic.List<MshVertex>();
+        var indices =
+            new System.Collections.Generic.List<uint>();
+
+        for (int segment = 0; segment <= segments; ++segment)
+        {
+            float u = 2.0f * MathF.PI * segment / segments;
+            float cosU = MathF.Cos(u);
+            float sinU = MathF.Sin(u);
+            for (int side = 0; side <= sides; ++side)
+            {
+                float v = 2.0f * MathF.PI * side / sides;
+                float cosV = MathF.Cos(v);
+                float sinV = MathF.Sin(v);
+                float ringRadius = majorRadius + minorRadius * cosV;
+                vertices.Add(new MshVertex
+                {
+                    Px = ringRadius * cosU,
+                    Py = minorRadius * sinV,
+                    Pz = ringRadius * sinU,
+                    Nx = cosV * cosU,
+                    Ny = sinV,
+                    Nz = cosV * sinU,
+                    Tu = segment / (float)segments,
+                    Tv = side / (float)sides,
+                    Tx = -sinU,
+                    Ty = 0.0f,
+                    Tz = cosU,
+                    Tw = 1.0f,
+                });
+            }
+        }
+
+        for (int segment = 0; segment < segments; ++segment)
+        {
+            for (int side = 0; side < sides; ++side)
+            {
+                uint a = (uint)(segment * (sides + 1) + side);
+                uint b = (uint)((segment + 1) * (sides + 1) + side);
+                uint c = b + 1;
+                uint d = a + 1;
+                indices.Add(a);
+                indices.Add(b);
+                indices.Add(c);
+                indices.Add(a);
+                indices.Add(c);
+                indices.Add(d);
+            }
+        }
+
+        WriteMsh(outputPath, vertices, indices);
+        return outputPath;
+    }
+
+    /// <summary>
+    /// Writes a unit box with per-face normals to the runtime mesh format.
+    /// </summary>
+    public static string GenerateBox(string outputPath)
+    {
+        var vertices =
+            new System.Collections.Generic.List<MshVertex>();
+        var indices =
+            new System.Collections.Generic.List<uint>();
+        ReadOnlySpan<System.Numerics.Vector3> normals =
+        [
+            System.Numerics.Vector3.UnitX,
+            -System.Numerics.Vector3.UnitX,
+            System.Numerics.Vector3.UnitY,
+            -System.Numerics.Vector3.UnitY,
+            System.Numerics.Vector3.UnitZ,
+            -System.Numerics.Vector3.UnitZ,
+        ];
+        ReadOnlySpan<System.Numerics.Vector3> tangents =
+        [
+            System.Numerics.Vector3.UnitZ,
+            -System.Numerics.Vector3.UnitZ,
+            System.Numerics.Vector3.UnitX,
+            System.Numerics.Vector3.UnitX,
+            -System.Numerics.Vector3.UnitX,
+            System.Numerics.Vector3.UnitX,
+        ];
+
+        for (int face = 0; face < normals.Length; ++face)
+        {
+            System.Numerics.Vector3 normal = normals[face];
+            System.Numerics.Vector3 tangent = tangents[face];
+            System.Numerics.Vector3 bitangent =
+                System.Numerics.Vector3.Cross(tangent, normal);
+            uint first = (uint)vertices.Count;
+            AddBoxVertex(
+                vertices,
+                normal,
+                tangent,
+                bitangent,
+                -1.0f,
+                -1.0f);
+            AddBoxVertex(
+                vertices,
+                normal,
+                tangent,
+                bitangent,
+                -1.0f,
+                1.0f);
+            AddBoxVertex(
+                vertices,
+                normal,
+                tangent,
+                bitangent,
+                1.0f,
+                1.0f);
+            AddBoxVertex(
+                vertices,
+                normal,
+                tangent,
+                bitangent,
+                1.0f,
+                -1.0f);
+            indices.Add(first);
+            indices.Add(first + 1);
+            indices.Add(first + 2);
+            indices.Add(first);
+            indices.Add(first + 2);
+            indices.Add(first + 3);
+        }
+
+        WriteMsh(outputPath, vertices, indices);
+        return outputPath;
+    }
+
+    private static void AddBoxVertex(
+        System.Collections.Generic.List<MshVertex> vertices,
+        System.Numerics.Vector3 normal,
+        System.Numerics.Vector3 tangent,
+        System.Numerics.Vector3 bitangent,
+        float x,
+        float y)
+    {
+        System.Numerics.Vector3 position =
+            (normal + tangent * x + bitangent * y) * 0.5f;
+        vertices.Add(new MshVertex
+        {
+            Px = position.X,
+            Py = position.Y,
+            Pz = position.Z,
+            Nx = normal.X,
+            Ny = normal.Y,
+            Nz = normal.Z,
+            Tu = x * 0.5f + 0.5f,
+            Tv = y * 0.5f + 0.5f,
+            Tx = tangent.X,
+            Ty = tangent.Y,
+            Tz = tangent.Z,
+            Tw = 1.0f,
+        });
+    }
+
     private static unsafe void WriteMsh(string path, System.Collections.Generic.List<MshVertex> vertices, System.Collections.Generic.List<uint> indices)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -175,6 +342,8 @@ public static class PrimitiveMeshFactory
             w.Write(vBytes);
 
             foreach (var idx in indices) w.Write(idx);
+            w.Flush();
+            fs.Flush(true);
         }
 
         File.Move(tmp, path, overwrite: true);

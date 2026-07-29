@@ -22,10 +22,29 @@ state that also maps cleanly to Vulkan.
   the same dynamic buffer sizing and material layout.
 - Add the first clustered Forward+ pass using RHI storage buffers and a compute
   shader light assignment step.
+- Extract directional shadows into a graph-visible pass and share scene GPU
+  uploads between shadow and forward rendering.
+- Add four stable cascades backed by dedicated 4096x4096 depth pages.
+- Persist cascade pages across frames and update at most one dirty page per
+  frame under the shadow work budget.
+- Use camera-centred XZ clipmap radii of 5, 25, 125, and 500 metres so vertical
+  camera movement does not reduce ground shadow quality.
+- Cull transformed part bounds against each selected light clip volume before
+  emitting indirect shadow draws, and invalidate cached pages only for
+  overlapping instances.
+- Stabilize every cascade with a square region-bounding sphere and light-space
+  texel snapping. Projection radii never shrink and grow only in coarse steps.
+- Conservatively omit inner-band casters from outer pages when their maximum
+  sun-projected displacement cannot reach the outer sampled band.
+- Split raster culling and clustered-light assignment into a graph-visible
+  compute pass that overlaps directional shadow rendering on async compute.
 
 ## Public API Surface
 
 - `PbrPass`: Owns the raster Forward+ pass sequence and GPU-driven draw path.
+- `DirectionalShadowPass`: Renders the directional shadow pages.
+- `RasterSceneGpuCache`: Owns frame-keyed raster scene buffers shared by
+  shadow and forward passes.
 - `cull.slang`: Builds raster indirect draw commands from scene instance data.
 - `scene_data.slang`: Shared GPU scene ABI for raster and path tracing.
 - Future `rhi_cmd_dispatch_indirect`: Required for GPU-driven clustered and
@@ -85,17 +104,22 @@ dispatch-indirect for GPU-adaptive workloads.
 
 ## Phase 4: Dynamic Shadows
 
-1. Add shadow atlas textures through RHI depth texture creation.
-2. Add directional cascaded shadow maps with stable texel snapping.
-3. Add spot shadow maps as atlas tiles.
-4. Add point shadows through cubemap arrays or six atlas faces, selected by the
-   RHI texture-view model once available.
+1. Shadow pages use the RHI shader-readable depth target and depth-only pass
+   path. Directional shadows reserve four dedicated 4096x4096 pages.
+2. Four directional cascades use horizontal radial selection, stable texel
+   snapping, fixed square sphere footprints, 500-unit coverage,
+   per-part GPU culling, 3x3 PCF, and transition blending.
+3. Spot shadows use lazily allocated page tiers, cached static depth, and a
+   separately refreshed movable overlay.
+4. Point shadows atomically allocate six faces from one tier. Visible point
+   lights retain every face and schedule invalid or oldest faces first,
+   preventing moving-light update starvation. Spotlights retain conservative
+   camera-frustum versus shadow-frustum rejection.
 5. Add shadow receiver sampling to clustered light records so only shadowed
    lights pay shadow lookup cost.
 
-The RHI needs portable texture array/view descriptors, depth compare samplers,
-and render-pass load/store control. Do not expose Metal-specific shadow atlas or
-argument-buffer concepts through C#.
+Shadow pages are sampled through the existing bindless texture heap. Do not
+expose Metal-specific argument-buffer concepts through C#.
 
 ## Phase 5: Volumetrics
 
@@ -143,8 +167,12 @@ renderer.RenderFrame(backBuffer, width, height);
   main pass.
 - Clustered Forward+ changes light cost from all-lights-per-fragment to
   visible-lights-per-cluster.
-- Shadow atlas allocation should be resolution-budgeted by light importance,
-  not one fixed-size shadow map per light.
+- The directional implementation owns four persistent 4096x4096 depth pages
+  per raster renderer. Additional punctual-light pages allocate lazily under a
+  1 GiB default budget and a 1.5 GiB hard ceiling. Thumbnail and hover-preview
+  plans disable it.
+- Scene GPU extraction is performed once per raster frame and reused by the
+  directional shadow and forward passes.
 - Volumetric raymarch cost scales with the finite volume segment length and
   configured step count, not full camera depth.
 

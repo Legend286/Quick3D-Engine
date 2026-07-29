@@ -27,6 +27,10 @@ public struct InstanceData
     public uint FirstPartIndex;
     public uint EntityIdLow;
     public uint EntityIdHigh;
+    public uint Flags;
+    public uint Pad0;
+    public uint Pad1;
+    public uint Pad2;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -105,6 +109,25 @@ public struct ScenePushData
     public ulong ClusterLightIndices;
     public Vector4 ClusterGrid;
     public Vector4 ClusterParams;
+    public Matrix4x4 DirectionalShadowViewProj;
+    public Vector4 DirectionalShadowParams;
+    public Matrix4x4 DirectionalShadowViewProj1;
+    public Matrix4x4 DirectionalShadowViewProj2;
+    public Matrix4x4 DirectionalShadowViewProj3;
+    public Vector4 DirectionalShadowSplits;
+    public Vector4 DirectionalShadowTextureIndices;
+    public ulong PunctualShadowFaces;
+    public uint PunctualShadowFaceCount;
+    public uint PunctualShadowPad;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct PunctualShadowFaceData
+{
+    public Matrix4x4 ViewProjection;
+    public Vector4 StaticUvScaleBias;
+    public Vector4 DynamicUvScaleBias;
+    public Vector4 TextureIndicesAndFlags;
 }
 
 [StructLayout(LayoutKind.Sequential)]

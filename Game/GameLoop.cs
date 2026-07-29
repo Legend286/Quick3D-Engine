@@ -105,11 +105,13 @@ public sealed class GameLoop : IGameLoop
     private float _lastMouseY;
     private bool _wasKeyPDown;
     private bool _wasMouseDownLeft;
+    private float _sceneAnimationTime;
 
     public void Update(InputState input)
     {
         if (_world == null) return;
         EnsureCamera();
+        UpdateOrbitingLights(input.DeltaTime);
 
         // Toggle between path tracer and rasterizer with P key
         if (input.KeyP && !_wasKeyPDown)
@@ -182,6 +184,7 @@ public sealed class GameLoop : IGameLoop
 
     public void LoadScene(string contentRoot, string sceneName)
     {
+        _sceneAnimationTime = 0.0f;
         _imguiRenderer?.LoadShaders(contentRoot);
         _renderer?.LoadScene(contentRoot, sceneName);
         // Re-seed AFTER scene load so game-code edits always override scene defaults.
@@ -189,6 +192,46 @@ public sealed class GameLoop : IGameLoop
         // the scene JSON provides fallback geometry, but SeedWorld has final say.
         if (_world is not null)
             SeedWorld(_world);
+    }
+
+    private void UpdateOrbitingLights(float deltaTime)
+    {
+        if (_world == null)
+            return;
+
+        _sceneAnimationTime += Math.Clamp(deltaTime, 0.0f, 0.1f);
+        foreach (ulong entity in _world.Entities)
+        {
+            if (!_world.TryGet<OrbitingLightComponent>(
+                    entity,
+                    out var orbit) ||
+                !_world.TryGet<Transform>(
+                    entity,
+                    out var transform))
+            {
+                continue;
+            }
+
+            transform.Position =
+                ProceduralDemoSceneBuilder.EvaluateOrbit(
+                    orbit,
+                    _sceneAnimationTime);
+            if (orbit.AimAtCenter)
+            {
+                Vector3 direction = Vector3.Normalize(
+                    orbit.Center - transform.Position);
+                transform.Rotation =
+                    Engine.Scene.LightMath.GetSpotRotation(direction);
+                if (_world.TryGet<SpotLightComponent>(
+                        entity,
+                        out var spotLight))
+                {
+                    spotLight.Direction = direction;
+                    _world.Set(entity, spotLight);
+                }
+            }
+            _world.Set(entity, transform);
+        }
     }
 
     public ulong AddPointLight(Vector3 position, Vector3 color, float intensity, float range, float sourceRadius, bool castShadows = true)
@@ -228,6 +271,30 @@ public sealed class GameLoop : IGameLoop
             _imGuiFrameStarted = false;
         }
     }
+
+    public RenderGraphDiagnosticsSnapshot? GetRenderGraphDiagnostics()
+        => _renderer?.GetRenderGraphDiagnostics();
+
+    public bool RenderShadowAtlasTilePreview(
+        ulong entityId,
+        int faceIndex,
+        bool dynamicTile,
+        RhiTexture target,
+        uint width = 512,
+        uint height = 512,
+        RhiFence? syncFence = null,
+        ulong waitValue = 0,
+        ulong signalValue = 0)
+        => _renderer?.RenderShadowAtlasTilePreview(
+            entityId,
+            faceIndex,
+            dynamicTile,
+            target,
+            width,
+            height,
+            syncFence,
+            waitValue,
+            signalValue) ?? false;
 
     public void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target, uint width = 256, uint height = 256, float orbitRadians = 0.0f, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
     {

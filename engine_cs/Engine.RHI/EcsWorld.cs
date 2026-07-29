@@ -110,10 +110,17 @@ public sealed class EcsWorld : IEntityStore, IDisposable
 public struct ModelComponent
 {
     public ulong ModelId;
+    public bool StaticShadowCaster;
 
-    public static ModelComponent Create(ulong modelId)
+    public static ModelComponent Create(
+        ulong modelId,
+        bool staticShadowCaster = true)
     {
-        return new ModelComponent { ModelId = modelId };
+        return new ModelComponent
+        {
+            ModelId = modelId,
+            StaticShadowCaster = staticShadowCaster,
+        };
     }
 }
 
@@ -154,4 +161,29 @@ public struct SpotLightComponent
     public float OuterCone;
     public float SourceRadius;
     public bool CastShadows;
+}
+
+/// <summary>
+/// Drives a light around an elliptical orbit for scene-authored animation.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct OrbitingLightComponent
+{
+    public Vector3 Center;
+    public float Radius;
+    public float AngularSpeed;
+    public float Phase;
+    public float VerticalAmplitude;
+    public float VerticalFrequency;
+    public float OrbitHeight;
+    public bool AimAtCenter;
+}
+
+/// <summary>
+/// Marks runtime-generated entities that remain represented by scene metadata.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct ProceduralDemoEntityComponent
+{
+    public byte Value;
 }

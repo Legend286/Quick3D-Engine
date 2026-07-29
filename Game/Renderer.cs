@@ -30,6 +30,10 @@ public sealed class Renderer : IDisposable
 
     private RenderPlan? _plan;
     private SceneGraph? _currentScene;
+    private readonly RenderGraphExecutor _graphExecutor;
+    private readonly GpuWorkScheduler _gpuWorkScheduler = new();
+    private long _renderedFrameCount;
+    private long _renderPlanVersion;
 
     /// <summary>Sentinel handle on which the executor binds the swapchain
     /// back-buffer before each frame. Console-friendly constant so callers
@@ -37,12 +41,27 @@ public sealed class Renderer : IDisposable
     public static readonly ResourceHandle BackBufferHandle = new(0x80000000);
     public static readonly ResourceHandle DepthBufferHandle = new(0x80000001);
     public static readonly ResourceHandle OutlineMaskHandle = new(0x80000002);
+    private const uint DirectionalShadowMapHandleBase = 0x80000003;
+
+    public static ResourceHandle GetDirectionalShadowMapHandle(int cascadeIndex)
+        => GetShadowPageHandle(cascadeIndex);
+
+    public static ResourceHandle GetShadowPageHandle(int pageIndex)
+        => new(DirectionalShadowMapHandleBase + (uint)pageIndex);
 
     private string _lastSceneName = "";
     private bool _usePathTracer = true;
     private bool _renderSky = true;
     private bool _renderGrid = true;
+    private bool _renderShadows = true;
     private RhiBindlessHeap _sharedBindlessHeap;
+    private RasterSceneGpuCache? _rasterSceneCache;
+    private DirectionalShadowState? _directionalShadowState;
+    private DirectionalShadowPass? _directionalShadowPass;
+    private PunctualShadowState? _punctualShadowState;
+    private PunctualShadowPass? _punctualShadowPass;
+    private ShadowAtlasPreviewRenderer? _shadowAtlasPreviewRenderer;
+    private long _lastConsumedGpuTimingFrame = -1;
 
     private RhiTexture? _depthTexture;
     private RhiTexture? _outlineMaskTexture;
@@ -79,6 +98,10 @@ public sealed class Renderer : IDisposable
         _world = world;
         _imguiRenderer = imguiRenderer;
         _sharedBindlessHeap = new RhiBindlessHeap(_device, 4096);
+        _graphExecutor = new RenderGraphExecutor(_device)
+        {
+            EnableGpuTiming = true,
+        };
     }
 
     public IEntityStore World => _world;
@@ -125,7 +148,11 @@ public sealed class Renderer : IDisposable
             ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
 
             ulong ent = _world.CreateEntity();
-            _world.Set(ent, ModelComponent.Create(modelId));
+            _world.Set(
+                ent,
+                ModelComponent.Create(
+                    modelId,
+                    modelRef.StaticShadowCaster));
 
             var pos = modelRef.Position ?? new float[] { 0, 0, 0 };
             var rot = modelRef.Rotation ?? new float[] { 0, 0, 0, 1 };
@@ -143,6 +170,16 @@ public sealed class Renderer : IDisposable
                 Rotation = q,
                 Scale = scl.Length >= 3 ? new Vector3(scl[0], scl[1], scl[2]) : Vector3.One
             });
+        }
+
+        if (scene.ProceduralDemo is { Enabled: true } proceduralDemo)
+        {
+            ProceduralDemoSceneBuilder.Build(
+                _device,
+                _world,
+                contentRoot,
+                proceduralDemo);
+            _usePathTracer = false;
         }
 
         foreach (var light in scene.Lights)
@@ -168,6 +205,7 @@ public sealed class Renderer : IDisposable
         _currentScene = scene;
         _renderSky = true;
         _renderGrid = true;
+        _renderShadows = true;
         RebuildRenderPlan(scene, contentRoot);
     }
 
@@ -184,6 +222,7 @@ public sealed class Renderer : IDisposable
         _usePathTracer = false;
         _renderSky = false;
         _renderGrid = false;
+        _renderShadows = false;
         RebuildRenderPlan(sg, contentRoot);
     }
 
@@ -192,6 +231,7 @@ public sealed class Renderer : IDisposable
         _currentScene = null;
         _renderSky = false;
         _renderGrid = false;
+        _renderShadows = false;
 
         var passes = new List<RenderPass>
         {
@@ -200,7 +240,11 @@ public sealed class Renderer : IDisposable
 
         var previous = _plan;
         _plan = new RenderGraphCompiler().Compile(passes);
+        _renderPlanVersion++;
         previous?.Passes?.DisposeAll();
+        _rasterSceneCache?.Dispose();
+        _rasterSceneCache = null;
+        _directionalShadowState = null;
     }
 
     public ulong AddPointLight(Vector3 position, Vector3 color, float intensity, float range, float sourceRadius, bool castShadows = true)
@@ -319,12 +363,71 @@ public sealed class Renderer : IDisposable
     private void RebuildRenderPlan(SceneGraph scene, string contentRoot)
     {
         var passes = new List<RenderPass>();
-        foreach (var scenePass in scene.Passes)
+        RasterSceneGpuCache? newRasterSceneCache = null;
+        DirectionalShadowState? shadowState = null;
+        DirectionalShadowPass? directionalShadowPass = null;
+        PunctualShadowState? punctualShadowState = null;
+        PunctualShadowPass? punctualShadowPass = null;
+
+        if (_usePathTracer)
         {
-            if (_usePathTracer)
+            foreach (var scenePass in scene.Passes)
+            {
                 passes.Add(new PathTracerPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap, this));
-            else
-                passes.Add(new PbrPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap, this, _renderSky));
+            }
+        }
+        else
+        {
+            newRasterSceneCache = new RasterSceneGpuCache(
+                _device,
+                _world,
+                scene,
+                _sharedBindlessHeap,
+                this);
+
+            if (_renderShadows && scene.Passes.Count > 0)
+            {
+                shadowState = new DirectionalShadowState(
+                    _device,
+                    _sharedBindlessHeap);
+                directionalShadowPass = new DirectionalShadowPass(
+                    _device,
+                    contentRoot,
+                    newRasterSceneCache,
+                    shadowState,
+                    _gpuWorkScheduler);
+                punctualShadowState = new PunctualShadowState(
+                    _device,
+                    shadowState.Atlas,
+                    _sharedBindlessHeap);
+                punctualShadowPass = new PunctualShadowPass(
+                    _device,
+                    contentRoot,
+                    newRasterSceneCache,
+                    punctualShadowState,
+                    _gpuWorkScheduler);
+            }
+
+            var pbrPasses = new List<PbrPass>();
+            foreach (var scenePass in scene.Passes)
+            {
+                pbrPasses.Add(new PbrPass(
+                    _device,
+                    scenePass,
+                    contentRoot,
+                    _sharedBindlessHeap,
+                    newRasterSceneCache,
+                    shadowState,
+                    punctualShadowState,
+                    _renderSky));
+            }
+            foreach (PbrPass pbrPass in pbrPasses)
+                passes.Add(pbrPass.CreateComputePass());
+            if (directionalShadowPass != null)
+                passes.Add(directionalShadowPass);
+            if (punctualShadowPass != null)
+                passes.Add(punctualShadowPass);
+            passes.AddRange(pbrPasses);
         }
 
         passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));
@@ -339,12 +442,20 @@ public sealed class Renderer : IDisposable
             passes.Add(new ImGuiPass(_imguiRenderer));
 
         var previous = _plan;
+        RasterSceneGpuCache? previousRasterSceneCache = _rasterSceneCache;
 
         Info($"[Renderer] Compiling render graph with {passes.Count} pass(es)...", "Renderer");
         var newPlan = new RenderGraphCompiler().Compile(passes);
 
         _plan = newPlan;
+        _renderPlanVersion++;
+        _rasterSceneCache = newRasterSceneCache;
+        _directionalShadowState = shadowState;
+        _directionalShadowPass = directionalShadowPass;
+        _punctualShadowState = punctualShadowState;
+        _punctualShadowPass = punctualShadowPass;
         previous?.Passes?.DisposeAll();
+        previousRasterSceneCache?.Dispose();
         Info("[Renderer] Render graph compiled successfully", "Renderer");
     }
 
@@ -374,15 +485,322 @@ public sealed class Renderer : IDisposable
             _outlineMaskTexture = RhiTexture.CreateRenderTarget(_device, _depthWidth, _depthHeight, Engine.CBindings.RhiNative.TextureFormat.Bgra8Unorm);
         }
 
-        using var executor = new RenderGraphExecutor(_device);
-        executor.SetViewportSize(width, height);
-        executor.BindSwapchain(backBuffer, BackBufferHandle, ResourceState.RenderTarget);
+        _graphExecutor.SetViewportSize(width, height);
+        _graphExecutor.BindSwapchain(backBuffer, BackBufferHandle, ResourceState.RenderTarget);
         if (_depthTexture != null)
-            executor.BindSwapchain(_depthTexture, DepthBufferHandle, ResourceState.DepthStencil);
+            _graphExecutor.BindSwapchain(_depthTexture, DepthBufferHandle, ResourceState.DepthStencil);
         if (_outlineMaskTexture != null)
-            executor.BindSwapchain(_outlineMaskTexture, OutlineMaskHandle, ResourceState.RenderTarget);
+            _graphExecutor.BindSwapchain(_outlineMaskTexture, OutlineMaskHandle, ResourceState.RenderTarget);
+        if (_directionalShadowState != null)
+        {
+            int pageCount = Math.Min(
+                _directionalShadowState.Atlas.Pages.Count,
+                24);
+            for (int pageIndex = 0;
+                 pageIndex < pageCount;
+                 ++pageIndex)
+            {
+                _graphExecutor.BindSwapchain(
+                    _directionalShadowState.Atlas.Pages[pageIndex],
+                    GetShadowPageHandle(pageIndex),
+                    ResourceState.ShaderRead);
+            }
+            for (int pageIndex = pageCount; pageIndex < 24; ++pageIndex)
+                _graphExecutor.UnbindTexture(GetShadowPageHandle(pageIndex));
+        }
+        else
+        {
+            for (int pageIndex = 0; pageIndex < 24; ++pageIndex)
+                _graphExecutor.UnbindTexture(GetShadowPageHandle(pageIndex));
+        }
 
-        executor.Execute(_plan, syncFence, waitValue, syncFence, signalValue);
+        _graphExecutor.Execute(_plan, syncFence, waitValue, syncFence, signalValue);
+        ConsumeGpuWorkTimings();
+        _renderedFrameCount++;
+    }
+
+    private void ConsumeGpuWorkTimings()
+    {
+        long timingFrame = _graphExecutor.LastGpuTimingFrameNumber;
+        if (timingFrame < 0 ||
+            timingFrame == _lastConsumedGpuTimingFrame)
+        {
+            return;
+        }
+
+        _lastConsumedGpuTimingFrame = timingFrame;
+        var timings = _graphExecutor.LastPassTimings;
+        for (int i = 0; i < timings.Count; ++i)
+        {
+            if (timings[i].GpuMilliseconds is not double milliseconds)
+            {
+                continue;
+            }
+            if (_directionalShadowPass != null &&
+                timings[i].Name.Equals(
+                    _directionalShadowPass.Name,
+                    StringComparison.Ordinal) &&
+                _directionalShadowPass.TryGetRenderedCascadeCount(
+                    timingFrame,
+                    out int cascadeCount) &&
+                cascadeCount > 0)
+            {
+                _gpuWorkScheduler.RecordCompletedWork(
+                    GpuWorkDomain.Shadows,
+                    milliseconds,
+                    cascadeCount);
+            }
+            else if (_punctualShadowPass != null &&
+                timings[i].Name.Equals(
+                    _punctualShadowPass.Name,
+                    StringComparison.Ordinal) &&
+                _punctualShadowPass.TryGetRenderedUnitCount(
+                    timingFrame,
+                    out int unitCount) &&
+                unitCount > 0)
+            {
+                _gpuWorkScheduler.RecordCompletedWork(
+                    GpuWorkDomain.PunctualShadows,
+                    milliseconds,
+                    unitCount);
+            }
+        }
+    }
+
+    public RenderGraphDiagnosticsSnapshot? GetRenderGraphDiagnostics()
+    {
+        if (_plan == null)
+            return null;
+
+        var passTimings = _graphExecutor.LastPassTimings;
+        var passes = new RenderGraphPassDiagnostics[_plan.Passes.Length];
+        var lastWriters = new Dictionary<ResourceHandle, int>();
+        double cpuTotal = 0.0;
+
+        for (int i = 0; i < _plan.Passes.Length; ++i)
+        {
+            double cpuMilliseconds = i < passTimings.Count
+                ? passTimings[i].CpuMilliseconds
+                : 0.0;
+            cpuTotal += cpuMilliseconds;
+
+            var accesses = new RenderGraphAccessDiagnostics[_plan.PassAccesses[i].Count];
+            var dependencies = new HashSet<string>();
+            for (int accessIndex = 0; accessIndex < accesses.Length; ++accessIndex)
+            {
+                var access = _plan.PassAccesses[i][accessIndex];
+                if (access.Access != ResourceAccess.Write &&
+                    lastWriters.TryGetValue(access.Resource, out int writerIndex) &&
+                    writerIndex != i)
+                {
+                    dependencies.Add(_plan.Passes[writerIndex].Name);
+                }
+                accesses[accessIndex] = new RenderGraphAccessDiagnostics(
+                    access.Resource.Id,
+                    GetResourceName(access.Resource),
+                    access.Access.ToString(),
+                    access.State.ToString());
+                if (access.Access != ResourceAccess.Read)
+                    lastWriters[access.Resource] = i;
+            }
+
+            var barriers = new RenderGraphBarrierDiagnostics[_plan.BarriersPerPass[i].Count];
+            for (int barrierIndex = 0; barrierIndex < barriers.Length; ++barrierIndex)
+            {
+                var barrier = _plan.BarriersPerPass[i][barrierIndex];
+                barriers[barrierIndex] = new RenderGraphBarrierDiagnostics(
+                    barrier.Resource.Id,
+                    GetResourceName(barrier.Resource),
+                    barrier.StateBefore.ToString(),
+                    barrier.StateAfter.ToString());
+            }
+
+            passes[i] = new RenderGraphPassDiagnostics(
+                _plan.Passes[i].Name,
+                _plan.Passes[i].Queue.ToString(),
+                cpuMilliseconds,
+                i < passTimings.Count ? passTimings[i].GpuMilliseconds : null,
+                dependencies.ToArray(),
+                accesses,
+                barriers);
+        }
+
+        var resourceLifetimes = new Dictionary<ResourceHandle, (int First, int Last, int Count)>();
+        for (int passIndex = 0; passIndex < _plan.PassAccesses.Count; ++passIndex)
+        {
+            foreach (var access in _plan.PassAccesses[passIndex])
+            {
+                if (resourceLifetimes.TryGetValue(access.Resource, out var lifetime))
+                {
+                    resourceLifetimes[access.Resource] =
+                        (lifetime.First, passIndex, lifetime.Count + 1);
+                }
+                else
+                {
+                    resourceLifetimes[access.Resource] = (passIndex, passIndex, 1);
+                }
+            }
+        }
+
+        var aliasGroups = new Dictionary<ResourceHandle, string>();
+        int aliasGroupIndex = 0;
+        foreach (var group in _plan.Aliasing.ResourceOffsets.GroupBy(entry => entry.Value))
+        {
+            if (group.Count() < 2)
+                continue;
+            string groupName = $"A{aliasGroupIndex++}";
+            foreach (var entry in group)
+                aliasGroups[entry.Key] = groupName;
+        }
+
+        var resources = new List<RenderGraphResourceDiagnostics>();
+        var reportedResources = new HashSet<ResourceHandle>();
+        foreach (var passAccesses in _plan.PassAccesses)
+        {
+            foreach (var access in passAccesses)
+            {
+                if (_plan.ResourceDecls.ContainsKey(access.Resource) ||
+                    !reportedResources.Add(access.Resource))
+                {
+                    continue;
+                }
+
+                ulong importedSize = IsShadowPageHandle(access.Resource)
+                    ? ShadowAtlas.BytesPerPage
+                    : access.Resource == BackBufferHandle ||
+                        access.Resource == DepthBufferHandle ||
+                        access.Resource == OutlineMaskHandle
+                        ? (ulong)_depthWidth * _depthHeight * 4ul
+                        : 0;
+                resources.Add(new RenderGraphResourceDiagnostics(
+                    access.Resource.Id,
+                    GetResourceName(access.Resource),
+                    "Imported",
+                    importedSize,
+                    0,
+                    "-",
+                    resourceLifetimes[access.Resource].First,
+                    resourceLifetimes[access.Resource].Last,
+                    resourceLifetimes[access.Resource].Count));
+            }
+        }
+
+        foreach (var (handle, declaration) in _plan.ResourceDecls)
+        {
+            _plan.Aliasing.ResourceOffsets.TryGetValue(handle, out ulong aliasOffset);
+            resourceLifetimes.TryGetValue(handle, out var lifetime);
+            resources.Add(new RenderGraphResourceDiagnostics(
+                handle.Id,
+                GetResourceName(handle),
+                declaration.Kind.ToString(),
+                GetResourceSize(declaration),
+                aliasOffset,
+                aliasGroups.GetValueOrDefault(handle, "-"),
+                lifetime.First,
+                lifetime.Last,
+                lifetime.Count));
+        }
+
+        GpuWorkBudgetSnapshot[] workBudgets = _gpuWorkScheduler.GetSnapshots();
+        GpuResourceAllocationDiagnostics[] allocations =
+            GpuResourceRegistry.Capture();
+        return new RenderGraphDiagnosticsSnapshot(
+            _renderPlanVersion,
+            _renderedFrameCount,
+            cpuTotal,
+            _graphExecutor.LastGpuFrameMilliseconds,
+            _plan.Aliasing.TotalHeapSize,
+            allocations.Aggregate(
+                0ul,
+                (total, allocation) =>
+                    total + allocation.SizeBytes),
+            allocations,
+            workBudgets.Select(budget => new RenderGraphBudgetDiagnostics(
+                budget.Name,
+                budget.BudgetMilliseconds,
+                budget.EstimatedUnitMilliseconds,
+                budget.AdmittedUnits,
+                budget.DeferredUnits,
+                budget.TotalAdmittedUnits,
+                budget.TotalDeferredUnits)).ToArray(),
+            passes,
+            resources.ToArray(),
+            _punctualShadowState?.GetDiagnostics());
+    }
+
+    public bool RenderShadowAtlasTilePreview(
+        ulong entityId,
+        int faceIndex,
+        bool dynamicTile,
+        RhiTexture target,
+        uint width,
+        uint height,
+        RhiFence? syncFence,
+        ulong waitValue,
+        ulong signalValue)
+    {
+        if (_punctualShadowState == null ||
+            !_punctualShadowState.TryGetTile(
+                entityId,
+                faceIndex,
+                dynamicTile,
+                out ShadowAtlasAllocation tile))
+        {
+            return false;
+        }
+
+        _shadowAtlasPreviewRenderer ??=
+            new ShadowAtlasPreviewRenderer(
+                _device,
+                _contentRoot);
+        _shadowAtlasPreviewRenderer.Render(
+            tile,
+            target,
+            width,
+            height,
+            syncFence,
+            waitValue,
+            signalValue);
+        return true;
+    }
+
+    private static string GetResourceName(ResourceHandle handle)
+    {
+        if (handle == BackBufferHandle) return "Back Buffer";
+        if (handle == DepthBufferHandle) return "Scene Depth";
+        if (handle == OutlineMaskHandle) return "Outline Mask";
+        if (IsShadowPageHandle(handle))
+        {
+            uint pageIndex = GetShadowPageIndex(handle);
+            return pageIndex < DirectionalShadowState.CascadeCount
+                ? $"Directional Shadow Cascade {pageIndex}"
+                : $"Punctual Shadow Page {pageIndex}";
+        }
+        return $"Resource 0x{handle.Id:X8}";
+    }
+
+    private static bool IsShadowPageHandle(ResourceHandle handle)
+        => handle.Id >= DirectionalShadowMapHandleBase &&
+            handle.Id <
+                DirectionalShadowMapHandleBase +
+                24u;
+
+    private static uint GetShadowPageIndex(ResourceHandle handle)
+        => handle.Id - DirectionalShadowMapHandleBase;
+
+    private static ulong GetResourceSize(ResourceDecl declaration)
+    {
+        if (declaration.Kind == ResourceKind.Buffer)
+            return declaration.Buffer?.Size ?? 0;
+        if (declaration.Texture == null)
+            return 0;
+
+        ulong bytesPerPixel = declaration.Texture.Format == Engine.CBindings.RhiNative.TextureFormat.Rgba16Float
+            ? 8ul
+            : 4ul;
+        return (ulong)declaration.Texture.Width *
+            declaration.Texture.Height *
+            bytesPerPixel;
     }
 
     public ulong Pick(uint x, uint y, uint w, uint h)
@@ -394,8 +812,9 @@ public sealed class Renderer : IDisposable
         pass.PickY = y;
 
         using var executor = new RenderGraphExecutor(_device);
-        executor.SetViewportSize(1, 1);
-        pass.Execute(executor, new RenderGraphContext { Width = w, Height = h });
+        executor.SetViewportSize(w, h);
+        RenderPlan pickPlan = new RenderGraphCompiler().Compile(new RenderPass[] { pass });
+        executor.Execute(pickPlan);
 
         return pass.PickedId;
     }
@@ -409,8 +828,9 @@ public sealed class Renderer : IDisposable
         pass.PickY = y;
 
         using var executor = new RenderGraphExecutor(_device);
-        executor.SetViewportSize(1, 1);
-        pass.Execute(executor, new RenderGraphContext { Width = w, Height = h });
+        executor.SetViewportSize(w, h);
+        RenderPlan pickPlan = new RenderGraphCompiler().Compile(new RenderPass[] { pass });
+        executor.Execute(pickPlan);
 
         return (pass.PickedId, pass.PickedPartIndex);
     }
@@ -425,6 +845,15 @@ public sealed class Renderer : IDisposable
         _depthTexture = null;
         _outlineMaskTexture?.Dispose();
         _outlineMaskTexture = null;
+        _graphExecutor.Dispose();
+        _rasterSceneCache?.Dispose();
+        _rasterSceneCache = null;
+        _directionalShadowState = null;
+        _directionalShadowPass = null;
+        _punctualShadowState = null;
+        _punctualShadowPass = null;
+        _shadowAtlasPreviewRenderer?.Dispose();
+        _shadowAtlasPreviewRenderer = null;
         _sharedBindlessHeap?.Dispose();
         _sharedBindlessHeap = null!;
     }

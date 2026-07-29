@@ -18,6 +18,8 @@ public static class SceneSaver
 
         foreach (var entity in world.Entities)
         {
+            if (world.TryGet<ProceduralDemoEntityComponent>(entity, out _))
+                continue;
             if (world.TryGet<Transform>(entity, out var transform))
             {
                 if (world.TryGet<ModelComponent>(entity, out var modelComponent))
@@ -39,6 +41,8 @@ public static class SceneSaver
                         modelRef.Position = new float[] { transform.Position.X, transform.Position.Y, transform.Position.Z };
                         modelRef.Rotation = new float[] { transform.Rotation.X, transform.Rotation.Y, transform.Rotation.Z, transform.Rotation.W };
                         modelRef.Scale = new float[] { transform.Scale.X, transform.Scale.Y, transform.Scale.Z };
+                        modelRef.StaticShadowCaster =
+                            modelComponent.StaticShadowCaster;
 
                         baseScene.Models.Add(modelRef);
                     }

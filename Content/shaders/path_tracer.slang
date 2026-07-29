@@ -511,7 +511,7 @@ float3 RandomWalkSSS(float3 entryPos, float3 entryDir, float3 N,
                 float attenuation = 1.0;
                 
                 if (lightType == 0.0) {
-                    L = normalize(light.direction.xyz);
+                    L = normalize(-light.direction.xyz);
                 } else {
                     SampleLocalLight(light, pos, seed, sampledLightPos, L, dist, attenuation);
                 }
@@ -712,7 +712,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
                 float attenuation = 1.0;
                 
                 if (lightType == 0.0) {
-                    float3 baseL = normalize(light.direction.xyz);
+                    float3 baseL = normalize(-light.direction.xyz);
                     float sunRad = light.shapeParams.z;
                     if (sunRad > 0.0) {
                         float2 u = float2(rand(seed), rand(seed));

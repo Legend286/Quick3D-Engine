@@ -112,14 +112,232 @@ float turbulence3D(float3 p, int octaves) {
     return val;
 }
 
-float3 EvaluateLightContribution(LightData light, float3 worldPos, DisneyMaterial dmat, float3 N, float3 V, float3 T, float3 B)
+float4x4 GetDirectionalShadowMatrix(uint cascadeIndex)
+{
+    if (cascadeIndex == 1)
+        return push.directionalShadowViewProj1;
+    if (cascadeIndex == 2)
+        return push.directionalShadowViewProj2;
+    if (cascadeIndex == 3)
+        return push.directionalShadowViewProj3;
+    return push.directionalShadowViewProj;
+}
+
+float GetDirectionalShadowSplit(uint cascadeIndex)
+{
+    if (cascadeIndex == 1)
+        return push.directionalShadowSplits.y;
+    if (cascadeIndex == 2)
+        return push.directionalShadowSplits.z;
+    if (cascadeIndex == 3)
+        return push.directionalShadowSplits.w;
+    return push.directionalShadowSplits.x;
+}
+
+uint GetDirectionalShadowTextureIndex(uint cascadeIndex)
+{
+    if (cascadeIndex == 1)
+        return (uint)push.directionalShadowTextureIndices.y;
+    if (cascadeIndex == 2)
+        return (uint)push.directionalShadowTextureIndices.z;
+    if (cascadeIndex == 3)
+        return (uint)push.directionalShadowTextureIndices.w;
+    return (uint)push.directionalShadowTextureIndices.x;
+}
+
+float SampleDirectionalShadowCascade(
+    uint cascadeIndex,
+    float3 worldPos,
+    float3 normal,
+    float3 lightDirection)
+{
+    float4 shadowClip = mul(
+        GetDirectionalShadowMatrix(cascadeIndex),
+        float4(worldPos, 1.0));
+    if (shadowClip.w <= 0.0)
+        return 1.0;
+
+    float3 shadowNdc = shadowClip.xyz / shadowClip.w;
+    float2 localUv = shadowNdc.xy * float2(0.5, -0.5) + 0.5;
+    if (any(localUv < 0.0) || any(localUv > 1.0) ||
+        shadowNdc.z < 0.0 || shadowNdc.z > 1.0)
+        return 1.0;
+
+    float2 shadowUv = localUv;
+    float biasScale = 1.0 + cascadeIndex * 0.75;
+    float bias = max(
+        0.0015 * biasScale *
+            (1.0 - saturate(dot(normal, lightDirection))),
+        0.0002 * biasScale);
+    float visibility = 0.0;
+    float texelSize = push.directionalShadowParams.y;
+    float2 tileMin = float2(texelSize * 0.5);
+    float2 tileMax = float2(1.0 - texelSize * 0.5);
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            float2 sampleUv = clamp(
+                shadowUv + float2(x, y) * texelSize,
+                tileMin,
+                tileMax);
+            uint textureIndex =
+                GetDirectionalShadowTextureIndex(cascadeIndex);
+            float sampledDepth = bindless.textures[textureIndex].SampleLevel(
+                tex_sampler,
+                sampleUv,
+                0.0).x;
+            visibility += shadowNdc.z - bias <= sampledDepth ? 1.0 : 0.0;
+        }
+    }
+    return visibility / 9.0;
+}
+
+float EvaluateDirectionalShadow(float3 worldPos, float3 normal, float3 lightDirection)
+{
+    if (push.directionalShadowParams.x < 0.5)
+        return 1.0;
+
+    float2 horizontalOffset =
+        worldPos.xz - push.camera->cameraPosition.xz;
+    float horizontalDistance = length(horizontalOffset);
+    if (horizontalDistance > push.directionalShadowSplits.w)
+        return 1.0;
+
+    uint cascadeIndex =
+        horizontalDistance <= push.directionalShadowSplits.x ? 0 :
+        horizontalDistance <= push.directionalShadowSplits.y ? 1 :
+        horizontalDistance <= push.directionalShadowSplits.z ? 2 : 3;
+    float visibility = SampleDirectionalShadowCascade(
+        cascadeIndex,
+        worldPos,
+        normal,
+        lightDirection);
+
+    if (cascadeIndex < 3) {
+        float cascadeStart = cascadeIndex == 0
+            ? 0.0
+            : GetDirectionalShadowSplit(cascadeIndex - 1);
+        float cascadeEnd = GetDirectionalShadowSplit(cascadeIndex);
+        float blendWidth = max((cascadeEnd - cascadeStart) * 0.03, 0.5);
+        float blend = saturate(
+            (horizontalDistance - (cascadeEnd - blendWidth)) / blendWidth);
+        if (blend > 0.0) {
+            float nextVisibility = SampleDirectionalShadowCascade(
+                cascadeIndex + 1,
+                worldPos,
+                normal,
+                lightDirection);
+            visibility = lerp(visibility, nextVisibility, blend);
+        }
+    }
+    return visibility;
+}
+
+uint GetPointShadowFace(float3 fromLight)
+{
+    float3 absoluteDirection = abs(fromLight);
+    if (absoluteDirection.x >= absoluteDirection.y &&
+        absoluteDirection.x >= absoluteDirection.z)
+        return fromLight.x >= 0.0 ? 0 : 1;
+    if (absoluteDirection.y >= absoluteDirection.z)
+        return fromLight.y >= 0.0 ? 2 : 3;
+    return fromLight.z >= 0.0 ? 4 : 5;
+}
+
+float SamplePunctualShadowLayer(
+    PunctualShadowFaceData face,
+    float4 uvScaleBias,
+    uint textureIndex,
+    float3 shadowNdc,
+    float bias,
+    bool valid)
+{
+    if (!valid)
+        return 1.0;
+    float2 localUv =
+        shadowNdc.xy * float2(0.5, -0.5) + 0.5;
+    float2 atlasUv =
+        localUv * uvScaleBias.xy + uvScaleBias.zw;
+    float2 texelSize = float2(1.0 / 4096.0);
+    float2 tileMinimum =
+        uvScaleBias.zw + texelSize * 0.5;
+    float2 tileMaximum =
+        uvScaleBias.zw + uvScaleBias.xy -
+        texelSize * 0.5;
+    float visibility = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            float sampledDepth =
+                bindless.textures[textureIndex].SampleLevel(
+                    tex_sampler,
+                    clamp(
+                        atlasUv + float2(x, y) * texelSize,
+                        tileMinimum,
+                        tileMaximum),
+                    0.0).x;
+            visibility +=
+                shadowNdc.z - bias <= sampledDepth
+                    ? 1.0
+                    : 0.0;
+        }
+    }
+    return visibility / 9.0;
+}
+
+float EvaluatePunctualShadow(
+    uint lightIndex,
+    LightData light,
+    float3 worldPos,
+    float3 normal,
+    float3 lightDirection)
+{
+    uint faceIndex = light.direction.w == 1.0
+        ? GetPointShadowFace(worldPos - light.position.xyz)
+        : 0;
+    uint recordIndex = lightIndex * 6 + faceIndex;
+    if (recordIndex >= push.punctualShadowFaceCount)
+        return 1.0;
+    PunctualShadowFaceData face =
+        push.punctualShadowFaces[recordIndex];
+    float4 shadowClip = mul(
+        face.viewProjection,
+        float4(worldPos, 1.0));
+    if (shadowClip.w <= 0.0)
+        return 1.0;
+    float3 shadowNdc = shadowClip.xyz / shadowClip.w;
+    if (any(shadowNdc.xy < -1.0) ||
+        any(shadowNdc.xy > 1.0) ||
+        shadowNdc.z < 0.0 ||
+        shadowNdc.z > 1.0)
+        return 1.0;
+    float bias = max(
+        0.0015 *
+            (1.0 - saturate(dot(normal, lightDirection))),
+        0.00025);
+    float staticVisibility = SamplePunctualShadowLayer(
+        face,
+        face.staticUvScaleBias,
+        (uint)face.textureIndicesAndFlags.x,
+        shadowNdc,
+        bias,
+        face.textureIndicesAndFlags.z >= 0.5);
+    float dynamicVisibility = SamplePunctualShadowLayer(
+        face,
+        face.dynamicUvScaleBias,
+        (uint)face.textureIndicesAndFlags.y,
+        shadowNdc,
+        bias,
+        face.textureIndicesAndFlags.w >= 0.5);
+    return min(staticVisibility, dynamicVisibility);
+}
+
+float3 EvaluateLightContribution(uint lightIndex, LightData light, float3 worldPos, DisneyMaterial dmat, float3 N, float3 V, float3 T, float3 B)
 {
     float lightType = light.direction.w;
     float3 L;
     float attenuation = 1.0;
 
     if (lightType == 0.0) {
-        L = normalize(light.direction.xyz);
+        L = normalize(-light.direction.xyz);
     } else {
         float3 delta = light.position.xyz - worldPos;
         float dist = max(length(delta), 0.001);
@@ -140,7 +358,20 @@ float3 EvaluateLightContribution(LightData light, float3 worldPos, DisneyMateria
     float3 radiance = light.color.rgb * light.color.w * attenuation;
     float3 bsdf = EvaluateDisneyBSDF(dmat, N, V, L, T, B);
     float dotNL = clamp(dot(N, L), 0.001, 1.0);
-    return bsdf * radiance * dotNL;
+    float visibility = 1.0;
+    if (lightType == 0.0 && light.shapeParams.w >= 0.5 &&
+        lightIndex == (uint)push.directionalShadowParams.z)
+        visibility = EvaluateDirectionalShadow(worldPos, N, L);
+    else if (lightType != 0.0 &&
+        light.shapeParams.w >= 0.5 &&
+        push.punctualShadowFaceCount > 0)
+        visibility = EvaluatePunctualShadow(
+            lightIndex,
+            light,
+            worldPos,
+            N,
+            L);
+    return bsdf * radiance * dotNL * visibility;
 }
 
 [shader("fragment")]
@@ -294,11 +525,11 @@ float4 fragmentMain(VertexOutput input) : SV_Target
 
         for (uint i = 0; i < record.count; i++) {
             uint lightIndex = push.clusterLightIndices[record.offset + i];
-            Lo += EvaluateLightContribution(push.lights[lightIndex], input.worldPos, dmat, N, V, T, B);
+            Lo += EvaluateLightContribution(lightIndex, push.lights[lightIndex], input.worldPos, dmat, N, V, T, B);
         }
     } else {
         for (uint i = 0; i < push.lightCount; i++) {
-            Lo += EvaluateLightContribution(push.lights[i], input.worldPos, dmat, N, V, T, B);
+            Lo += EvaluateLightContribution(i, push.lights[i], input.worldPos, dmat, N, V, T, B);
         }
     }
     

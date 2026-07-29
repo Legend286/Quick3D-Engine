@@ -13,6 +13,8 @@ the shared GPU light buffer used by both raster and path tracing.
   range, source radius, and shadow toggle.
 - `Engine.RHI.SpotLightComponent`: ECS component for spot lights with
   direction, cone angles, source radius, and shadow toggle.
+- `Engine.RHI.OrbitingLightComponent`: Deterministic elliptical orbit and
+  optional centre-facing orientation for animated lights.
 - `Engine.Scene.LightMath`: Shared light-direction helpers for transform-driven
   spot lights.
 - `Engine.Editor.ViewModels.ViewportPanelViewModel.AddPointLight()`: Creates a
@@ -38,6 +40,9 @@ if (lightEnt != 0)
   with the local light axis fixed to negative Y. Inspector direction edits are
   converted back into that transform rotation so gizmos, saves, and rendering
   stay aligned.
+- Directional-light direction is the direction light travels from the sun into
+  the scene. Shading and sky evaluation use its inverse as the surface-to-sun
+  vector.
 - Scenes without authored lights now spawn a default directional-light entity
   in the ECS world, so the fallback sun is visible in the hierarchy and
   editable from the inspector instead of existing only as a shader fallback.
@@ -46,9 +51,17 @@ if (lightEnt != 0)
   penumbra instead of always behaving like infinitesimal emitters.
 - `source_radius` and `cast_shadows` are stored now so future solid-angle shadow
   work can reuse the same scene schema instead of adding another migration.
+- Model records persist `static_shadow_caster`. Static casters can remain in
+  cached punctual-light depth while movable casters render into a separately
+  refreshed overlay.
+- The Model Component inspector exposes this value as `Static Caster`.
+- Procedural demo lights update only their ECS transforms. Point-light
+  orientation remains unchanged, while spot-light rotation and stored
+  direction continue to face the configured orbit centre.
 
 ## Cross-References
 - [PBR Pipeline](pbr-pipeline.md)
 - [Render Graph](../renderer/render-graph.md)
 - [Raster Rendering Plan](../renderer/raster-rendering-plan.md)
+- [Procedural Demo Scene](procedural-demo.md)
 - [engine-spec.md](../../engine-spec.md#4-asset-pipeline)

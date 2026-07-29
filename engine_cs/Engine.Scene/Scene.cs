@@ -14,6 +14,18 @@ public sealed class SceneGraph
     [JsonPropertyName("meshes")] public List<MeshRef> Meshes { get; set; } = new();
     [JsonPropertyName("models")] public List<ModelRef> Models { get; set; } = new();
     [JsonPropertyName("lights")] public List<LightNode> Lights { get; set; } = new();
+    [JsonPropertyName("procedural_demo")] public ProceduralDemoDefinition? ProceduralDemo { get; set; }
+}
+
+/// <summary>
+/// Parameters for the built-in procedural renderer stress scene.
+/// </summary>
+public sealed class ProceduralDemoDefinition
+{
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
+    [JsonPropertyName("point_light_count")] public int PointLightCount { get; set; } = 28;
+    [JsonPropertyName("spot_light_count")] public int SpotLightCount { get; set; } = 8;
+    [JsonPropertyName("animate_lights")] public bool AnimateLights { get; set; } = true;
 }
 
 public sealed class ScenePass
@@ -77,4 +89,5 @@ public sealed class ModelRef
     [JsonPropertyName("position")] public float[] Position { get; set; } = new float[] { 0, 0, 0 };
     [JsonPropertyName("rotation")] public float[] Rotation { get; set; } = new float[] { 0, 0, 0, 1 };
     [JsonPropertyName("scale")] public float[] Scale { get; set; } = new float[] { 1, 1, 1 };
+    [JsonPropertyName("static_shadow_caster")] public bool StaticShadowCaster { get; set; } = true;
 }

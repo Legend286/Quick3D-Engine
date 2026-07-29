@@ -199,7 +199,23 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
     }
 
     [ObservableProperty] private ulong _modelId;
+    [ObservableProperty] private bool _staticShadowCaster = true;
     [ObservableProperty] private float _cameraFov;
+
+    partial void OnStaticShadowCasterChanged(bool value)
+    {
+        if (_isUpdatingFromWorld ||
+            _world == null ||
+            !_selectedEntity.HasValue ||
+            !_world.TryGet<ModelComponent>(
+                _selectedEntity.Value,
+                out var model))
+        {
+            return;
+        }
+        model.StaticShadowCaster = value;
+        _world.Set(_selectedEntity.Value, model);
+    }
     [ObservableProperty] private bool _hasDirectionalLight;
     [ObservableProperty] private bool _hasPointLight;
     [ObservableProperty] private bool _hasSpotLight;
@@ -339,8 +355,11 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
 
         if (_world.TryGet<Engine.RHI.ModelComponent>(ent, out var model))
         {
+            _isUpdatingFromWorld = true;
             HasModel = true;
             ModelId = model.ModelId;
+            StaticShadowCaster = model.StaticShadowCaster;
+            _isUpdatingFromWorld = false;
         }
         else
         {

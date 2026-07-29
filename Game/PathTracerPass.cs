@@ -60,7 +60,10 @@ public class PathTracerPass : RenderPass
 
     public unsafe PathTracerPass(RhiDevice device, IEntityStore world, SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap, Engine.Game.Renderer renderer)
     {
-        Name = scenePass.Name;
+        Name = string.IsNullOrWhiteSpace(scenePass.Name) ||
+            scenePass.Name.Equals("PbrPass", StringComparison.OrdinalIgnoreCase)
+            ? "Path Tracing"
+            : $"Path Tracing · {scenePass.Name}";
         _device = device;
         _world = world;
         _scene = scene;
