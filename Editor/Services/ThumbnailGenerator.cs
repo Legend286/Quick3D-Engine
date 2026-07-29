@@ -1,7 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Media.Imaging;
@@ -14,31 +18,61 @@ namespace Engine.Editor.Services;
 
 public static class ThumbnailGenerator
 {
-    private static IGameLoop? _thumbnailLoop;
-    private static RhiDevice? _device;
-    private static RhiSwapchain? _dummySwap;
-    private static readonly object _lock = new();
+    private sealed class ThumbnailWorker : IDisposable
+    {
+        public required RhiDevice Device { get; init; }
+        public required RhiSwapchain DummySwap { get; init; }
+        public required IGameLoop Loop { get; init; }
+
+        public void Dispose()
+        {
+            Loop.Dispose();
+            DummySwap.Dispose();
+            Device.Dispose();
+        }
+    }
+
+    private static readonly object _initLock = new();
+    private static readonly ConcurrentQueue<ThumbnailWorker> _availableWorkers = new();
+    private static readonly ConcurrentDictionary<string, Task<Bitmap?>> _inFlight = new();
+    private static SemaphoreSlim? _workerSemaphore;
     private static bool _initialized = false;
 
     private static void EnsureInitialized()
     {
         if (_initialized) return;
-        lock (_lock)
+        lock (_initLock)
         {
             if (_initialized) return;
 
-            RhiNative.RhiInit(out var rhiDevicePtr);
-            _device = new RhiDevice(rhiDevicePtr, ownsHandle: true);
-            _dummySwap = new RhiSwapchain(_device, IntPtr.Zero, ownsHandle: true);
-
             var dllPath = ResolveGameDllPath();
-            if (File.Exists(dllPath))
+            if (!File.Exists(dllPath))
             {
+                _initialized = true;
+                return;
+            }
+
+            int workerCount = 1;
+            _workerSemaphore = new SemaphoreSlim(workerCount, workerCount);
+
+            for (int i = 0; i < workerCount; i++)
+            {
+                RhiNative.RhiInit(out var rhiDevicePtr);
+                var device = new RhiDevice(rhiDevicePtr, ownsHandle: true);
+                var dummySwap = new RhiSwapchain(device, IntPtr.Zero, ownsHandle: true);
+
                 var loadContext = new GameAssemblyLoadContext(dllPath);
                 var assembly = loadContext.LoadFromAssemblyName(new AssemblyName("Engine.Game"));
                 var loopType = assembly.GetTypes().First(t => typeof(IGameLoop).IsAssignableFrom(t) && !t.IsInterface);
-                _thumbnailLoop = (IGameLoop)Activator.CreateInstance(loopType, false)!;
-                _thumbnailLoop.Init(_device.Handle, _dummySwap.Handle, null!);
+                var loop = (IGameLoop)Activator.CreateInstance(loopType, false)!;
+                loop.Init(device.Handle, dummySwap.Handle, null!);
+
+                _availableWorkers.Enqueue(new ThumbnailWorker
+                {
+                    Device = device,
+                    DummySwap = dummySwap,
+                    Loop = loop
+                });
             }
 
             _initialized = true;
@@ -65,58 +99,98 @@ public static class ThumbnailGenerator
         return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Engine.Game.dll");
     }
 
-    public static async Task<Bitmap?> GetOrGenerateThumbnailAsync(string assetPath, string assetType)
+    public static string GetCacheFilePath(string assetPath, string assetType, int size = 256)
     {
-        return await Task.Run(() =>
+        var cacheDir = Path.Combine(App.ProjectRoot, "out", ".cache", "thumbnails");
+        Directory.CreateDirectory(cacheDir);
+
+        var fileInfo = new FileInfo(assetPath);
+        string cacheKeySource = $"{assetType}\n{size}\n{Path.GetFullPath(assetPath)}\n{fileInfo.LastWriteTimeUtc.Ticks}";
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(cacheKeySource));
+        string cacheKey = Convert.ToHexString(hash).ToLowerInvariant() + ".png";
+        return Path.Combine(cacheDir, cacheKey);
+    }
+
+    public static async Task<Bitmap?> GetOrGenerateThumbnailAsync(string assetPath, string assetType, int size = 256)
+    {
+        string cacheFile = GetCacheFilePath(assetPath, assetType, size);
+        if (TryLoadBitmap(cacheFile, out var cachedBitmap))
+            return cachedBitmap;
+
+        var task = _inFlight.GetOrAdd(cacheFile, _ => GenerateThumbnailAsync(assetPath, assetType, cacheFile, size));
+        try
         {
-            try
+            return await task;
+        }
+        finally
+        {
+            _inFlight.TryRemove(cacheFile, out _);
+        }
+    }
+
+    private static async Task<Bitmap?> GenerateThumbnailAsync(string assetPath, string assetType, string cacheFile, int size)
+    {
+        try
+        {
+            var fileInfo = new FileInfo(assetPath);
+            if (!fileInfo.Exists)
+                return null;
+
+            EnsureInitialized();
+            if (_workerSemaphore == null)
+                return null;
+
+            await _workerSemaphore.WaitAsync().ConfigureAwait(false);
+            if (!_availableWorkers.TryDequeue(out var worker))
             {
-                var cacheDir = Path.Combine(App.ProjectRoot, "out", ".cache", "thumbnails");
-                Directory.CreateDirectory(cacheDir);
-
-                var fileInfo = new FileInfo(assetPath);
-                if (!fileInfo.Exists) return null;
-
-                string cacheKey = $"{assetPath}_{fileInfo.LastWriteTimeUtc.Ticks}".GetHashCode().ToString("X8") + ".png";
-                string cacheFile = Path.Combine(cacheDir, cacheKey);
-
-                if (File.Exists(cacheFile))
-                {
-                    try { return new Bitmap(cacheFile); } catch { }
-                }
-
-                EnsureInitialized();
-
-                if (_thumbnailLoop == null || _device == null)
-                {
-                    Console.WriteLine($"[ThumbnailGenerator] Failed to initialize: Loop={_thumbnailLoop != null}, Device={_device != null}");
-                    return null;
-                }
-
-                lock (_lock)
-                {
-                    using var target = RhiTexture.CreateRenderTarget(_device, 256, 256, RhiNative.TextureFormat.Bgra8Unorm);
-
-                    string contentRoot = Path.Combine(App.ProjectRoot, "Content");
-                    _thumbnailLoop.RenderThumbnail(contentRoot, assetPath, assetType, target);
-
-                    var bytes = target.Readback(256, 256, 256 * 4);
-
-                    using var wb = new WriteableBitmap(new PixelSize(256, 256), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Premul);
-                    using (var fb = wb.Lock())
-                    {
-                        System.Runtime.InteropServices.Marshal.Copy(bytes, 0, fb.Address, bytes.Length);
-                    }
-
-                    wb.Save(cacheFile);
-                    return new Bitmap(cacheFile);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[ThumbnailGenerator] Error generating thumbnail for {assetPath}: {ex}");
+                _workerSemaphore.Release();
                 return null;
             }
-        });
+
+            try
+            {
+                using var target = RhiTexture.CreateRenderTarget(worker.Device, (uint)size, (uint)size, RhiNative.TextureFormat.Bgra8Unorm);
+                string contentRoot = Path.Combine(App.ProjectRoot, "Content");
+                worker.Loop.RenderThumbnail(contentRoot, assetPath, assetType, target, (uint)size, (uint)size);
+
+                var bytes = target.Readback((uint)size, (uint)size, (uint)(size * 4));
+
+                using var wb = new WriteableBitmap(new PixelSize(size, size), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Premul);
+                using (var fb = wb.Lock())
+                {
+                    System.Runtime.InteropServices.Marshal.Copy(bytes, 0, fb.Address, bytes.Length);
+                }
+
+                wb.Save(cacheFile);
+                return new Bitmap(cacheFile);
+            }
+            finally
+            {
+                _availableWorkers.Enqueue(worker);
+                _workerSemaphore.Release();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ThumbnailGenerator] Error generating thumbnail for {assetPath}: {ex}");
+            return null;
+        }
+    }
+
+    private static bool TryLoadBitmap(string cacheFile, out Bitmap? bitmap)
+    {
+        bitmap = null;
+        if (!File.Exists(cacheFile))
+            return false;
+
+        try
+        {
+            bitmap = new Bitmap(cacheFile);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

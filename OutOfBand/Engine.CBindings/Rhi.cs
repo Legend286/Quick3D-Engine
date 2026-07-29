@@ -91,6 +91,7 @@ public static partial class RhiNative
     public const uint TextureCopySrc = 1u << 2;
     public const uint TextureCopyDst = 1u << 3;
     public const uint TextureStorage = 1u << 4;
+    public const uint TextureExternalImage = 1u << 5;
 
     // ---- structs (mirror C layouts; abi first, then fields) ----
 
@@ -461,6 +462,23 @@ public static partial class RhiNative
                                                    IntPtr bytes,
                                                    ulong size,
                                                    uint stride);
+
+    [LibraryImport(Library, EntryPoint = "rhi_texture_export_external_image")]
+    public static partial int RhiTextureExportExternalImage(IntPtr tex,
+                                                            out IntPtr outHandle,
+                                                            out uint outWidth,
+                                                            out uint outHeight,
+                                                            out TextureFormat outFormat);
+
+    [LibraryImport(Library, EntryPoint = "rhi_release_external_image_handle")]
+    public static partial void RhiReleaseExternalImageHandle(IntPtr handle);
+
+    [LibraryImport(Library, EntryPoint = "rhi_fence_export_external_handle")]
+    public static partial int RhiFenceExportExternalHandle(IntPtr fence,
+                                                           out IntPtr outHandle);
+
+    [LibraryImport(Library, EntryPoint = "rhi_release_external_semaphore_handle")]
+    public static partial void RhiReleaseExternalSemaphoreHandle(IntPtr handle);
 
     [LibraryImport(Library, EntryPoint = "rhi_format_block_info")]
     public static partial void RhiFormatBlockInfo(TextureFormat fmt,

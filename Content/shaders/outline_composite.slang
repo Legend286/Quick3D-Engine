@@ -1,20 +1,14 @@
 struct PushConstants
 {
-    uint MaskTextureSlot;
     uint Width;
     uint Height;
-    uint Pad;
 };
 
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> push;
 
-struct BindlessHeap {
-    Texture2D textures[4096];
-};
-
 [[vk::binding(0, 0)]] SamplerState smp;
-[[vk::binding(1, 0)]] ParameterBlock<BindlessHeap> bindless;
+[[vk::binding(1, 0)]] Texture2D maskTex;
 
 struct VertexOut
 {
@@ -35,8 +29,6 @@ VertexOut vertexMain(uint vertexID : SV_VertexID)
 [shader("fragment")]
 float4 fragmentMain(VertexOut vin) : SV_Target
 {
-    Texture2D maskTex = bindless.textures[push.MaskTextureSlot];
-    
     float2 texelSize = float2(1.0 / float(push.Width), 1.0 / float(push.Height));
     float2 uv = vin.TexCoord;
     uv.y = 1.0 - uv.y; // NDC Y flip

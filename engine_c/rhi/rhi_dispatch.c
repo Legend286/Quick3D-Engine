@@ -189,6 +189,26 @@ int32_t rhi_texture_readback(RhiTexture* t, void* out, uint64_t out_size, uint32
 int32_t rhi_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride) {
     return g_backends[g_active].texture_upload(t, data, size, stride);
 }
+int32_t rhi_texture_export_external_image(RhiTexture* t, void** out_handle,
+                                          uint32_t* out_width, uint32_t* out_height,
+                                          RhiTextureFormat* out_format) {
+    if (g_active < 0 || !g_backends[g_active].texture_export_external_image) return -1;
+    return g_backends[g_active].texture_export_external_image(t, out_handle, out_width, out_height, out_format);
+}
+void rhi_release_external_image_handle(void* handle) {
+    if (g_active >= 0 && g_backends[g_active].release_external_image_handle) {
+        g_backends[g_active].release_external_image_handle(handle);
+    }
+}
+int32_t rhi_fence_export_external_handle(RhiFence* fence, void** out_handle) {
+    if (g_active < 0 || !g_backends[g_active].fence_export_external_handle) return -1;
+    return g_backends[g_active].fence_export_external_handle(fence, out_handle);
+}
+void rhi_release_external_semaphore_handle(void* handle) {
+    if (g_active >= 0 && g_backends[g_active].release_external_semaphore_handle) {
+        g_backends[g_active].release_external_semaphore_handle(handle);
+    }
+}
 
 RhiCommandList* rhi_begin_cmdlist(RhiDevice* device, RhiQueueType queue) {
     if (g_active < 0) return NULL;

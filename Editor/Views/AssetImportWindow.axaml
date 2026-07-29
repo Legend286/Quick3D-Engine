@@ -7,9 +7,8 @@
         Width="600" SizeToContent="Height"
         WindowStartupLocation="CenterOwner"
         CanResize="False"
-        ExtendClientAreaToDecorationsHint="True"
-        ExtendClientAreaChromeHints="NoChrome"
-        ExtendClientAreaTitleBarHeightHint="-1"
+        IsExtendedIntoWindowDecorations="True"
+        WindowDecorations="None"
         Background="#0a0c10"
         FontFamily="-apple-system,Segoe UI,Helvetica,Arial,sans-serif"
         Title="Import Asset">

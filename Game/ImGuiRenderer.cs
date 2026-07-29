@@ -12,7 +12,10 @@ namespace Engine.Game;
 
 public sealed class ImGuiRenderer : IDisposable
 {
+    private static readonly object ContextLock = new();
+
     private readonly RhiDevice _device;
+    private readonly IntPtr _context;
     private RhiShader? _vs;
     private RhiShader? _fs;
     private RhiPipeline? _pipeline;
@@ -33,12 +36,51 @@ public sealed class ImGuiRenderer : IDisposable
     public ImGuiRenderer(RhiDevice device)
     {
         _device = device;
-        IntPtr ctx = ImGui.CreateContext();
-        ImGui.SetCurrentContext(ctx);
+        _context = ImGui.CreateContext();
+        ImGui.SetCurrentContext(_context);
         var io = ImGui.GetIO();
         io.BackendFlags |= ImGuiBackendFlags.RendererHasVtxOffset;
 
         CreateFontTexture();
+    }
+
+    public void BeginFrame(InputState input, uint width, uint height, System.Collections.Generic.IReadOnlyList<NativeInput.EngineInputEvent>? events, ref bool frameStarted)
+    {
+        lock (ContextLock)
+        {
+            ImGui.SetCurrentContext(_context);
+            UpdateInput(input, width, height);
+
+            if (events != null)
+            {
+                foreach (var ev in events)
+                {
+                    HandleEvent(ev);
+                }
+            }
+
+            if (frameStarted)
+            {
+                ImGui.EndFrame();
+            }
+
+            ImGui.NewFrame();
+            frameStarted = true;
+            ImGui.ShowDemoWindow();
+        }
+    }
+
+    public void CancelFrame(ref bool frameStarted)
+    {
+        lock (ContextLock)
+        {
+            ImGui.SetCurrentContext(_context);
+            if (!frameStarted)
+                return;
+
+            ImGui.EndFrame();
+            frameStarted = false;
+        }
     }
 
     public void LoadShaders(string contentRoot)
@@ -232,6 +274,9 @@ public sealed class ImGuiRenderer : IDisposable
 
     public unsafe void Render(ICommandSink sink)
     {
+        lock (ContextLock)
+        {
+        ImGui.SetCurrentContext(_context);
         ImGui.Render();
         var drawData = ImGui.GetDrawData();
         if (drawData.CmdListsCount == 0) return;
@@ -326,6 +371,7 @@ public sealed class ImGuiRenderer : IDisposable
             globalIdxOffset += cmdList.IdxBuffer.Size;
             globalVtxOffset += cmdList.VtxBuffer.Size;
         }
+        }
     }
 
     public void Dispose()
@@ -336,6 +382,7 @@ public sealed class ImGuiRenderer : IDisposable
         _pipeline?.Dispose();
         _vs?.Dispose();
         _fs?.Dispose();
-        ImGui.DestroyContext();
+        ImGui.SetCurrentContext(_context);
+        ImGui.DestroyContext(_context);
     }
 }

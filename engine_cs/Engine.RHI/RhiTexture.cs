@@ -8,6 +8,23 @@ namespace Engine.RHI;
 
 public sealed class RhiTexture : IDisposable
 {
+    public readonly struct ExternalImageHandle
+    {
+        public ExternalImageHandle(IntPtr handle, uint width, uint height, RhiNative.TextureFormat format)
+        {
+            Handle = handle;
+            Width = width;
+            Height = height;
+            Format = format;
+        }
+
+        public IntPtr Handle { get; }
+        public uint Width { get; }
+        public uint Height { get; }
+        public RhiNative.TextureFormat Format { get; }
+        public bool IsValid => Handle != IntPtr.Zero;
+    }
+
     public IntPtr Handle { get; private set; }
     private readonly bool _owns;
 
@@ -28,6 +45,23 @@ public sealed class RhiTexture : IDisposable
             MipLevels = 1,
             Format = format,
             UsageFlags = RhiNative.TextureRenderTarget | RhiNative.TextureShaderRead,
+        };
+        int rc = RhiNative.RhiCreateTexture(device.Handle, in desc, out IntPtr tex);
+        if (rc != 0) throw new InvalidOperationException($"rhi_create_texture rc={rc}");
+        return new RhiTexture(tex, ownsHandle: true);
+    }
+
+    public static RhiTexture CreateExternalRenderTarget(RhiDevice device, uint w, uint h,
+                                                        RhiNative.TextureFormat format)
+    {
+        var desc = new RhiNative.TextureDesc
+        {
+            Abi = 1,
+            Width = w,
+            Height = h,
+            MipLevels = 1,
+            Format = format,
+            UsageFlags = RhiNative.TextureRenderTarget | RhiNative.TextureShaderRead | RhiNative.TextureExternalImage,
         };
         int rc = RhiNative.RhiCreateTexture(device.Handle, in desc, out IntPtr tex);
         if (rc != 0) throw new InvalidOperationException($"rhi_create_texture rc={rc}");
@@ -89,6 +123,19 @@ public sealed class RhiTexture : IDisposable
     {
         int rc = RhiNative.RhiTextureUploadMip(Handle, mipLevel, bytes, size, stride);
         if (rc != 0) throw new InvalidOperationException($"rhi_texture_upload_mip rc={rc}");
+    }
+
+    public ExternalImageHandle ExportExternalImage()
+    {
+        int rc = RhiNative.RhiTextureExportExternalImage(Handle, out IntPtr handle, out uint width, out uint height, out var format);
+        if (rc != 0) throw new InvalidOperationException($"rhi_texture_export_external_image rc={rc}");
+        return new ExternalImageHandle(handle, width, height, format);
+    }
+
+    public static void ReleaseExternalImageHandle(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero) return;
+        RhiNative.RhiReleaseExternalImageHandle(handle);
     }
 
     public readonly struct BlockInfo

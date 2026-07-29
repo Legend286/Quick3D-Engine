@@ -49,7 +49,7 @@
                     <StackPanel Spacing="5">
                         <TextBlock Text="Location" Foreground="#d0d4dc" FontSize="12" />
                         <Grid ColumnDefinitions="*,Auto">
-                            <TextBox Text="{Binding TargetDirectory}" Background="#1a1d24" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4,0,0,4" Watermark="Select folder..." IsReadOnly="True" />
+                            <TextBox Text="{Binding TargetDirectory}" Background="#1a1d24" BorderBrush="#2d3139" Foreground="#aab0b6" Padding="10,6" CornerRadius="4,0,0,4" PlaceholderText="Select folder..." IsReadOnly="True" />
                             <Button Grid.Column="1" Content="Browse..." Background="#2d3139" Foreground="#d0d4dc" Padding="16,6" CornerRadius="0,4,4,0" Click="OnBrowseTargetClicked" />
                         </Grid>
                     </StackPanel>
@@ -63,7 +63,7 @@
         </Border>
 
         <!-- Status -->
-        <Border Grid.Row="2" Background="#1c1f24" Padding="10" IsVisible="{Binding StatusMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+        <Border Grid.Row="2" Background="#1c1f24" Padding="10" IsVisible="{Binding HasStatusMessage}">
             <TextBlock Text="{Binding StatusMessage}" Foreground="#ff6b6b" FontSize="12" />
         </Border>
     </Grid>

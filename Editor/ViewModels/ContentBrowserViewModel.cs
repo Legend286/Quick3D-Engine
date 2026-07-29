@@ -42,16 +42,93 @@ public partial class ContentAsset : ObservableObject
 
 public partial class ContentBrowserViewModel : ObservableObject, IDisposable
 {
+    private const int HoverPreviewDelayMs = 180;
+    private const int HoverPreviewRenderSize = 512;
+
     [ObservableProperty] private ObservableCollection<ContentFolder> _rootFolders = new();
     [ObservableProperty] private ContentFolder? _selectedFolder;
     [ObservableProperty] private ObservableCollection<ContentAsset> _currentAssets = new();
+    [ObservableProperty] private Bitmap? _hoverPreviewBitmap;
+    [ObservableProperty] private bool _hoverPreviewVisible;
+    [ObservableProperty] private bool _hoverPreviewShowImage;
+    [ObservableProperty] private bool _hoverPreviewShowLive;
+    [ObservableProperty] private string _hoverPreviewTitle = string.Empty;
+    [ObservableProperty] private string _hoverPreviewAssetType = string.Empty;
+    [ObservableProperty] private double _hoverPreviewLeft;
+    [ObservableProperty] private double _hoverPreviewTop;
+    [ObservableProperty] private ContentAsset? _hoverPreviewAsset;
 
     private FileSystemWatcher? _watcher;
+    private readonly DispatcherTimer _hoverPreviewTimer;
+    private ContentAsset? _pendingHoverAsset;
+    private ContentAsset? _activeHoverAsset;
+    private int _hoverRequestId;
 
     public ContentBrowserViewModel()
     {
+        _hoverPreviewTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(HoverPreviewDelayMs) };
+        _hoverPreviewTimer.Tick += OnHoverPreviewTimerTick;
         InitializeFolders();
         SetupWatcher();
+    }
+
+    public void BeginAssetHover(ContentAsset asset, double left, double top)
+    {
+        _pendingHoverAsset = asset;
+        _hoverRequestId++;
+        HoverPreviewLeft = left;
+        HoverPreviewTop = top;
+        _hoverPreviewTimer.Stop();
+        _hoverPreviewTimer.Start();
+    }
+
+    public void UpdateAssetHoverPosition(double left, double top)
+    {
+        HoverPreviewLeft = left;
+        HoverPreviewTop = top;
+    }
+
+    public void EndAssetHover(ContentAsset? asset = null)
+    {
+        if (asset != null && _pendingHoverAsset != asset && _activeHoverAsset != asset)
+            return;
+
+        _hoverPreviewTimer.Stop();
+        _pendingHoverAsset = null;
+        _activeHoverAsset = null;
+        HoverPreviewVisible = false;
+        HoverPreviewShowImage = false;
+        HoverPreviewShowLive = false;
+        HoverPreviewAsset = null;
+        HoverPreviewBitmap = null;
+    }
+
+    private async void OnHoverPreviewTimerTick(object? sender, EventArgs e)
+    {
+        _hoverPreviewTimer.Stop();
+        if (_pendingHoverAsset == null)
+            return;
+
+        var asset = _pendingHoverAsset;
+        _activeHoverAsset = asset;
+        HoverPreviewAsset = asset;
+        HoverPreviewTitle = asset.Name;
+        HoverPreviewAssetType = asset.AssetType;
+        HoverPreviewVisible = true;
+        HoverPreviewShowLive = false;
+        HoverPreviewShowImage = true;
+        HoverPreviewBitmap = asset.ThumbnailBitmap;
+
+        if (asset.AssetType == "Model" || asset.AssetType == "Material")
+            return;
+
+        int requestId = _hoverRequestId;
+        var preview = await Services.ThumbnailGenerator.GetOrGenerateThumbnailAsync(asset.FullPath, asset.AssetType, HoverPreviewRenderSize);
+        if (requestId != _hoverRequestId || _activeHoverAsset != asset || preview == null)
+            return;
+
+        HoverPreviewBitmap = preview;
+        HoverPreviewVisible = true;
     }
 
     private void InitializeFolders()
@@ -90,11 +167,17 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedFolderChanged(ContentFolder? oldValue, ContentFolder? newValue)
     {
+        EndAssetHover();
         LoadAssetsForFolder(newValue);
     }
 
     private void LoadAssetsForFolder(ContentFolder? folder)
     {
+        EndAssetHover();
+        var existingThumbnails = CurrentAssets
+            .Where(asset => asset.ThumbnailBitmap != null)
+            .ToDictionary(asset => asset.FullPath, asset => asset.ThumbnailBitmap);
+
         CurrentAssets.Clear();
         if (folder == null || !Directory.Exists(folder.FullPath)) return;
 
@@ -132,10 +215,28 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
                 }
 
                 var asset = new ContentAsset(Path.GetFileName(file), file, type, icon);
+                if (existingThumbnails.TryGetValue(file, out var existingBitmap))
+                {
+                    asset.ThumbnailBitmap = existingBitmap;
+                }
+                else if (type == "Model" || type == "Material" || type == "Texture")
+                {
+                    string cacheFile = Services.ThumbnailGenerator.GetCacheFilePath(file, type);
+                    if (File.Exists(cacheFile))
+                    {
+                        try
+                        {
+                            asset.ThumbnailBitmap = new Bitmap(cacheFile);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+
                 CurrentAssets.Add(asset);
 
-                // Queue thumbnail loading/generation
-                if (type == "Model" || type == "Material" || type == "Texture")
+                if ((type == "Model" || type == "Material" || type == "Texture") && asset.ThumbnailBitmap == null)
                 {
                     Task.Run(async () =>
                     {
@@ -291,6 +392,7 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        _hoverPreviewTimer.Stop();
         _contentWatcher?.Dispose();
         _gameWatcher?.Dispose();
     }

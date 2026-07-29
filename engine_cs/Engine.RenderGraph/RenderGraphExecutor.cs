@@ -49,9 +49,12 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 
     /// <summary>Run the compiled graph: setup transient memory → barriers → passes,
     /// then submit.</summary>
-    public void Execute(RenderPlan graph)
+    public void Execute(RenderPlan graph, RhiFence? waitFence = null, ulong waitValue = 0, RhiFence? signalFence = null, ulong signalValue = 0)
     {
         AllocateTransientResources(graph);
+
+        if (waitFence != null && waitValue > 0)
+            _rec.WaitFence(waitFence, waitValue);
 
         for (int i = 0; i < graph.Passes.Length; ++i)
         {
@@ -73,6 +76,9 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             }
             pass.Execute(this, _ctx);
         }
+
+        if (signalFence != null && signalValue > 0)
+            _rec.SignalFence(signalFence, signalValue);
         _rec.Submit();
 
         // Release transient wrappers after submission

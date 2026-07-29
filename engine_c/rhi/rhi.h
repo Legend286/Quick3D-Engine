@@ -29,7 +29,7 @@ extern "C" {
 #  endif
 #endif
 
-#define ENGINE_ABI_VERSION_RHI 8
+#define ENGINE_ABI_VERSION_RHI 10
 
 typedef struct RhiDevice         RhiDevice;
 typedef struct RhiSwapchain      RhiSwapchain;
@@ -136,6 +136,7 @@ typedef struct RhiTextureDesc {
 #define RHI_TEXTURE_COPY_SRC       (1u << 2)
 #define RHI_TEXTURE_COPY_DST       (1u << 3)
 #define RHI_TEXTURE_STORAGE        (1u << 4)
+#define RHI_TEXTURE_EXTERNAL_IMAGE (1u << 5)
 
 typedef struct RhiBufferDesc {
     uint32_t abi;
@@ -448,6 +449,20 @@ ENGINE_API int32_t  rhi_texture_upload(RhiTexture* tex, const void* data,
 ENGINE_API int32_t  rhi_texture_upload_mip(RhiTexture* tex, uint32_t mip_level,
                                             const void* data, uint64_t size,
                                             uint32_t stride);
+
+/* Export a texture as a platform-owned external image handle. On macOS this
+ * returns a retained IOSurfaceRef for textures created with
+ * RHI_TEXTURE_EXTERNAL_IMAGE. Call rhi_release_external_image_handle once the
+ * caller no longer needs the returned handle. */
+ENGINE_API int32_t  rhi_texture_export_external_image(RhiTexture* tex,
+                                                      void** out_handle,
+                                                      uint32_t* out_width,
+                                                      uint32_t* out_height,
+                                                      RhiTextureFormat* out_format);
+ENGINE_API void     rhi_release_external_image_handle(void* handle);
+ENGINE_API int32_t  rhi_fence_export_external_handle(RhiFence* fence,
+                                                     void** out_handle);
+ENGINE_API void     rhi_release_external_semaphore_handle(void* handle);
 
 /** Block dimensions for a compressed format. Returns block_width, block_height,
  * and bytes_per_block via the out parameters. Returns 0 on an uncompressed

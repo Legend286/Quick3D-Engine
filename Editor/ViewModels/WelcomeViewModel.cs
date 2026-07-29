@@ -17,6 +17,8 @@ public partial class WelcomeViewModel : ObservableObject
     [ObservableProperty]
     private string _statusMessage = string.Empty;
 
+    public bool HasStatusMessage => !string.IsNullOrWhiteSpace(StatusMessage);
+
     [ObservableProperty]
     private bool _isNewProjectMode = false;
 
@@ -25,5 +27,10 @@ public partial class WelcomeViewModel : ObservableObject
     {
         IsNewProjectMode = mode;
         StatusMessage = string.Empty;
+    }
+
+    partial void OnStatusMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasStatusMessage));
     }
 }

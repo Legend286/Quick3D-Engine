@@ -2,6 +2,7 @@
 using Avalonia.Controls;
 using Avalonia.Markup.Xaml;
 using Avalonia.Input;
+using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using Engine.Editor.ViewModels;
 
@@ -45,7 +46,7 @@ public partial class MaterialEditorWindow : Window
 
     private void OnDragOver(object? sender, DragEventArgs e)
     {
-        if (e.Data.Contains(DataFormats.Files) || e.Data.Contains(DataFormats.Text))
+        if (e.DataTransfer.Contains(DataFormat.File) || e.DataTransfer.Contains(DataFormat.Text))
             e.DragEffects = DragDropEffects.Copy | DragDropEffects.Link;
         else
             e.DragEffects = DragDropEffects.None;
@@ -55,21 +56,21 @@ public partial class MaterialEditorWindow : Window
     private void OnDrop(object? sender, DragEventArgs e)
     {
         string? path = null;
-        if (e.Data.Contains(DataFormats.Files))
+        if (e.DataTransfer.Contains(DataFormat.File))
         {
-            var files = e.Data.GetFiles();
+            var files = e.DataTransfer.TryGetFiles();
             if (files != null)
             {
                 foreach (var f in files)
                 {
-                    path = f.Path.LocalPath;
+                    path = f.TryGetLocalPath();
                     break;
                 }
             }
         }
-        else if (e.Data.Contains(DataFormats.Text))
+        else if (e.DataTransfer.Contains(DataFormat.Text))
         {
-            path = e.Data.GetText();
+            path = e.DataTransfer.TryGetText();
         }
 
         if (!string.IsNullOrEmpty(path))

@@ -25,6 +25,8 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
+#import <IOSurface/IOSurface.h>
+#import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <AppKit/AppKit.h>
 
@@ -82,6 +84,8 @@ struct RhiTextureImpl {
     __strong id<MTLTexture> tex;
     __strong id<CAMetalDrawable> drawable;
     __strong id<MTLCommandQueue> queue;
+    IOSurfaceRef iosurface;
+    RhiTextureFormat format;
 };
 
 // Runtime-sized bindless heap. Backed by a Metal Tier-2 argument buffer with
@@ -181,6 +185,12 @@ static int32_t metal_texture_readback(RhiTexture* t, void* out, uint64_t out_siz
 static int32_t metal_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride);
 static int32_t metal_texture_upload_mip(RhiTexture* t, uint32_t mip_level,
                                           const void* data, uint64_t size, uint32_t stride);
+static int32_t metal_texture_export_external_image(RhiTexture* t, void** out_handle,
+                                                   uint32_t* out_width, uint32_t* out_height,
+                                                   RhiTextureFormat* out_format);
+static void    metal_release_external_image_handle(void* handle);
+static int32_t metal_fence_export_external_handle(RhiFence* f, void** out_handle);
+static void    metal_release_external_semaphore_handle(void* handle);
 static void     metal_format_block_info(RhiTextureFormat fmt,
                                           uint32_t* out_block_w, uint32_t* out_block_h,
                                           uint32_t* out_bytes_per_block);
@@ -415,6 +425,9 @@ static uint32_t metal_acquire_next_image(RhiSwapchain* p, RhiTexture** out_image
         RhiTextureImpl* ti = new RhiTextureImpl();
         ti->tex = drawable.texture;
         ti->drawable = drawable;
+        ti->queue = nullptr;
+        ti->iosurface = nullptr;
+        ti->format = RHI_FORMAT_BGRA8_UNORM;
         *out_image = reinterpret_cast<RhiTexture*>(ti);
         return 1;
     }
@@ -489,7 +502,29 @@ static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, Rh
         if (desc->usage_flags & RHI_TEXTURE_SHADER_READ) td.usage |= MTLTextureUsageShaderRead;
         if (desc->usage_flags & RHI_TEXTURE_STORAGE) td.usage |= MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
 
-        if (desc->usage_flags & RHI_TEXTURE_RENDER_TARGET) {
+        IOSurfaceRef iosurface = nullptr;
+        if (desc->usage_flags & RHI_TEXTURE_EXTERNAL_IMAGE) {
+            if (desc->format != RHI_FORMAT_BGRA8_UNORM) {
+                ENGINE_LOG_ERROR("rhi_metal", "external image export currently supports BGRA8 render targets only");
+                return -1;
+            }
+
+            td.storageMode = MTLStorageModeShared;
+            td.usage |= MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+
+            NSDictionary* surfaceProps = @{
+                (__bridge NSString*)kIOSurfaceWidth: @(desc->width),
+                (__bridge NSString*)kIOSurfaceHeight: @(desc->height),
+                (__bridge NSString*)kIOSurfaceBytesPerElement: @4,
+                (__bridge NSString*)kIOSurfaceBytesPerRow: @(desc->width * 4),
+                (__bridge NSString*)kIOSurfacePixelFormat: @(kCVPixelFormatType_32BGRA),
+            };
+            iosurface = IOSurfaceCreate((__bridge CFDictionaryRef)surfaceProps);
+            if (!iosurface) {
+                ENGINE_LOG_ERROR("rhi_metal", "failed to allocate IOSurface-backed render target");
+                return -1;
+            }
+        } else if (desc->usage_flags & RHI_TEXTURE_RENDER_TARGET) {
             td.storageMode = MTLStorageModePrivate;
         } else if (desc->usage_flags & RHI_TEXTURE_STORAGE) {
             // Storage textures (compute read/write) never need CPU access;
@@ -509,11 +544,21 @@ static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, Rh
             td.storageMode = MTLStorageModeShared;
 #endif
         }
-        id<MTLTexture> tex = [di->device newTextureWithDescriptor:td];
-        if (!tex) return -1;
+        id<MTLTexture> tex = iosurface != nullptr
+            ? [di->device newTextureWithDescriptor:td iosurface:iosurface plane:0]
+            : [di->device newTextureWithDescriptor:td];
+        if (!tex) {
+            if (iosurface) {
+                CFRelease(iosurface);
+            }
+            return -1;
+        }
         RhiTextureImpl* ti = new RhiTextureImpl();
         ti->tex = tex;
         ti->queue = di->queue_graphics;
+        ti->drawable = nil;
+        ti->iosurface = iosurface;
+        ti->format = desc->format;
         *out = reinterpret_cast<RhiTexture*>(ti);
         return 0;
     }
@@ -805,6 +850,10 @@ static int32_t metal_create_texture_from_heap(RhiDevice* d, RhiHeap* h, const Rh
         if (!tex) return -1;
         RhiTextureImpl* ti = new RhiTextureImpl();
         ti->tex = tex;
+        ti->drawable = nil;
+        ti->queue = nullptr;
+        ti->iosurface = nullptr;
+        ti->format = desc->format;
         *out = reinterpret_cast<RhiTexture*>(ti);
         return 0;
     }
@@ -889,6 +938,10 @@ static void metal_destroy_texture(RhiTexture* tex) {
     if (!tex) return;
     RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(tex);
     ti->tex = nil;
+    if (ti->iosurface) {
+        CFRelease(ti->iosurface);
+        ti->iosurface = nullptr;
+    }
     delete ti;
 }
 
@@ -934,6 +987,23 @@ static void metal_destroy_heap(RhiHeap* h) {
 static void metal_destroy_fence(RhiFence* f) {
     if (!f) return;
     delete reinterpret_cast<RhiFenceImpl*>(f);
+}
+
+static int32_t metal_fence_export_external_handle(RhiFence* f, void** out_handle) {
+    if (!f || !out_handle) return -1;
+    @autoreleasepool {
+        RhiFenceImpl* fi = reinterpret_cast<RhiFenceImpl*>(f);
+        if (!fi->event) return -1;
+        *out_handle = (__bridge_retained void*)fi->event;
+        return 0;
+    }
+}
+
+static void metal_release_external_semaphore_handle(void* handle) {
+    if (!handle) return;
+    @autoreleasepool {
+        CFRelease(handle);
+    }
 }
 
 static int32_t metal_buffer_upload(RhiBuffer* buf, const void* data, uint64_t size) {
@@ -1041,6 +1111,26 @@ static int32_t metal_texture_upload_mip(RhiTexture* t, uint32_t mip_level, const
 #endif
         return 0;
     }
+}
+
+static int32_t metal_texture_export_external_image(RhiTexture* t, void** out_handle,
+                                                   uint32_t* out_width, uint32_t* out_height,
+                                                   RhiTextureFormat* out_format) {
+    if (!t || !out_handle) return -1;
+    RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(t);
+    if (!ti->iosurface) return -1;
+
+    CFRetain(ti->iosurface);
+    *out_handle = ti->iosurface;
+    if (out_width) *out_width = (uint32_t)ti->tex.width;
+    if (out_height) *out_height = (uint32_t)ti->tex.height;
+    if (out_format) *out_format = ti->format;
+    return 0;
+}
+
+static void metal_release_external_image_handle(void* handle) {
+    if (!handle) return;
+    CFRelease((CFTypeRef)handle);
 }
 
 static void metal_format_block_info(RhiTextureFormat fmt,
@@ -1914,6 +2004,10 @@ extern "C" void rhi_metal_register(void) {
     b.texture_readback           = metal_texture_readback;
     b.texture_upload             = metal_texture_upload;
     b.texture_upload_mip         = metal_texture_upload_mip;
+    b.texture_export_external_image = metal_texture_export_external_image;
+    b.release_external_image_handle = metal_release_external_image_handle;
+    b.fence_export_external_handle = metal_fence_export_external_handle;
+    b.release_external_semaphore_handle = metal_release_external_semaphore_handle;
     b.format_block_info          = metal_format_block_info;
     b.get_buffer_device_address  = metal_get_buffer_device_address;
 

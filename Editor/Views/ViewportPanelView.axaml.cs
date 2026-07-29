@@ -2,6 +2,7 @@
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Markup.Xaml;
+using Avalonia.Platform.Storage;
 using Engine.Editor.ViewModels;
 
 namespace Engine.Editor.Views;
@@ -103,31 +104,47 @@ public partial class ViewportPanelView : UserControl
 
     private void OnDrop(object? sender, DragEventArgs e)
     {
-        if (DataContext is ViewportPanelViewModel vm && e.Data.GetFiles() is { } files)
-        {
-            var pos = e.GetPosition(this);
-            uint x = (uint)pos.X;
-            uint y = (uint)pos.Y;
-            uint w = (uint)System.Math.Max(1, Bounds.Width);
-            uint h = (uint)System.Math.Max(1, Bounds.Height);
+        if (DataContext is not ViewportPanelViewModel vm)
+            return;
 
-            foreach (var file in files)
+        var files = e.DataTransfer.TryGetFiles();
+        if (files == null)
+        {
+            var textPath = e.DataTransfer.TryGetText();
+            if (!string.IsNullOrWhiteSpace(textPath))
             {
-                if (file.Path.LocalPath is string path)
-                {
-                    string ext = System.IO.Path.GetExtension(path).ToLower();
-                    if (ext == ".mdl" || path.EndsWith(".scene.json"))
-                    {
-                        Engine.CBindings.Log.Info($"Dropped Model/Scene: {path}", "Editor");
-                        vm.InstantiateModel(path);
-                    }
-                    else if (ext == ".mat")
-                    {
-                        Engine.CBindings.Log.Info($"Dropped Material at ({x}, {y}) onto viewport: {path}", "Editor");
-                        vm.GameLoop?.ApplyMaterialToSubmesh(x, y, w, h, path);
-                    }
-                }
+                ApplyDroppedPath(vm, textPath, e);
             }
+            return;
+        }
+
+        foreach (var file in files)
+        {
+            if (file.TryGetLocalPath() is string path)
+            {
+                ApplyDroppedPath(vm, path, e);
+            }
+        }
+    }
+
+    private void ApplyDroppedPath(ViewportPanelViewModel vm, string path, DragEventArgs e)
+    {
+        var pos = e.GetPosition(this);
+        uint x = (uint)pos.X;
+        uint y = (uint)pos.Y;
+        uint w = (uint)System.Math.Max(1, Bounds.Width);
+        uint h = (uint)System.Math.Max(1, Bounds.Height);
+
+        string ext = System.IO.Path.GetExtension(path).ToLower();
+        if (ext == ".mdl" || path.EndsWith(".scene.json"))
+        {
+            Engine.CBindings.Log.Info($"Dropped Model/Scene: {path}", "Editor");
+            vm.InstantiateModel(path);
+        }
+        else if (ext == ".mat")
+        {
+            Engine.CBindings.Log.Info($"Dropped Material at ({x}, {y}) onto viewport: {path}", "Editor");
+            vm.GameLoop?.ApplyMaterialToSubmesh(x, y, w, h, path);
         }
     }
 

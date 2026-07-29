@@ -21,6 +21,8 @@ if(APPLE)
     find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
     find_library(QUARTZ_FRAMEWORK Quartz REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    find_library(COREVIDEO_FRAMEWORK CoreVideo REQUIRED)
+    find_library(IOSURFACE_FRAMEWORK IOSurface REQUIRED)
     set(ENGINE_PLATFORMS "metal")
 elseif(WIN32)
     set(ENGINE_PLATFORMS "vulkan_stub")  # Vulkan implementation deferred.
@@ -124,7 +126,9 @@ if(APPLE)
         ${METAL_FRAMEWORK}
         ${APPKIT_FRAMEWORK}
         ${QUARTZ_FRAMEWORK}
-        ${FOUNDATION_FRAMEWORK})
+        ${FOUNDATION_FRAMEWORK}
+        ${COREVIDEO_FRAMEWORK}
+        ${IOSURFACE_FRAMEWORK})
 elseif(WIN32)
     target_sources(EngineC PRIVATE
         engine_c/rhi/rhi_vulkan_stub.c

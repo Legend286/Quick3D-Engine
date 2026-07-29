@@ -1,0 +1,51 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="using:Engine.Editor.Views"
+        x:Class="Engine.Editor.Views.AssetHoverPopupWindow"
+        Width="360"
+        Height="392"
+        CanResize="False"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Topmost="True"
+        WindowDecorations="None"
+        Background="Transparent"
+        TransparencyLevelHint="None">
+  <Border Background="#0f141c"
+          BorderBrush="#394150"
+          BorderThickness="1"
+          CornerRadius="10"
+          BoxShadow="0 18 40 0 #70000000"
+          Padding="12">
+    <StackPanel Spacing="10">
+      <Border Background="#121820"
+              BorderBrush="#2d3139"
+              BorderThickness="1"
+              CornerRadius="8"
+              Width="336"
+              Height="336">
+        <Grid>
+          <Image x:Name="PreviewImage"
+                 Stretch="Uniform"
+                 HorizontalAlignment="Stretch"
+                 VerticalAlignment="Stretch" />
+          <views:GpuExternalImageControl x:Name="GpuPreviewControl"
+                                         IsVisible="True"
+                                         Opacity="0"
+                                         HorizontalAlignment="Stretch"
+                                         VerticalAlignment="Stretch" />
+        </Grid>
+      </Border>
+      <StackPanel Spacing="2">
+        <TextBlock x:Name="TitleText"
+                   FontSize="13"
+                   FontWeight="SemiBold"
+                   Foreground="#eef2f7"
+                   TextTrimming="CharacterEllipsis" />
+        <TextBlock x:Name="TypeText"
+                   FontSize="11"
+                   Foreground="#9aa4b2" />
+      </StackPanel>
+    </StackPanel>
+  </Border>
+</Window>

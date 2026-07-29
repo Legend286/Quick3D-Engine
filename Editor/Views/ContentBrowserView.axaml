@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Engine.Editor.ViewModels"
+             xmlns:views="using:Engine.Editor.Views"
              x:Class="Engine.Editor.Views.ContentBrowserView"
              x:DataType="vm:ContentBrowserViewModel">
   
@@ -16,7 +17,7 @@
     </Style>
   </UserControl.Styles>
 
-  <Grid ColumnDefinitions="250,4,*">
+  <Grid x:Name="RootGrid" ColumnDefinitions="250,4,*">
     
     <!-- Left panel: Directory Tree -->
     <Border Grid.Column="0" Background="#1c1f24" BorderBrush="#2d3139" BorderThickness="0,0,1,0" Padding="8">
@@ -49,11 +50,13 @@
               <!-- We use a Border that can receive drag events or start drags -->
               <Border Classes="AssetItem" Padding="8" CornerRadius="6" Margin="4" 
                       PointerPressed="OnAssetPointerPressed" 
+                      PointerEntered="OnAssetPointerEntered"
                       PointerMoved="OnAssetPointerMoved" 
+                      PointerExited="OnAssetPointerExited"
                       PointerReleased="OnAssetPointerReleased" 
                       DoubleTapped="OnAssetDoubleTapped" 
                       ToolTip.Tip="{Binding FullPath}">
-                <StackPanel Spacing="8">
+                <StackPanel Spacing="8" IsHitTestVisible="False">
                   <Border Background="#1c1f24" BorderBrush="#2d3139" BorderThickness="1" CornerRadius="8" Width="104" Height="104" HorizontalAlignment="Center">
                     <Panel>
                       <TextBlock Text="{Binding IconGlyph}" 

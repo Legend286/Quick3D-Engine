@@ -54,6 +54,12 @@ typedef struct RhiBackend {
     int32_t (*texture_upload)(RhiTexture *tex, const void *data, uint64_t size, uint32_t stride);
     int32_t (*texture_upload_mip)(RhiTexture *tex, uint32_t mip_level,
                                    const void *data, uint64_t size, uint32_t stride);
+    int32_t (*texture_export_external_image)(RhiTexture *tex, void **out_handle,
+                                             uint32_t *out_width, uint32_t *out_height,
+                                             RhiTextureFormat *out_format);
+    void (*release_external_image_handle)(void *handle);
+    int32_t (*fence_export_external_handle)(RhiFence *fence, void **out_handle);
+    void (*release_external_semaphore_handle)(void *handle);
     void (*format_block_info)(RhiTextureFormat fmt,
                                uint32_t *out_block_w, uint32_t *out_block_h,
                                uint32_t *out_bytes_per_block);

@@ -25,6 +25,12 @@ ARC `__strong` ivars. `rhi_destroy_*` calls `delete` on the impl, which
 releases the underlying Objective-C objects through ARC. The C# side keeps
 matching `using` blocks so handles are released deterministically.
 
+Textures created with `RHI_TEXTURE_EXTERNAL_IMAGE` add one more lifetime edge:
+the texture may export a platform-owned external image handle for compositor
+interop. On macOS that handle is an `IOSurfaceRef`. The caller keeps owning the
+`RhiTexture`; the exported handle is released independently through
+`rhi_release_external_image_handle`.
+
 ## Exports — by category
 
 ### Device
@@ -86,7 +92,16 @@ void    rhi_destroy_buffer, rhi_destroy_texture,
 int32_t rhi_buffer_upload             (RhiBuffer*, const void* data, uint64_t size);
 int32_t rhi_texture_readback          (RhiTexture*, void* out_bytes, uint64_t out_size,
                                         uint32_t out_stride);
+int32_t rhi_texture_export_external_image(RhiTexture*, void** out_handle,
+                                          uint32_t* out_width, uint32_t* out_height,
+                                          RhiTextureFormat* out_format);
+void    rhi_release_external_image_handle(void* handle);
 ```
+
+`rhi_texture_export_external_image` is intended for editor/compositor interop,
+not general gameplay readback. The current Metal implementation supports
+BGRA8 render targets only and expects the source texture to be created with
+`RHI_TEXTURE_EXTERNAL_IMAGE`.
 
 ### Command list + encoders
 

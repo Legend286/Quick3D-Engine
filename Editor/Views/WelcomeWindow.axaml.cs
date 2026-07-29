@@ -9,8 +9,16 @@ namespace Engine.Editor.Views;
 
 public partial class WelcomeWindow : Window
 {
+    private readonly Window? _windowToCloseOnLaunch;
+
     public WelcomeWindow()
+        : this(null)
     {
+    }
+
+    public WelcomeWindow(Window? windowToCloseOnLaunch)
+    {
+        _windowToCloseOnLaunch = windowToCloseOnLaunch;
         InitializeComponent();
         DataContext = new WelcomeViewModel();
     }
@@ -80,10 +88,7 @@ public partial class WelcomeWindow : Window
 
     private void LaunchMainWindow(string projectRoot)
     {
-        // 1. Initialize Logging
         EngineLogBootstrap.InitFromProject(projectRoot);
-
-        // 2. Launch MainWindow
         var mainWindow = new MainWindow();
 
         if (Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop)
@@ -92,6 +97,7 @@ public partial class WelcomeWindow : Window
         }
 
         mainWindow.Show();
+        _windowToCloseOnLaunch?.Close();
         this.Close();
     }
 
