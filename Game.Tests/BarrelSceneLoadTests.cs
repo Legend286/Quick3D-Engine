@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 using System.Numerics;
+using System.Text.Json;
 using Engine.Scene;
 using Engine.Scene.Components;
 using Engine.Assets;
@@ -105,6 +106,69 @@ public sealed class BarrelSceneLoadTests : IDisposable
         Assert.Equal("default", cam.Name);
         Assert.Equal(0.1f, cam.Near);
         Assert.Equal(100.0f, cam.Far);
+    }
+
+    [Fact]
+    public void SceneSaver_RoundTripsPointAndSpotLights()
+    {
+        using var world = new EcsWorld();
+
+        ulong pointEnt = world.CreateEntity();
+        world.Set(pointEnt, new Transform
+        {
+            Position = new Vector3(1, 2, 3),
+            Rotation = Quaternion.Identity,
+            Scale = Vector3.One
+        });
+        world.Set(pointEnt, new PointLightComponent
+        {
+            Color = new Vector3(1.0f, 0.8f, 0.6f),
+            Intensity = 12.5f,
+            Range = 25.0f,
+            SourceRadius = 0.15f,
+            CastShadows = true
+        });
+
+        ulong spotEnt = world.CreateEntity();
+        world.Set(spotEnt, new Transform
+        {
+            Position = new Vector3(-4, 5, -6),
+            Rotation = Quaternion.Identity,
+            Scale = Vector3.One
+        });
+        world.Set(spotEnt, new SpotLightComponent
+        {
+            Color = new Vector3(0.5f, 0.75f, 1.0f),
+            Intensity = 30.0f,
+            Range = 40.0f,
+            Direction = Vector3.Normalize(new Vector3(0.0f, -1.0f, 0.0f)),
+            InnerCone = 0.9f,
+            OuterCone = 0.75f,
+            SourceRadius = 0.08f,
+            CastShadows = false
+        });
+
+        var scene = new SceneGraph { Name = "light_roundtrip" };
+        string tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        string outPath = Path.Combine(tempDir, "light_roundtrip.scene.json");
+
+        try
+        {
+            SceneSaver.Save(world, scene, outPath);
+
+            string json = File.ReadAllText(outPath);
+            var roundTripped = JsonSerializer.Deserialize<SceneGraph>(json);
+            Assert.NotNull(roundTripped);
+            Assert.Equal(2, roundTripped!.Lights.Count);
+
+            Assert.Contains(roundTripped.Lights, l => l.Type == "point" && l.CastShadows && Math.Abs(l.SourceRadius - 0.15f) < 0.0001f);
+            Assert.Contains(roundTripped.Lights, l => l.Type == "spot" && !l.CastShadows && Math.Abs(l.InnerCone - 0.9f) < 0.0001f);
+        }
+        finally
+        {
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); } catch { }
+        }
     }
 
     // ── Model file verification ─────────────────────────────────────

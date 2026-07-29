@@ -41,6 +41,7 @@ public class PbrPass : RenderPass
     private readonly SceneGraph _scene;
     private readonly string _contentRoot;
     private readonly Engine.Game.Renderer _renderer;
+    private readonly bool _renderSky;
 
     private readonly RhiShader _vs;
     private readonly RhiShader _fs;
@@ -68,13 +69,14 @@ public class PbrPass : RenderPass
     private RhiBindlessHeap _bindlessHeap;
 
     public unsafe PbrPass(RhiDevice device, IEntityStore world,
-                              SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap, Engine.Game.Renderer renderer)
+                              SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap, Engine.Game.Renderer renderer, bool renderSky)
     {
         _device = device;
         _world = world;
         _scene = scene;
         _contentRoot = contentRoot;
         _renderer = renderer;
+        _renderSky = renderSky;
         Name = scenePass.Name;
 
         string shaderDir = Path.Combine(_contentRoot, "shaders");
@@ -239,8 +241,11 @@ public class PbrPass : RenderPass
 
             sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pbrPush));
 
-            sink.BindPipeline(_skyPipeline);
-            sink.Draw(3, 1, 0, 0);
+            if (_renderSky)
+            {
+                sink.BindPipeline(_skyPipeline);
+                sink.Draw(3, 1, 0, 0);
+            }
 
             if (_bindlessHeap.IsInitialized)
             {
@@ -257,8 +262,11 @@ public class PbrPass : RenderPass
             
             sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pbrPush));
             
-            sink.BindPipeline(_skyPipeline);
-            sink.Draw(3, 1, 0, 0);
+            if (_renderSky)
+            {
+                sink.BindPipeline(_skyPipeline);
+                sink.Draw(3, 1, 0, 0);
+            }
         }
         
         sink.EndPass();

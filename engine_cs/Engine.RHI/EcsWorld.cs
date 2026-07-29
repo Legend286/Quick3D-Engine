@@ -129,7 +129,29 @@ public struct DirectionalLightComponent
     public Vector3 Color;
     public float Intensity;
     public Vector3 Direction;
+    public float AngularRadius;
     public bool CastShadows;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+public struct PointLightComponent
+{
+    public Vector3 Color;
+    public float Intensity;
+    public float Range;
+    public float SourceRadius;
+    public bool CastShadows;
+}
 
+[StructLayout(LayoutKind.Sequential)]
+public struct SpotLightComponent
+{
+    public Vector3 Color;
+    public float Intensity;
+    public float Range;
+    public Vector3 Direction;
+    public float InnerCone;
+    public float OuterCone;
+    public float SourceRadius;
+    public bool CastShadows;
+}

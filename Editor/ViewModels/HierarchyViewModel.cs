@@ -80,7 +80,7 @@ public partial class HierarchyViewModel : ObservableObject, IDisposable
     {
         Avalonia.Threading.Dispatcher.UIThread.Post(() =>
         {
-            Entities.Add(new HierarchyEntityViewModel(id, $"Entity {id}"));
+            Entities.Add(new HierarchyEntityViewModel(id, DescribeEntity(id)));
         });
     }
 
@@ -101,9 +101,27 @@ public partial class HierarchyViewModel : ObservableObject, IDisposable
         {
             foreach (var ent in _world.Entities)
             {
-                Entities.Add(new HierarchyEntityViewModel(ent, $"Entity {ent}"));
+                Entities.Add(new HierarchyEntityViewModel(ent, DescribeEntity(ent)));
             }
         }
+    }
+
+    private string DescribeEntity(ulong entityId)
+    {
+        if (_world == null) return $"Entity {entityId}";
+
+        if (_world.TryGet<Engine.Scene.Components.Camera>(entityId, out _))
+            return $"Camera {entityId}";
+        if (_world.TryGet<Engine.RHI.ModelComponent>(entityId, out _))
+            return $"Model {entityId}";
+        if (_world.TryGet<Engine.RHI.PointLightComponent>(entityId, out _))
+            return $"Point Light {entityId}";
+        if (_world.TryGet<Engine.RHI.SpotLightComponent>(entityId, out _))
+            return $"Spot Light {entityId}";
+        if (_world.TryGet<Engine.RHI.DirectionalLightComponent>(entityId, out _))
+            return $"Directional Light {entityId}";
+
+        return $"Entity {entityId}";
     }
 
     private void UnbindWorld()

@@ -19,7 +19,7 @@ public class NumericInputBehavior
 
     static NumericInputBehavior()
     {
-        IsNumericOnlyProperty.Changed.Subscribe(OnIsNumericOnlyChanged);
+        IsNumericOnlyProperty.Changed.Subscribe(new NumericOnlyObserver());
     }
 
     public static bool GetIsNumericOnly(Control control) => control.GetValue(IsNumericOnlyProperty);
@@ -93,5 +93,21 @@ public class NumericInputBehavior
         }
 
         return text.Insert(selectionStart, input);
+    }
+
+    private sealed class NumericOnlyObserver : IObserver<AvaloniaPropertyChangedEventArgs<bool>>
+    {
+        public void OnCompleted()
+        {
+        }
+
+        public void OnError(Exception error)
+        {
+        }
+
+        public void OnNext(AvaloniaPropertyChangedEventArgs<bool> value)
+        {
+            OnIsNumericOnlyChanged(value);
+        }
     }
 }

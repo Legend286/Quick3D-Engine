@@ -31,6 +31,20 @@ float rand(inout uint seed) {
     return float(seed) / 4294967296.0;
 }
 
+void BuildOrthonormalBasis(float3 n, out float3 t, out float3 b)
+{
+    float3 up = abs(n.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
+    t = normalize(cross(up, n));
+    b = cross(n, t);
+}
+
+float2 SampleDisk(float2 u)
+{
+    float r = sqrt(u.x);
+    float phi = 2.0 * PI * u.y;
+    return float2(cos(phi), sin(phi)) * r;
+}
+
 // =====================================================================
 // Geometry helpers
 // =====================================================================
@@ -111,6 +125,52 @@ float turbulence3D(float3 p, int octaves) {
         amp *= 0.5;
     }
     return val;
+}
+
+float EvaluateSpotAttenuation(LightData light, float3 L)
+{
+    float theta = dot(L, normalize(-light.direction.xyz));
+    float epsilon = max(light.shapeParams.x - light.shapeParams.y, 0.001);
+    return clamp((theta - light.shapeParams.y) / epsilon, 0.0, 1.0);
+}
+
+void SampleLocalLight(LightData light, float3 shadingPos, inout uint seed, out float3 sampledPos, out float3 L, out float dist, out float attenuation)
+{
+    sampledPos = light.position.xyz;
+    attenuation = 1.0;
+
+    float lightType = light.direction.w;
+    float sourceRadius = max(light.shapeParams.z, 0.0);
+
+    if (lightType == 1.0 && sourceRadius > 0.0)
+    {
+        float3 sampleOffset = SampleUniformSphere(rand(seed), rand(seed)) * sourceRadius;
+        sampledPos += sampleOffset;
+    }
+    else if (lightType == 2.0 && sourceRadius > 0.0)
+    {
+        float3 axis = normalize(light.direction.xyz);
+        float3 tangent;
+        float3 bitangent;
+        BuildOrthonormalBasis(axis, tangent, bitangent);
+        float2 disk = SampleDisk(float2(rand(seed), rand(seed))) * sourceRadius;
+        sampledPos += tangent * disk.x + bitangent * disk.y;
+    }
+
+    float3 delta = sampledPos - shadingPos;
+    dist = max(length(delta), 0.001);
+    L = delta / dist;
+
+    if (lightType != 0.0)
+    {
+        float range = max(light.position.w, 0.001);
+        float falloff = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
+        attenuation = (falloff * falloff) / (dist * dist + 1.0);
+        if (lightType == 2.0)
+        {
+            attenuation *= EvaluateSpotAttenuation(light, L);
+        }
+    }
 }
 
 // =====================================================================
@@ -446,17 +506,14 @@ float3 RandomWalkSSS(float3 entryPos, float3 entryDir, float3 N,
                 LightData light = push.lights[li];
                 float lightType = light.direction.w;
                 float3 L;
+                float3 sampledLightPos;
+                float dist = 10000.0;
                 float attenuation = 1.0;
                 
                 if (lightType == 0.0) {
                     L = normalize(light.direction.xyz);
                 } else {
-                    float3 delta = light.position.xyz - pos;
-                    float dist   = length(delta);
-                    L = delta / dist;
-                    float range   = light.position.w;
-                    float falloff = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
-                    attenuation   = (falloff * falloff) / (dist * dist + 1.0);
+                    SampleLocalLight(light, pos, seed, sampledLightPos, L, dist, attenuation);
                 }
                 
                 float dotNL = dot(exitNorm, L);
@@ -465,7 +522,7 @@ float3 RandomWalkSSS(float3 entryPos, float3 entryDir, float3 N,
                     shadowRay.Origin    = pos + exitNorm * 0.005;
                     shadowRay.Direction = L;
                     shadowRay.TMin      = 0.001;
-                    shadowRay.TMax      = lightType == 0.0 ? 10000.0 : length(light.position.xyz - pos) - 0.001;
+                    shadowRay.TMax      = lightType == 0.0 ? 10000.0 : dist - 0.001;
                 
                     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
                     if (hasGeom) { sq.TraceRayInline(tlas, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, shadowRay); sq.Proceed(); }
@@ -650,11 +707,13 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
                 LightData light = push.lights[i];
                 float lightType = light.direction.w;
                 float3 L;
+                float3 sampledLightPos;
+                float dist = 10000.0;
                 float attenuation = 1.0;
                 
                 if (lightType == 0.0) {
                     float3 baseL = normalize(light.direction.xyz);
-                    float sunRad = light.spotParams.x;
+                    float sunRad = light.shapeParams.z;
                     if (sunRad > 0.0) {
                         float2 u = float2(rand(seed), rand(seed));
                         float cosThetaMax = cos(sunRad);
@@ -672,12 +731,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
                         L = baseL;
                     }
                 } else {
-                    float3 delta = light.position.xyz - hitPos;
-                    float  dist  = length(delta);
-                    L = delta / dist;
-                    float range   = light.position.w;
-                    float falloff = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
-                    attenuation   = (falloff * falloff) / (dist * dist + 1.0);
+                    SampleLocalLight(light, hitPos, seed, sampledLightPos, L, dist, attenuation);
                 }
                 
                 float dotNL = dot(N, L);
@@ -686,7 +740,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
                     shadowRay.Origin    = hitPos + N * 0.001;
                     shadowRay.Direction = L;
                     shadowRay.TMin      = 0.001;
-                    shadowRay.TMax      = lightType == 0.0 ? 10000.0 : length(light.position.xyz - hitPos) - 0.001;
+                    shadowRay.TMax      = lightType == 0.0 ? 10000.0 : dist - 0.001;
                 
                     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
                     if (push.hasGeometry != 0u) {

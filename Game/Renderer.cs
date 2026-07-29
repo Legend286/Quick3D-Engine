@@ -13,6 +13,7 @@ using System.IO;
 using Engine.RHI;
 using Engine.RenderGraph;
 using Engine.Scene;
+using Engine.Scene.Components;
 using Engine.Assets;
 using static Engine.CBindings.Log;
 
@@ -39,6 +40,8 @@ public sealed class Renderer : IDisposable
 
     private string _lastSceneName = "";
     private bool _usePathTracer = true;
+    private bool _renderSky = true;
+    private bool _renderGrid = true;
     private RhiBindlessHeap _sharedBindlessHeap;
 
     private RhiTexture? _depthTexture;
@@ -142,7 +145,29 @@ public sealed class Renderer : IDisposable
             });
         }
 
+        foreach (var light in scene.Lights)
+        {
+            CreateLightEntity(light);
+        }
+
+        if (scene.Lights.Count == 0)
+        {
+            var defaultSun = new LightNode
+            {
+                Type = "directional",
+                Direction = new[] { -0.4f, -1.0f, -0.35f },
+                Color = new[] { 1.0f, 0.96f, 0.9f },
+                Intensity = 3.5f,
+                SunRadius = 0.012f,
+                CastShadows = true
+            };
+            scene.Lights.Add(defaultSun);
+            CreateLightEntity(defaultSun);
+        }
+
         _currentScene = scene;
+        _renderSky = true;
+        _renderGrid = true;
         RebuildRenderPlan(scene, contentRoot);
     }
 
@@ -151,13 +176,144 @@ public sealed class Renderer : IDisposable
         var sg = new SceneGraph();
         sg.Passes.Add(new ScenePass { ClearColor = new float[] { 0.15f, 0.15f, 0.15f, 1.0f } });
 
-        sg.Lights.Add(new LightNode { Type = "directional", Color = new float[] { 1, 0.9f, 0.9f }, Intensity = 3.0f, Position = new float[] { 2, 2, 2 }, Direction = new float[] { -1, -1, -1 } });
-        sg.Lights.Add(new LightNode { Type = "directional", Color = new float[] { 0.8f, 0.8f, 1 }, Intensity = 1.5f, Position = new float[] { -2, 1, 2 }, Direction = new float[] { 1, -0.5f, -1 } });
-        sg.Lights.Add(new LightNode { Type = "directional", Color = new float[] { 1, 1, 1 }, Intensity = 2.0f, Position = new float[] { 0, 2, -3 }, Direction = new float[] { 0, -1, 1 } });
+        sg.Lights.Add(new LightNode { Type = "directional", Color = new float[] { 1.0f, 0.94f, 0.9f }, Intensity = 3.6f, Position = new float[] { 2, 2, 2 }, Direction = new float[] { -0.8f, 1.0f, -0.6f }, SunRadius = 0.01f });
+        sg.Lights.Add(new LightNode { Type = "directional", Color = new float[] { 0.72f, 0.82f, 1.0f }, Intensity = 1.2f, Position = new float[] { -2, 1, 2 }, Direction = new float[] { 0.65f, 0.55f, -0.75f }, SunRadius = 0.01f });
+        sg.Lights.Add(new LightNode { Type = "directional", Color = new float[] { 1.0f, 1.0f, 1.0f }, Intensity = 0.8f, Position = new float[] { 0, 2, -3 }, Direction = new float[] { 0.15f, 0.9f, 0.4f }, SunRadius = 0.01f });
 
         _currentScene = sg;
         _usePathTracer = false;
+        _renderSky = false;
+        _renderGrid = false;
         RebuildRenderPlan(sg, contentRoot);
+    }
+
+    public void BuildTextureThumbnailPlan(string contentRoot, RhiTexture sourceTexture)
+    {
+        _currentScene = null;
+        _renderSky = false;
+        _renderGrid = false;
+
+        var passes = new List<RenderPass>
+        {
+            new TextureThumbnailPass(_device, sourceTexture, contentRoot)
+        };
+
+        var previous = _plan;
+        _plan = new RenderGraphCompiler().Compile(passes);
+        previous?.Passes?.DisposeAll();
+    }
+
+    public ulong AddPointLight(Vector3 position, Vector3 color, float intensity, float range, float sourceRadius, bool castShadows = true)
+    {
+        var light = new LightNode
+        {
+            Type = "point",
+            Position = new[] { position.X, position.Y, position.Z },
+            Direction = new[] { 0f, -1f, 0f },
+            Color = new[] { color.X, color.Y, color.Z },
+            Intensity = intensity,
+            Range = range,
+            SourceRadius = sourceRadius,
+            CastShadows = castShadows
+        };
+        _currentScene?.Lights.Add(light);
+        return CreateLightEntity(light);
+    }
+
+    public ulong AddSpotLight(Vector3 position, Vector3 direction, Vector3 color, float intensity, float range, float innerCone, float outerCone, float sourceRadius, bool castShadows = true)
+    {
+        Vector3 normalizedDirection = NormalizeOrFallback(direction, LightMath.SpotLocalDirection);
+        var light = new LightNode
+        {
+            Type = "spot",
+            Position = new[] { position.X, position.Y, position.Z },
+            Direction = new[] { normalizedDirection.X, normalizedDirection.Y, normalizedDirection.Z },
+            Color = new[] { color.X, color.Y, color.Z },
+            Intensity = intensity,
+            Range = range,
+            InnerCone = innerCone,
+            OuterCone = outerCone,
+            SourceRadius = sourceRadius,
+            CastShadows = castShadows
+        };
+        _currentScene?.Lights.Add(light);
+        return CreateLightEntity(light);
+    }
+
+    private ulong CreateLightEntity(LightNode light)
+    {
+        if (_world == null) return 0;
+
+        ulong ent = _world.CreateEntity();
+        Vector3 position = ReadVector3(light.Position, Vector3.Zero);
+        Vector3 direction = NormalizeOrFallback(ReadVector3(light.Direction, LightMath.SpotLocalDirection), LightMath.SpotLocalDirection);
+        Quaternion rotation = light.Type == "spot"
+            ? LightMath.GetSpotRotation(direction)
+            : Quaternion.Identity;
+
+        _world.Set(ent, new Engine.Scene.Components.Transform
+        {
+            Position = position,
+            Rotation = rotation,
+            Scale = Vector3.One
+        });
+
+        switch (light.Type)
+        {
+            case "point":
+                _world.Set(ent, new PointLightComponent
+                {
+                    Color = ReadColor(light.Color, Vector3.One),
+                    Intensity = light.Intensity,
+                    Range = light.Range,
+                    SourceRadius = light.SourceRadius,
+                    CastShadows = light.CastShadows
+                });
+                break;
+            case "spot":
+                _world.Set(ent, new SpotLightComponent
+                {
+                    Color = ReadColor(light.Color, Vector3.One),
+                    Intensity = light.Intensity,
+                    Range = light.Range,
+                    Direction = direction,
+                    InnerCone = light.InnerCone,
+                    OuterCone = light.OuterCone,
+                    SourceRadius = light.SourceRadius,
+                    CastShadows = light.CastShadows
+                });
+                break;
+            default:
+                _world.Set(ent, new DirectionalLightComponent
+                {
+                    Color = ReadColor(light.Color, Vector3.One),
+                    Intensity = light.Intensity,
+                    Direction = direction,
+                    AngularRadius = light.SunRadius,
+                    CastShadows = light.CastShadows
+                });
+                break;
+        }
+
+        return ent;
+    }
+
+    private static Vector3 ReadVector3(float[] values, Vector3 fallback)
+    {
+        return new Vector3(
+            values.Length > 0 ? values[0] : fallback.X,
+            values.Length > 1 ? values[1] : fallback.Y,
+            values.Length > 2 ? values[2] : fallback.Z);
+    }
+
+    private static Vector3 ReadColor(float[] values, Vector3 fallback)
+    {
+        return ReadVector3(values, fallback);
+    }
+
+    private static Vector3 NormalizeOrFallback(Vector3 value, Vector3 fallback)
+    {
+        return LightMath.NormalizeOrFallback(value, fallback);
     }
 
     private void RebuildRenderPlan(SceneGraph scene, string contentRoot)
@@ -168,13 +324,16 @@ public sealed class Renderer : IDisposable
             if (_usePathTracer)
                 passes.Add(new PathTracerPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap, this));
             else
-                passes.Add(new PbrPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap, this));
+                passes.Add(new PbrPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap, this, _renderSky));
         }
 
         passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));
-        passes.Add(new OutlineCompositePass(_device, contentRoot, this, _sharedBindlessHeap));
+        passes.Add(new OutlineCompositePass(_device, contentRoot, this));
 
-        passes.Add(new GridPass(_device, _world, contentRoot, this, clearScreen: scene.Passes.Count == 0));
+        if (_renderGrid)
+        {
+            passes.Add(new GridPass(_device, _world, contentRoot, this, clearScreen: scene.Passes.Count == 0));
+        }
 
         if (_imguiRenderer != null)
             passes.Add(new ImGuiPass(_imguiRenderer));
@@ -189,7 +348,7 @@ public sealed class Renderer : IDisposable
         Info("[Renderer] Render graph compiled successfully", "Renderer");
     }
 
-    public void RenderFrame(RhiTexture backBuffer, uint width, uint height)
+    public void RenderFrame(RhiTexture backBuffer, uint width, uint height, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
     {
         if (_plan is null) return;
 
@@ -223,7 +382,7 @@ public sealed class Renderer : IDisposable
         if (_outlineMaskTexture != null)
             executor.BindSwapchain(_outlineMaskTexture, OutlineMaskHandle, ResourceState.RenderTarget);
 
-        executor.Execute(_plan);
+        executor.Execute(_plan, syncFence, waitValue, syncFence, signalValue);
     }
 
     public ulong Pick(uint x, uint y, uint w, uint h)

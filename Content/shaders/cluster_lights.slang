@@ -209,7 +209,7 @@ void computeMain(uint3 threadId : SV_DispatchThreadID)
             intersects = SphereIntersectsCluster(light.position.xyz, light.position.w, planes);
         } else if (lightType == 2.0) {
             float3 axis = normalize(light.direction.xyz);
-            float outerCos = clamp(light.spotParams.y, 0.001, 0.999);
+            float outerCos = clamp(light.shapeParams.y, 0.001, 0.999);
             float tanTheta = sqrt(max(1.0 - outerCos * outerCos, 0.0)) / outerCos;
             intersects = SphereIntersectsCluster(light.position.xyz + axis * (light.position.w * 0.5), light.position.w * 0.5, planes);
             if (intersects) {

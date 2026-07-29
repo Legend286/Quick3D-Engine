@@ -75,7 +75,7 @@ public struct LightData
     public Vector4 Position;   // w = range
     public Vector4 Direction;  // w = type (0=Dir, 1=Point, 2=Spot)
     public Vector4 Color;      // w = intensity
-    public Vector4 SpotParams; // x = innerCone, y = outerCone
+    public Vector4 ShapeParams; // x = innerCone, y = outerCone, z = sourceRadius, w = flags
 }
 
 [StructLayout(LayoutKind.Sequential)]

@@ -52,9 +52,45 @@ public static class SceneSaver
                         Direction = new float[] { lightComp.Direction.X, lightComp.Direction.Y, lightComp.Direction.Z },
                         Color = new float[] { lightComp.Color.X, lightComp.Color.Y, lightComp.Color.Z },
                         Intensity = lightComp.Intensity,
-                        Range = 100.0f
+                        SunRadius = lightComp.AngularRadius,
+                        CastShadows = lightComp.CastShadows
                     };
-                    
+
+                    baseScene.Lights.Add(lightNode);
+                }
+                else if (world.TryGet<PointLightComponent>(entity, out var pointLight))
+                {
+                    var lightNode = new LightNode
+                    {
+                        Type = "point",
+                        Position = new float[] { transform.Position.X, transform.Position.Y, transform.Position.Z },
+                        Direction = new float[] { 0, -1, 0 },
+                        Color = new float[] { pointLight.Color.X, pointLight.Color.Y, pointLight.Color.Z },
+                        Intensity = pointLight.Intensity,
+                        Range = pointLight.Range,
+                        SourceRadius = pointLight.SourceRadius,
+                        CastShadows = pointLight.CastShadows
+                    };
+
+                    baseScene.Lights.Add(lightNode);
+                }
+                else if (world.TryGet<SpotLightComponent>(entity, out var spotLight))
+                {
+                    var spotDirection = LightMath.GetSpotDirection(transform.Rotation);
+                    var lightNode = new LightNode
+                    {
+                        Type = "spot",
+                        Position = new float[] { transform.Position.X, transform.Position.Y, transform.Position.Z },
+                        Direction = new float[] { spotDirection.X, spotDirection.Y, spotDirection.Z },
+                        Color = new float[] { spotLight.Color.X, spotLight.Color.Y, spotLight.Color.Z },
+                        Intensity = spotLight.Intensity,
+                        Range = spotLight.Range,
+                        InnerCone = spotLight.InnerCone,
+                        OuterCone = spotLight.OuterCone,
+                        SourceRadius = spotLight.SourceRadius,
+                        CastShadows = spotLight.CastShadows
+                    };
+
                     baseScene.Lights.Add(lightNode);
                 }
             }

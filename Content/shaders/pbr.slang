@@ -131,8 +131,8 @@ float3 EvaluateLightContribution(LightData light, float3 worldPos, DisneyMateria
 
         if (lightType == 2.0) {
             float theta = dot(L, normalize(-light.direction.xyz));
-            float epsilon = max(light.spotParams.x - light.spotParams.y, 0.001);
-            float intensity = clamp((theta - light.spotParams.y) / epsilon, 0.0, 1.0);
+            float epsilon = max(light.shapeParams.x - light.shapeParams.y, 0.001);
+            float intensity = clamp((theta - light.shapeParams.y) / epsilon, 0.0, 1.0);
             attenuation *= intensity * intensity;
         }
     }
@@ -162,6 +162,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target
         float3 rma = bindless.textures[mat.rmaTexIndex].Sample(tex_sampler, input.uv).rgb;
         ao = rma.r;
         roughness *= rma.g;
+        metallic *= rma.b;
     }
 
     // Blend Layer 2 (evaluated first under Layer 1)

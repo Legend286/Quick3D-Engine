@@ -83,29 +83,84 @@ internal static class SceneDataExtractor
         Vector3 skySunDir = Vector3.Normalize(new Vector3(0.5f, 1.0f, 0.5f));
         float skySunRadius = 0.00465f;
 
-        foreach (var l in scene.Lights)
+        var sortedLightEntities = new List<ulong>(world.Entities);
+        sortedLightEntities.Sort();
+
+        foreach (var entity in sortedLightEntities)
         {
-            float type = 0.0f;
-            float p1 = l.InnerCone;
-            float p2 = l.OuterCone;
-            if (l.Type == "point") type = 1.0f;
-            else if (l.Type == "spot") type = 2.0f;
-            else if (l.Type == "directional")
+            Transform transform = world.TryGet<Transform>(entity, out var lightTransform)
+                ? lightTransform
+                : Transform.Default;
+
+            if (world.TryGet<DirectionalLightComponent>(entity, out var directional))
             {
-                type = 0.0f;
-                p1 = l.SunRadius;
-                skySunDir = Vector3.Normalize(new Vector3(-l.Direction[0], -l.Direction[1], -l.Direction[2]));
-                skySunRadius = l.SunRadius;
+                Vector3 direction = LightMath.NormalizeOrFallback(directional.Direction, new Vector3(0f, -1f, 0f));
+                skySunDir = Vector3.Normalize(-direction);
+                skySunRadius = directional.AngularRadius;
+                lights.Add(new LightData
+                {
+                    Position = new Vector4(transform.Position, 0f),
+                    Direction = new Vector4(direction, 0.0f),
+                    Color = new Vector4(directional.Color, directional.Intensity),
+                    ShapeParams = new Vector4(0.0f, 0.0f, directional.AngularRadius, directional.CastShadows ? 1.0f : 0.0f)
+                });
+                continue;
             }
 
-            lights.Add(new LightData
+            if (world.TryGet<PointLightComponent>(entity, out var pointLight))
             {
-                Position = new Vector4(l.Position[0], l.Position[1], l.Position[2], l.Range),
-                Direction = new Vector4(l.Direction[0], l.Direction[1], l.Direction[2], type),
-                Color = new Vector4(l.Color[0], l.Color[1], l.Color[2], l.Intensity),
-                SpotParams = new Vector4(p1, p2, 0, 0)
-            });
+                lights.Add(new LightData
+                {
+                    Position = new Vector4(transform.Position, pointLight.Range),
+                    Direction = new Vector4(0f, 0f, 0f, 1.0f),
+                    Color = new Vector4(pointLight.Color, pointLight.Intensity),
+                    ShapeParams = new Vector4(0.0f, 0.0f, pointLight.SourceRadius, pointLight.CastShadows ? 1.0f : 0.0f)
+                });
+                continue;
+            }
+
+            if (world.TryGet<SpotLightComponent>(entity, out var spotLight))
+            {
+                Vector3 direction = LightMath.GetSpotDirection(transform.Rotation);
+                lights.Add(new LightData
+                {
+                    Position = new Vector4(transform.Position, spotLight.Range),
+                    Direction = new Vector4(direction, 2.0f),
+                    Color = new Vector4(spotLight.Color, spotLight.Intensity),
+                    ShapeParams = new Vector4(spotLight.InnerCone, spotLight.OuterCone, spotLight.SourceRadius, spotLight.CastShadows ? 1.0f : 0.0f)
+                });
+            }
         }
+
+        if (lights.Count == 0)
+        {
+            foreach (var l in scene.Lights)
+            {
+                float type = 0.0f;
+                float innerCone = l.InnerCone;
+                float outerCone = l.OuterCone;
+                float sourceRadius = l.SourceRadius;
+                float flags = l.CastShadows ? 1.0f : 0.0f;
+                if (l.Type == "point") type = 1.0f;
+                else if (l.Type == "spot") type = 2.0f;
+                else if (l.Type == "directional")
+                {
+                    type = 0.0f;
+                    sourceRadius = l.SunRadius;
+                    skySunDir = Vector3.Normalize(new Vector3(-l.Direction[0], -l.Direction[1], -l.Direction[2]));
+                    skySunRadius = l.SunRadius;
+                }
+
+                lights.Add(new LightData
+                {
+                    Position = new Vector4(l.Position[0], l.Position[1], l.Position[2], l.Range),
+                    Direction = new Vector4(l.Direction[0], l.Direction[1], l.Direction[2], type),
+                    Color = new Vector4(l.Color[0], l.Color[1], l.Color[2], l.Intensity),
+                    ShapeParams = new Vector4(innerCone, outerCone, sourceRadius, flags)
+                });
+            }
+        }
+
         if (lights.Count == 0)
         {
             lights.Add(new LightData
@@ -113,7 +168,7 @@ internal static class SceneDataExtractor
                 Position = new Vector4(0, 0, 0, 10.0f),
                 Direction = new Vector4(Vector3.Normalize(new Vector3(-1, 1, -1)), 0.0f),
                 Color = new Vector4(1, 1, 1, 2.0f),
-                SpotParams = Vector4.Zero
+                ShapeParams = new Vector4(0.0f, 0.0f, 0.00465f, 0.0f)
             });
         }
 

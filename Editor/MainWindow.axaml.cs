@@ -56,13 +56,9 @@ public partial class MainWindow : Window
 
     private void OnOpenProjectClicked(object? sender, RoutedEventArgs e)
     {
-        var welcome = new Views.WelcomeWindow();
-        if (Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop)
-        {
-            desktop.MainWindow = welcome;
-        }
+        var welcome = new Views.WelcomeWindow(this);
         welcome.Show();
-        this.Close();
+        welcome.Activate();
     }
 
     private void OnNewSceneClicked(object? sender, RoutedEventArgs e)
@@ -102,6 +98,30 @@ public partial class MainWindow : Window
                 vm.ViewportVm.SaveSceneAs(name);
             }
         }
+    }
+
+    private void OnAddPointLightClicked(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel vm || vm.ViewportVm is null) return;
+
+        ulong ent = vm.ViewportVm.AddPointLight();
+        if (ent == 0) return;
+
+        vm.HierarchyVm.SelectEntity(ent);
+        vm.InspectorVm.SetSelectedEntity(ent);
+        vm.ViewportVm.GameLoop?.SetSelectedEntity(ent);
+    }
+
+    private void OnAddSpotLightClicked(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel vm || vm.ViewportVm is null) return;
+
+        ulong ent = vm.ViewportVm.AddSpotLight();
+        if (ent == 0) return;
+
+        vm.HierarchyVm.SelectEntity(ent);
+        vm.InspectorVm.SetSelectedEntity(ent);
+        vm.ViewportVm.GameLoop?.SetSelectedEntity(ent);
     }
 
     private async void OnOpenSceneClicked(object? sender, RoutedEventArgs e)
@@ -144,16 +164,11 @@ public partial class MainWindow : Window
 
     private void OnNewProjectClicked(object? sender, RoutedEventArgs e)
     {
-        var welcome = new Views.WelcomeWindow();
+        var welcome = new Views.WelcomeWindow(this);
         if (welcome.DataContext is ViewModels.WelcomeViewModel vm)
             vm.IsNewProjectMode = true;
-
-        if (Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop)
-        {
-            desktop.MainWindow = welcome;
-        }
         welcome.Show();
-        this.Close();
+        welcome.Activate();
     }
 
     /// <summary>

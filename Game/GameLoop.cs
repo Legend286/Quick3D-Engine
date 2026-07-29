@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 using System;
+using Engine.CBindings;
 using Engine.RHI;
 using static Engine.CBindings.Log;
 using System.Numerics;
@@ -9,6 +10,11 @@ namespace Engine.Game;
 
 public sealed class GameLoop : IGameLoop
 {
+    private const float ModelPreviewYaw = -0.55f;
+    private const float ModelPreviewPitch = -0.26f;
+    private const float MaterialPreviewYaw = -0.35f;
+    private const float MaterialPreviewPitch = -0.18f;
+
     private RhiDevice? _device;
     private RhiSwapchain? _swap;
     private IEntityStore? _world;
@@ -116,26 +122,7 @@ public sealed class GameLoop : IGameLoop
 
         if (_imguiRenderer != null)
         {
-            _imguiRenderer.UpdateInput(input, _lastWidth, _lastHeight);
-
-            if (input.Events != null)
-            {
-                foreach (var ev in input.Events)
-                {
-                    _imguiRenderer.HandleEvent(ev);
-                }
-            }
-
-            if (_imGuiFrameStarted)
-            {
-                ImGuiNET.ImGui.EndFrame();
-            }
-
-            ImGuiNET.ImGui.NewFrame();
-            _imGuiFrameStarted = true;
-
-            // Draw a test window
-            ImGuiNET.ImGui.ShowDemoWindow();
+            _imguiRenderer.BeginFrame(input, _lastWidth, _lastHeight, input.Events, ref _imGuiFrameStarted);
         }
 
         if (input.MouseDownLeft && !_wasMouseDownLeft && _renderer != null && _lastWidth > 0 && _lastHeight > 0)
@@ -204,6 +191,25 @@ public sealed class GameLoop : IGameLoop
             SeedWorld(_world);
     }
 
+    public ulong AddPointLight(Vector3 position, Vector3 color, float intensity, float range, float sourceRadius, bool castShadows = true)
+    {
+        if (_renderer == null) return 0;
+        return _renderer.AddPointLight(position, color, intensity, range, sourceRadius, castShadows);
+    }
+
+    public ulong AddSpotLight(Vector3 position, Vector3 direction, Vector3 color, float intensity, float range, float innerCone, float outerCone, float sourceRadius, bool castShadows = true)
+    {
+        if (_renderer == null) return 0;
+        return _renderer.AddSpotLight(position, direction, color, intensity, range, innerCone, outerCone, sourceRadius, castShadows);
+    }
+
+    public void ReplaceSwapchain(RhiSwapchain swapchain)
+    {
+        var oldSwap = _swap;
+        _swap = swapchain;
+        oldSwap?.Dispose();
+    }
+
     public void RenderFrame(RhiTexture backBuffer, uint width, uint height)
     {
         _lastWidth = width;
@@ -214,10 +220,7 @@ public sealed class GameLoop : IGameLoop
         }
         catch
         {
-            if (_imGuiFrameStarted)
-            {
-                ImGuiNET.ImGui.EndFrame();
-            }
+            _imguiRenderer?.CancelFrame(ref _imGuiFrameStarted);
             throw;
         }
         finally
@@ -226,20 +229,16 @@ public sealed class GameLoop : IGameLoop
         }
     }
 
-    public void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target)
+    public void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target, uint width = 256, uint height = 256, float orbitRadians = 0.0f, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
     {
         if (_device == null) return;
 
-        // 1. Create a temporary world and renderer for the thumbnail pass
         var tempWorld = new EcsWorld();
-
-        // 2. Setup the camera and 3-point lighting
         ulong camEnt = tempWorld.CreateEntity();
-        tempWorld.Set(camEnt, new Engine.Scene.Components.Camera { FieldOfView = 60.0f * (MathF.PI / 180.0f), NearClip = 0.1f, FarClip = 100.0f });
-        // The camera position is overridden below for models and materials to fit them properly
-        tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, 2.0f), Rotation = Quaternion.Identity });
-
-        // Note: Lights are populated directly into the dummy SceneGraph in Renderer.BuildThumbnailPlan
+        const float thumbnailFovY = 40.0f * (MathF.PI / 180.0f);
+        float thumbnailAspect = height > 0 ? width / (float)height : 1.0f;
+        tempWorld.Set(camEnt, new Engine.Scene.Components.Camera { FieldOfView = thumbnailFovY, NearClip = 0.1f, FarClip = 100.0f });
+        tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, -3.0f), Rotation = Quaternion.Identity });
 
         if (assetType == "Model")
         {
@@ -259,40 +258,39 @@ public sealed class GameLoop : IGameLoop
                 }
             }
 
-            Vector3 offset = Vector3.Zero;
-            float scale = 1.0f;
+            Vector3 center = Vector3.Zero;
+            Vector3 size = Vector3.One;
             if (hasBounds)
             {
-                Vector3 center = (min + max) * 0.5f;
-                Vector3 size = max - min;
-                float maxDim = MathF.Max(size.X, MathF.Max(size.Y, size.Z));
-                if (maxDim > 0.001f)
-                {
-                    // Scale so the max dimension fills 100% of FOV
-                    scale = 2.2f / maxDim;
-                }
-                offset = -center * scale;
+                center = (min + max) * 0.5f;
+                size = Vector3.Max(max - min, new Vector3(0.001f));
             }
+
+            float radius = size.Length() * 0.5f;
+            float halfFovY = thumbnailFovY * 0.5f;
+            float halfFovX = MathF.Atan(MathF.Tan(halfFovY) * thumbnailAspect);
+            float distance = radius / MathF.Min(MathF.Tan(halfFovY), MathF.Tan(halfFovX));
+            distance += radius * 0.35f;
+
+            Quaternion previewRotation = Quaternion.CreateFromYawPitchRoll(ModelPreviewYaw + orbitRadians, ModelPreviewPitch, 0f);
+            Vector3 previewPosition = -Vector3.Transform(center, previewRotation);
 
             ulong ent = tempWorld.CreateEntity();
             tempWorld.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
-            tempWorld.Set(ent, new Transform { Position = offset, Scale = new Vector3(scale), Rotation = Quaternion.Identity });
-            tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, 2.2f), Rotation = Quaternion.Identity });
+            tempWorld.Set(ent, new Transform { Position = previewPosition, Scale = Vector3.One, Rotation = previewRotation });
+            tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, -MathF.Max(distance, 1.5f)), Rotation = Quaternion.Identity });
         }
         else if (assetType == "Material")
         {
-            // 1. Generate sphere mesh file
             string spherePath = System.IO.Path.Combine(contentRoot, ".cache", "thumbnails", "sphere.msh");
             System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(spherePath)!);
             if (!System.IO.File.Exists(spherePath))
             {
                 Engine.Game.PrimitiveMeshFactory.GenerateUVSphere(spherePath);
             }
-            // 2. Load mesh and create a dynamic model
             var mesh = Engine.Assets.MeshLoader.LoadMsh(_device, spherePath);
             ulong meshId = Engine.Assets.AssetRegistry.RegisterMesh(mesh);
 
-            // 3. Load material
             var mat = Engine.Assets.MaterialLoader.LoadMat(_device, assetPath);
             ulong matId = Engine.Assets.AssetRegistry.RegisterMaterial(mat);
 
@@ -302,59 +300,34 @@ public sealed class GameLoop : IGameLoop
 
             ulong ent = tempWorld.CreateEntity();
             tempWorld.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
-            tempWorld.Set(ent, Transform.Default);
-            
-            // Camera position so sphere fills icon completely
-            tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, 1.8f), Rotation = Quaternion.Identity });
+            tempWorld.Set(ent, new Transform
+            {
+                Position = Vector3.Zero,
+                Rotation = Quaternion.CreateFromYawPitchRoll(MaterialPreviewYaw + orbitRadians, MaterialPreviewPitch, 0f),
+                Scale = Vector3.One
+            });
+            tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, -3.6f), Rotation = Quaternion.Identity });
         }
-
         else if (assetType == "Texture")
         {
-            string planePath = System.IO.Path.Combine(contentRoot, ".cache", "thumbnails", "plane.msh");
-            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(planePath)!);
-            if (!System.IO.File.Exists(planePath))
-            {
-                Engine.Game.PrimitiveMeshFactory.GeneratePlane(planePath, 2.0f, 2.0f);
-            }
-            var mesh = Engine.Assets.MeshLoader.LoadMsh(_device, planePath);
-            ulong meshId = Engine.Assets.AssetRegistry.RegisterMesh(mesh);
+            using var textureRenderer = new Renderer(_device, _swap!, tempWorld, null);
+            var sourceTexture = Engine.Assets.TextureLoader.LoadTexture(_device, assetPath);
+            if (sourceTexture == null)
+                return;
 
-            // Load texture
-            Engine.RHI.RhiTexture? t = null;
-            if (System.IO.File.Exists(assetPath))
-            {
-                t = Engine.Assets.TextureLoader.LoadTexture(_device, assetPath);
-            }
-
-            var mat = new Engine.Assets.Material
-            {
-                AlbedoColor = new float[] { 1, 1, 1, 1 },
-                Metallic = 0.0f,
-                Roughness = 1.0f,
-                AlbedoTexture = t
-            };
-            ulong matId = Engine.Assets.AssetRegistry.RegisterMaterial(mat);
-
-            var model = new Engine.Assets.Model();
-            model.Parts = new[] { new Engine.Assets.ModelPart { Mesh = mesh, MeshId = meshId, MaterialId = matId } };
-            ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
-
-            ulong ent = tempWorld.CreateEntity();
-            tempWorld.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
-
-            // Rotate plane to face camera (-Z view)
-            tempWorld.Set(ent, new Transform { Rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2.0f) });
-            tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, 1.8f), Rotation = Quaternion.Identity });
+            textureRenderer.BuildTextureThumbnailPlan(contentRoot, sourceTexture);
+            textureRenderer.RenderFrame(target, width, height, syncFence, waitValue, signalValue);
+            tempWorld.Dispose();
+            return;
         }
 
-        // 4. Render to target using a temporary Renderer instance
         using var tempRenderer = new Renderer(_device, _swap!, tempWorld, null);
         tempRenderer.ActiveCameraEntity = camEnt;
         tempRenderer.BuildThumbnailPlan(contentRoot);
 
         try
         {
-            tempRenderer.RenderFrame(target, 256, 256);
+            tempRenderer.RenderFrame(target, width, height, syncFence, waitValue, signalValue);
         }
         catch (Exception ex)
         {
@@ -364,19 +337,94 @@ public sealed class GameLoop : IGameLoop
     }
 
     private ulong _previewMatId;
+    private ulong _previewCameraEntity;
+    private ulong _previewEntity;
+    private Vector3 _previewCenter;
+    private float _previewDistance = 3.0f;
+    private string? _previewAssetType;
 
-    public void LoadMaterialPreview(string contentRoot, string materialPath)
+    public void LoadModelPreview(string contentRoot, string modelPath)
     {
         if (_device == null || _world == null || _renderer == null) return;
         _world.Clear();
+        _previewAssetType = "Model";
+        _previewMatId = 0;
+        _previewEntity = 0;
+        _previewCenter = Vector3.Zero;
+        _previewDistance = 3.0f;
 
-        // 1. Camera
+        ulong camEnt = _world.CreateEntity();
+        const float previewFovY = 40.0f * (MathF.PI / 180.0f);
+        _world.Set(camEnt, new Engine.Scene.Components.Camera { FieldOfView = previewFovY, NearClip = 0.1f, FarClip = 100.0f });
+        _world.Set(camEnt, new Transform { Position = new Vector3(0, 0, -4.0f), Rotation = Quaternion.Identity });
+        _renderer.ActiveCameraEntity = camEnt;
+        _previewCameraEntity = camEnt;
+
+        var model = Engine.Assets.ModelLoader.LoadMdl(_device, modelPath);
+        ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
+
+        Vector3 min = new Vector3(float.MaxValue);
+        Vector3 max = new Vector3(float.MinValue);
+        bool hasBounds = false;
+        foreach (var part in model.Parts)
+        {
+            if (part.BoundsMin != Vector3.Zero || part.BoundsMax != Vector3.Zero)
+            {
+                min = Vector3.Min(min, part.BoundsMin);
+                max = Vector3.Max(max, part.BoundsMax);
+                hasBounds = true;
+            }
+        }
+
+        Vector3 center = Vector3.Zero;
+        Vector3 size = Vector3.One;
+        if (hasBounds)
+        {
+            center = (min + max) * 0.5f;
+            size = Vector3.Max(max - min, new Vector3(0.001f));
+        }
+        _previewCenter = center;
+
+        float radius = size.Length() * 0.5f;
+        float halfFovY = previewFovY * 0.5f;
+        float halfFovX = MathF.Atan(MathF.Tan(halfFovY));
+        float distance = radius / MathF.Min(MathF.Tan(halfFovY), MathF.Tan(halfFovX));
+        distance += radius * 0.4f;
+        _previewDistance = MathF.Max(distance, 2.0f);
+
+        Quaternion previewRotation = Quaternion.CreateFromYawPitchRoll(ModelPreviewYaw, ModelPreviewPitch, 0f);
+        Vector3 previewPosition = -Vector3.Transform(center, previewRotation);
+
+        ulong ent = _world.CreateEntity();
+        _previewEntity = ent;
+        _world.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
+        _world.Set(ent, new Transform
+        {
+            Position = previewPosition,
+            Rotation = previewRotation,
+            Scale = Vector3.One
+        });
+
+        _world.Set(camEnt, new Transform { Position = new Vector3(0, 0, -_previewDistance), Rotation = Quaternion.Identity });
+        _renderer.UsePathTracer = false;
+        _renderer.BuildThumbnailPlan(contentRoot);
+    }
+
+    public void LoadMaterialPreview(string contentRoot, string materialPath, bool usePathTracer = true)
+    {
+        if (_device == null || _world == null || _renderer == null) return;
+        _world.Clear();
+        _previewAssetType = "Material";
+        _previewEntity = 0;
+        _previewCenter = Vector3.Zero;
+        _previewDistance = 3.25f;
+
         ulong camEnt = _world.CreateEntity();
         _world.Set(camEnt, new Engine.Scene.Components.Camera { FieldOfView = 60.0f * (MathF.PI / 180.0f), NearClip = 0.1f, FarClip = 100.0f });
-        _world.Set(camEnt, new Transform { Position = new Vector3(0, 0, 3.0f), Rotation = Quaternion.Identity });
+        _world.Set(camEnt, new Transform { Position = new Vector3(0, 0, -3.0f), Rotation = Quaternion.Identity });
         _renderer.ActiveCameraEntity = camEnt;
+        _previewCameraEntity = camEnt;
 
-        // 2. Sphere Model
         string spherePath = System.IO.Path.Combine(contentRoot, ".cache", "thumbnails", "sphere.msh");
         System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(spherePath)!);
         if (!System.IO.File.Exists(spherePath))
@@ -395,10 +443,46 @@ public sealed class GameLoop : IGameLoop
         ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
 
         ulong ent = _world.CreateEntity();
+        _previewEntity = ent;
         _world.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
-        _world.Set(ent, Transform.Default);
+        _world.Set(ent, new Transform
+        {
+            Position = Vector3.Zero,
+            Rotation = Quaternion.CreateFromYawPitchRoll(MaterialPreviewYaw, MaterialPreviewPitch, 0f),
+            Scale = Vector3.One
+        });
 
-        _renderer.UsePathTracer = true; // Preview using path tracing
+        _renderer.UsePathTracer = usePathTracer;
+        _renderer.BuildThumbnailPlan(contentRoot);
+    }
+
+    public void RenderLoadedPreview(RhiTexture target, uint width = 256, uint height = 256, float orbitRadians = 0.0f, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
+    {
+        if (_world == null || _renderer == null || _previewCameraEntity == 0 || _previewEntity == 0)
+            return;
+
+        if (_world.TryGet<Transform>(_previewEntity, out var previewTransform))
+        {
+            Quaternion rotation = _previewAssetType == "Material"
+                ? Quaternion.CreateFromYawPitchRoll(MaterialPreviewYaw + orbitRadians, MaterialPreviewPitch, 0f)
+                : Quaternion.CreateFromYawPitchRoll(ModelPreviewYaw + orbitRadians, ModelPreviewPitch, 0f);
+
+            previewTransform.Rotation = rotation;
+            previewTransform.Position = _previewAssetType == "Model"
+                ? -Vector3.Transform(_previewCenter, rotation)
+                : Vector3.Zero;
+            _world.Set(_previewEntity, previewTransform);
+        }
+
+        if (_world.TryGet<Transform>(_previewCameraEntity, out var cameraTransform))
+        {
+            cameraTransform.Position = new Vector3(0, 0, -_previewDistance);
+            cameraTransform.Rotation = Quaternion.Identity;
+            _world.Set(_previewCameraEntity, cameraTransform);
+        }
+
+        _renderer.ActiveCameraEntity = _previewCameraEntity;
+        _renderer.RenderFrame(target, width, height, syncFence, waitValue, signalValue);
     }
 
     public void UpdateMaterialPreview(float[] albedo, float metallic, float roughness, float subsurface, float[] subsurfaceColor, float[] subsurfaceRadius, float clearcoat, float clearcoatRoughness, float[] topColor, float topMetallic, float topRoughness, uint topMaskType, float noiseScale = 10.0f, float noiseThresholdMin = 0.3f, float noiseThresholdMax = 0.7f, float[]? layer2Color = null, float layer2Metallic = 0.0f, float layer2Roughness = 1.0f, uint layer2MaskType = 0, float layer2NoiseScale = 10.0f, float layer2NoiseMin = 0.3f, float layer2NoiseMax = 0.7f)

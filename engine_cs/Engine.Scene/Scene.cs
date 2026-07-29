@@ -65,7 +65,9 @@ public sealed class LightNode
     [JsonPropertyName("range")] public float Range { get; set; } = 10.0f;
     [JsonPropertyName("inner_cone")] public float InnerCone { get; set; } = 0.8f;
     [JsonPropertyName("outer_cone")] public float OuterCone { get; set; } = 0.7f;
+    [JsonPropertyName("source_radius")] public float SourceRadius { get; set; } = 0.05f;
     [JsonPropertyName("sun_radius")] public float SunRadius { get; set; } = 0.00465f;
+    [JsonPropertyName("cast_shadows")] public bool CastShadows { get; set; } = true;
 }
 
 public sealed class ModelRef

@@ -82,7 +82,7 @@ struct LightData {
     float4 position;   // w = range
     float4 direction;  // w = type (0=Dir, 1=Point, 2=Spot)
     float4 color;      // w = intensity
-    float4 spotParams; // x = innerCone, y = outerCone
+    float4 shapeParams; // x = innerCone, y = outerCone, z = sourceRadius, w = flags
 };
 
 struct SkyParams {

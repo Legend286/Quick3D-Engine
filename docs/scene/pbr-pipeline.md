@@ -1,6 +1,8 @@
 # PBR Render Pipeline & GPU Culling
 
 **Purpose**: Implements the main forward+ physical-based rendering (PBR) pipeline alongside an early GPU-driven frustum culling mechanism.
+See [Scene Lights](lights.md) for authored point/spot/directional light
+round-tripping through the editor and scene JSON.
 
 ## Render Passes
 - `PbrPass`: Main rendering pass. Issues compute shader-driven frustum culling, clustered light assignment, indirect draw generation, and bindless PBR geometry rendering.

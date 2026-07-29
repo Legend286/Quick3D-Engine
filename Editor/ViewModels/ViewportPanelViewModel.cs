@@ -38,10 +38,14 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     private RhiSwapchain? _swap;
     private IGameLoop? _gameLoop;
     public IGameLoop? GameLoop => _gameLoop;
+    public RhiDevice? Device => _device;
+    public RhiSwapchain? Swapchain => _swap;
+    public string ContentRoot => _contentRoot;
     private GameAssemblyLoadContext? _loadContext;
     private EcsWorld? _world;
     private IntPtr _nsView;
     private ViewportMetalLayerHost? _host;
+    private bool _hostSizeHooked;
     private uint _width = ViewportMetalLayerHost.DefaultInitialWidth;
     private uint _height = ViewportMetalLayerHost.DefaultInitialHeight;
     private bool _attached;
@@ -114,6 +118,8 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 return;
             }
             _nsView = _host.NativeViewHandle;
+            _host.SizeChanged += OnHostSizeChanged;
+            _hostSizeHooked = true;
             SyncDimensionsFromHost();
             _device = new RhiDevice();
             _swap = _device.CreateSwapchain(_nsView, _width, _height);
@@ -292,6 +298,41 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         IsDirty = false;
     }
 
+    private void OnHostSizeChanged(object? sender, SizeChangedEventArgs e)
+    {
+        EnsureSwapchainMatchesHost();
+    }
+
+    private void EnsureSwapchainMatchesHost()
+    {
+        if (_device is null || _swap is null || _host is null || _nsView == IntPtr.Zero)
+            return;
+
+        double scale = ComputeRenderScaling();
+        double logicalWidth = _host.Bounds.Width;
+        double logicalHeight = _host.Bounds.Height;
+        if (logicalWidth < 1 || logicalHeight < 1)
+            return;
+
+        uint physicalWidth = (uint)Math.Max(1, Math.Round(logicalWidth * scale));
+        uint physicalHeight = (uint)Math.Max(1, Math.Round(logicalHeight * scale));
+        if (_swap.Width == physicalWidth && _swap.Height == physicalHeight)
+            return;
+
+        try
+        {
+            var newSwap = _device.CreateSwapchain(_nsView, physicalWidth, physicalHeight);
+            _gameLoop?.ReplaceSwapchain(newSwap);
+            _swap = newSwap;
+            _width = physicalWidth;
+            _height = physicalHeight;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[engine-viewport] swapchain resize failed: {ex.Message}", "Editor");
+        }
+    }
+
     public void SaveScene()
     {
         if (_world == null) return;
@@ -339,6 +380,45 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         _world.Set(ent, Engine.Scene.Components.Transform.Default);
 
         IsDirty = true;
+    }
+
+    public ulong AddPointLight()
+    {
+        if (_gameLoop == null) return 0;
+
+        ulong ent = _gameLoop.AddPointLight(
+            position: System.Numerics.Vector3.Zero,
+            color: System.Numerics.Vector3.One,
+            intensity: 20.0f,
+            range: 10.0f,
+            sourceRadius: 0.05f,
+            castShadows: true);
+
+        if (ent != 0)
+            IsDirty = true;
+
+        return ent;
+    }
+
+    public ulong AddSpotLight()
+    {
+        if (_gameLoop == null) return 0;
+
+        ulong ent = _gameLoop.AddSpotLight(
+            position: System.Numerics.Vector3.Zero,
+            direction: new System.Numerics.Vector3(0.0f, -1.0f, 0.0f),
+            color: System.Numerics.Vector3.One,
+            intensity: 30.0f,
+            range: 12.0f,
+            innerCone: 0.85f,
+            outerCone: 0.70f,
+            sourceRadius: 0.03f,
+            castShadows: true);
+
+        if (ent != 0)
+            IsDirty = true;
+
+        return ent;
     }
 
     /// <summary>
@@ -515,6 +595,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     private void OnTick(object? sender, EventArgs e)
     {
         if (_device is null || _swap is null || _gameLoop is null) return;
+        EnsureSwapchainMatchesHost();
         if (!_swap.TryAcquireNextImage(out RhiTexture? image) || image is null)
         {
             return;
@@ -842,6 +923,11 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         if (_disposed) return;
         _disposed = true;
         _timer.Stop();
+        if (_host is not null && _hostSizeHooked)
+        {
+            _host.SizeChanged -= OnHostSizeChanged;
+            _hostSizeHooked = false;
+        }
         _sceneWatcher?.Dispose();
         _sceneWatcher = null;
         _scriptWatcher?.Dispose();
