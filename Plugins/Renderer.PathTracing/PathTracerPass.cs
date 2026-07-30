@@ -42,6 +42,7 @@ public class PathTracerPass : RenderPass
     private uint _lastWidth = 0;
     private uint _lastHeight = 0;
     private float _lastAspect = 1.0f;
+    private uint _lastDebugFlags = uint.MaxValue;
 
     private RhiBuffer _cameraBuffer;
     private RhiBuffer _lightBuffer;
@@ -54,9 +55,6 @@ public class PathTracerPass : RenderPass
     private List<MaterialData> _materials = new();
 
     private RhiBindlessHeap _bindlessHeap;
-
-    /// <summary>When true, renders hit distance as grayscale instead of full path tracing.</summary>
-    public static bool DebugMode = false;
 
     public unsafe PathTracerPass(RhiDevice device, IEntityStore world, SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap, Engine.Game.Renderer renderer)
     {
@@ -144,11 +142,19 @@ public class PathTracerPass : RenderPass
             _renderer.ActiveCameraEntity,
             Vector3.UnitZ,
             _frameCount,
-            DebugMode ? 1u : 0u,
+            _renderer.DebugFlags,
+            _renderer.ProjectionBlend,
+            _renderer.OrthographicSize,
             w,
             h,
             out SceneFrameData frameData,
             out ScenePushData pushData);
+
+        if (_lastDebugFlags != pushData.DebugFlags)
+        {
+            _lastDebugFlags = pushData.DebugFlags;
+            _frameCount = 0;
+        }
 
         _instances = frameData.Instances;
         _parts = frameData.Parts;
@@ -278,9 +284,14 @@ public class PathTracerPass : RenderPass
                         Log.Info($"[PathTracer] BLAS built: mesh={mesh.VertexCount}v/{mesh.IndexCount}i 32bit={mesh.IndexFormat == 32}", "PT");
                     }
 
-                    var modelMat = Matrix4x4.CreateScale(tc.Scale) *
-                                   Matrix4x4.CreateFromQuaternion(tc.Rotation) *
-                                   Matrix4x4.CreateTranslation(tc.Position);
+                    var modelMat =
+                        Matrix4x4.CreateTranslation(
+                            p.LocalOffset) *
+                        Matrix4x4.CreateScale(tc.Scale) *
+                        Matrix4x4.CreateFromQuaternion(
+                            tc.Rotation) *
+                        Matrix4x4.CreateTranslation(
+                            tc.Position);
 
                     var inst = new RhiNative.TlasInstanceDesc
                     {

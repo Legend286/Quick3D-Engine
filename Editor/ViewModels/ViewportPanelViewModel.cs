@@ -28,6 +28,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Engine.CBindings;
 using Engine.Editor.Views;
 using Engine.RHI;
+using Engine.Editor.Services;
 
 namespace Engine.Editor.ViewModels;
 
@@ -60,6 +61,133 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     private readonly object _hotReloadLock = new();
 
     private Engine.Scene.SceneGraph _baseScene = new();
+
+    /// <summary>Gets renderer choices displayed in viewport chrome.</summary>
+    public string[] RendererModes { get; } =
+        [
+            "Clustered Forward Renderer",
+            "Path Tracing Renderer"
+        ];
+
+    /// <summary>Gets camera projection choices displayed in viewport chrome.</summary>
+    public string[] ProjectionModes { get; } =
+        ["Perspective", "Orthographic"];
+
+    /// <summary>Gets visualization choices displayed in viewport chrome.</summary>
+    public string[] DebugViews { get; } =
+    [
+        "Lit",
+        "Wireframe",
+        "Depth",
+        "Vertex Normal",
+        "Pixel Normal",
+        "Albedo",
+        "RMA",
+        "Lighting Only",
+        "World Position",
+        "Emissive",
+        "UV",
+        "Tangent",
+        "Bitangent"
+    ];
+
+    /// <summary>Gets transform gizmo operations displayed in viewport chrome.</summary>
+    public string[] GizmoOperations { get; } =
+        ["Move", "Rotate", "Scale"];
+
+    /// <summary>Gets transform gizmo spaces displayed in viewport chrome.</summary>
+    public string[] GizmoSpaces { get; } =
+        ["Local", "World"];
+
+    [ObservableProperty]
+    private string _selectedGizmoOperation = "Move";
+
+    partial void OnSelectedGizmoOperationChanged(
+        string value)
+    {
+        ApplyViewportModes();
+    }
+
+    [ObservableProperty]
+    private string _selectedGizmoSpace = "Local";
+
+    partial void OnSelectedGizmoSpaceChanged(
+        string value)
+    {
+        ApplyViewportModes();
+    }
+
+    [ObservableProperty]
+    private bool _isGizmoSnapping;
+
+    partial void OnIsGizmoSnappingChanged(bool value)
+    {
+        ApplyViewportModes();
+    }
+
+    [ObservableProperty]
+    private string _selectedRendererMode =
+        "Clustered Forward Renderer";
+
+    partial void OnSelectedRendererModeChanged(string value)
+    {
+        if (value == "Path Tracing Renderer" &&
+            !PluginCatalogService.Shared.IsEnabled(
+                "core.renderer.path-tracing"))
+        {
+            SelectedRendererMode =
+                "Clustered Forward Renderer";
+            OnPluginEnableRequested?.Invoke(
+                "core.renderer.path-tracing");
+            return;
+        }
+        ApplyViewportModes();
+    }
+
+    [ObservableProperty]
+    private string _selectedProjectionMode = "Perspective";
+
+    partial void OnSelectedProjectionModeChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsOrthographic));
+        ApplyViewportModes();
+    }
+
+    /// <summary>Gets whether orthographic camera controls should be visible.</summary>
+    public bool IsOrthographic =>
+        SelectedProjectionMode == "Orthographic";
+
+    [ObservableProperty]
+    private string _selectedDebugView = "Lit";
+
+    partial void OnSelectedDebugViewChanged(string value)
+    {
+        ApplyViewportModes();
+    }
+
+    [ObservableProperty]
+    private float _cameraFieldOfView = 60.0f;
+
+    partial void OnCameraFieldOfViewChanged(float value)
+    {
+        ApplyViewportModes();
+    }
+
+    [ObservableProperty]
+    private float _orthographicSize = 20.0f;
+
+    partial void OnOrthographicSizeChanged(float value)
+    {
+        ApplyViewportModes();
+    }
+
+    [ObservableProperty]
+    private bool _isRealtime = true;
+
+    partial void OnIsRealtimeChanged(bool value)
+    {
+        RequestRender();
+    }
     
     [ObservableProperty]
     private string _currentSceneName = "New Scene";
@@ -268,6 +396,10 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         _gameLoop = (IGameLoop)Activator.CreateInstance(loopType)!;
         _gameLoop.Init(_device.Handle, _swap.Handle, _world, true);
         _gameLoop.LoadScene(_contentRoot, ResolveStartupScene());
+        _gameLoop.IsPathTracingRendererAvailable =
+            PluginCatalogService.Shared.IsEnabled(
+                "core.renderer.path-tracing");
+        ApplyViewportModes();
 
         _gameLoop.OnEntityPicked += (ent) => {
             // Need a way to notify the HierarchyVm...
@@ -275,9 +407,49 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
             // Yes, let's expose an event on ViewportPanelViewModel.
             OnEntityPicked?.Invoke(ent);
         };
+        _gameLoop.RendererModeChanged += mode =>
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                SelectedRendererMode =
+                    mode == ViewportRendererMode.PathTracing
+                        ? "Path Tracing Renderer"
+                        : "Clustered Forward Renderer";
+            });
+        };
+        _gameLoop.ProjectionModeChanged += mode =>
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                SelectedProjectionMode =
+                    mode == ViewportProjectionMode.Orthographic
+                        ? "Orthographic"
+                        : "Perspective";
+            });
+        };
+        _gameLoop.DebugViewChanged += mode =>
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                SelectedDebugView = GetDebugViewLabel(mode);
+            });
+        };
+        _gameLoop.EntityTransformEditStarted += entity =>
+            OnEntityTransformEditStarted?.Invoke(entity);
+        _gameLoop.EntityTransformEditCompleted += entity =>
+        {
+            OnEntityTransformEditCompleted?.Invoke(entity);
+            MarkDirty();
+        };
+        _gameLoop.RendererPluginEnableRequested +=
+            pluginId =>
+                OnPluginEnableRequested?.Invoke(pluginId);
     }
 
     public event Action<ulong>? OnEntityPicked;
+    public event Action<ulong>? OnEntityTransformEditStarted;
+    public event Action<ulong>? OnEntityTransformEditCompleted;
+    public event Action<string>? OnPluginEnableRequested;
 
     public void LoadScene(string sceneName)
     {
@@ -290,12 +462,14 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         try
         {
             _gameLoop?.LoadScene(_contentRoot, sceneName);
+            ApplyViewportModes();
         }
         catch (Exception ex)
         {
             Log.Error($"[Viewport] Failed to load scene '{sceneName}': {ex.Message}", "Editor");
         }
         IsDirty = false;
+        RequestRender();
     }
 
     private void OnHostSizeChanged(object? sender, SizeChangedEventArgs e)
@@ -326,6 +500,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
             _swap = newSwap;
             _width = physicalWidth;
             _height = physicalHeight;
+            RequestRender();
         }
         catch (Exception ex)
         {
@@ -351,14 +526,148 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     {
         _world?.Clear();
         _baseScene = new Engine.Scene.SceneGraph();
+        AddDirectionalLight();
         CurrentSceneName = "New Scene";
         IsDirty = true;
+        RequestRender();
     }
 
     public void MarkDirty()
     {
         IsDirty = true;
+        RequestRender();
     }
+
+    public void EnablePathTracingRenderer()
+    {
+        if (_gameLoop == null)
+            return;
+
+        _gameLoop.IsPathTracingRendererAvailable =
+            PluginCatalogService.Shared.IsEnabled(
+                "core.renderer.path-tracing");
+        if (_gameLoop
+            .IsPathTracingRendererAvailable)
+        {
+            SelectedRendererMode =
+                "Path Tracing Renderer";
+        }
+    }
+
+    public void RefreshPluginAvailability()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_gameLoop == null)
+                return;
+            bool available =
+                PluginCatalogService.Shared.IsEnabled(
+                    "core.renderer.path-tracing");
+            _gameLoop.IsPathTracingRendererAvailable =
+                available;
+            if (!_gameLoop
+                    .IsPathTracingRendererAvailable &&
+                SelectedRendererMode ==
+                    "Path Tracing Renderer")
+            {
+                SelectedRendererMode =
+                    "Clustered Forward Renderer";
+            }
+            RequestRender();
+        });
+    }
+
+    public void ReloadPluginShaders(string pluginId)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            _gameLoop?.ReloadPluginShaders(pluginId);
+            _renderBurstFrames = 8;
+            RequestRender();
+        });
+    }
+
+    public void ReloadPluginCode(string pluginId)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            _gameLoop?.ReloadPluginCode(pluginId);
+            RefreshPluginAvailability();
+            _renderBurstFrames = 8;
+            RequestRender();
+        });
+    }
+
+    private void ApplyViewportModes()
+    {
+        if (_gameLoop == null)
+            return;
+
+        _gameLoop.IsPathTracingRendererAvailable =
+            PluginCatalogService.Shared.IsEnabled(
+                "core.renderer.path-tracing");
+        _gameLoop.RendererMode =
+            SelectedRendererMode ==
+                "Path Tracing Renderer"
+                ? ViewportRendererMode.PathTracing
+                : ViewportRendererMode.Raster;
+        _gameLoop.ProjectionMode =
+            SelectedProjectionMode == "Orthographic"
+                ? ViewportProjectionMode.Orthographic
+                : ViewportProjectionMode.Perspective;
+        _gameLoop.DebugView =
+            SelectedDebugView switch
+            {
+                "Wireframe" => ViewportDebugView.Wireframe,
+                "Depth" => ViewportDebugView.Depth,
+                "Vertex Normal" => ViewportDebugView.VertexNormal,
+                "Pixel Normal" => ViewportDebugView.PixelNormal,
+                "Albedo" => ViewportDebugView.Albedo,
+                "RMA" => ViewportDebugView.Rma,
+                "Lighting Only" => ViewportDebugView.LightingOnly,
+                "World Position" => ViewportDebugView.WorldPosition,
+                "Emissive" => ViewportDebugView.Emissive,
+                "UV" => ViewportDebugView.Uv,
+                "Tangent" => ViewportDebugView.Tangent,
+                "Bitangent" => ViewportDebugView.Bitangent,
+                _ => ViewportDebugView.Lit
+            };
+        _gameLoop.CameraFieldOfViewDegrees =
+            CameraFieldOfView;
+        _gameLoop.OrthographicSize =
+            OrthographicSize;
+        _gameLoop.GizmoOperation =
+            SelectedGizmoOperation switch
+            {
+                "Rotate" =>
+                    ViewportGizmoOperation.Rotate,
+                "Scale" =>
+                    ViewportGizmoOperation.Scale,
+                _ =>
+                    ViewportGizmoOperation.Translate
+            };
+        _gameLoop.GizmoSpace =
+            SelectedGizmoSpace == "World"
+                ? ViewportGizmoSpace.World
+                : ViewportGizmoSpace.Local;
+        _gameLoop.GizmoSnapping =
+            IsGizmoSnapping;
+        _renderBurstFrames = 16;
+        RequestRender();
+    }
+
+    private static string GetDebugViewLabel(
+        ViewportDebugView mode)
+        => mode switch
+        {
+            ViewportDebugView.VertexNormal => "Vertex Normal",
+            ViewportDebugView.PixelNormal => "Pixel Normal",
+            ViewportDebugView.LightingOnly => "Lighting Only",
+            ViewportDebugView.WorldPosition => "World Position",
+            ViewportDebugView.Rma => "RMA",
+            ViewportDebugView.Uv => "UV",
+            _ => mode.ToString()
+        };
 
     public void AddModelToScene(string mdlName)
     {
@@ -366,13 +675,23 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         InstantiateModel(mdlPath);
     }
 
-    public void InstantiateModel(string absolutePath)
+    public void InstantiateModel(
+        string absolutePath,
+        int modelPartIndex = -1)
     {
         if (_world == null || _device == null) return;
 
         if (!File.Exists(absolutePath)) return;
 
-        var model = Engine.Assets.ModelLoader.LoadMdl(_device, absolutePath);
+        var model = Engine.Assets.ModelLoader.LoadMdl(
+            _device,
+            absolutePath);
+        if (modelPartIndex >= 0)
+        {
+            model = Engine.Assets.ModelLoader.SelectPart(
+                model,
+                modelPartIndex);
+        }
         ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
 
         ulong ent = _world.CreateEntity();
@@ -392,6 +711,61 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
             intensity: 20.0f,
             range: 10.0f,
             sourceRadius: 0.05f,
+            castShadows: true);
+
+        if (ent != 0)
+            IsDirty = true;
+
+        return ent;
+    }
+
+    public ulong AddEmptyEntity()
+    {
+        if (_world == null) return 0;
+
+        ulong ent = _world.CreateEntity();
+        _world.Set(
+            ent,
+            Engine.Scene.Components.Transform.Default);
+        IsDirty = true;
+        RequestRender();
+        return ent;
+    }
+
+    public ulong AddCamera()
+    {
+        if (_world == null) return 0;
+
+        ulong ent = _world.CreateEntity();
+        _world.Set(
+            ent,
+            Engine.Scene.Components.Transform.Default);
+        _world.Set(
+            ent,
+            new Engine.Scene.Components.Camera
+            {
+                FieldOfView = MathF.PI / 3.0f,
+                NearClip = 0.1f,
+                FarClip = 1000.0f
+            });
+        IsDirty = true;
+        RequestRender();
+        return ent;
+    }
+
+    public ulong AddDirectionalLight()
+    {
+        if (_gameLoop == null) return 0;
+
+        ulong ent = _gameLoop.AddDirectionalLight(
+            direction: System.Numerics.Vector3.Normalize(
+                new System.Numerics.Vector3(
+                    -0.4f,
+                    -1.0f,
+                    -0.35f)),
+            color: System.Numerics.Vector3.One,
+            intensity: 3.5f,
+            angularRadius: 0.012f,
             castShadows: true);
 
         if (ent != 0)
@@ -596,51 +970,78 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     {
         if (_device is null || _swap is null || _gameLoop is null) return;
         EnsureSwapchainMatchesHost();
-        if (!_swap.TryAcquireNextImage(out RhiTexture? image) || image is null)
+
+        var dt = (float)_stopwatch.Elapsed.TotalSeconds;
+        _stopwatch.Restart();
+        System.Collections.Generic.List<Engine.CBindings.NativeInput.EngineInputEvent>? frameEvents = null;
+        lock (_events)
         {
-            return;
+            if (_events.Count > 0)
+            {
+                frameEvents = new(_events);
+                _events.Clear();
+            }
         }
+
+        bool cameraInput =
+            _keyW || _keyA || _keyS || _keyD ||
+            (_rightDown &&
+             (MathF.Abs(_ptrDx) > 0.001f ||
+              MathF.Abs(_ptrDy) > 0.001f));
+        var input = new Engine.RHI.InputState
+        {
+            DeltaTime = dt,
+            LogicalWidth = _host != null
+                ? (float)_host.Bounds.Width
+                : _swap.Width,
+            LogicalHeight = _host != null
+                ? (float)_host.Bounds.Height
+                : _swap.Height,
+            RenderScale = (float)ComputeRenderScaling(),
+            MouseX = _ptrX,
+            MouseY = _ptrY,
+            MouseDeltaX = _ptrDx,
+            MouseDeltaY = _ptrDy,
+            MouseDownLeft = _leftDown,
+            MouseDownRight = _rightDown,
+            MouseDownMiddle = _middleDown,
+            KeyW = _keyW,
+            KeyA = _keyA,
+            KeyS = _keyS,
+            KeyD = _keyD,
+            KeyP = _keyP,
+            Events = frameEvents
+        };
+
+        RhiTexture? acquiredImage = null;
         try
         {
-            var dt = (float)_stopwatch.Elapsed.TotalSeconds;
-            _stopwatch.Restart();
-
-            System.Collections.Generic.List<Engine.CBindings.NativeInput.EngineInputEvent>? frameEvents = null;
-            lock (_events)
-            {
-                if (_events.Count > 0)
-                {
-                    frameEvents = new(_events);
-                    _events.Clear();
-                }
-            }
-
-            var input = new Engine.RHI.InputState
-            {
-                DeltaTime = dt,
-                LogicalWidth = _host != null ? (float)_host.Bounds.Width : _swap.Width,
-                LogicalHeight = _host != null ? (float)_host.Bounds.Height : _swap.Height,
-                RenderScale = (float)ComputeRenderScaling(),
-                MouseX = _ptrX,
-                MouseY = _ptrY,
-                MouseDeltaX = _ptrDx,
-                MouseDeltaY = _ptrDy,
-                MouseDownLeft = _leftDown,
-                MouseDownRight = _rightDown,
-                MouseDownMiddle = _middleDown,
-                KeyW = _keyW,
-                KeyA = _keyA,
-                KeyS = _keyS,
-                KeyD = _keyD,
-                KeyP = _keyP,
-                Events = frameEvents
-            };
-
             _gameLoop.Update(input);
             _ptrDx = 0;
             _ptrDy = 0;
 
-            _gameLoop.RenderFrame(image, _swap.Width, _swap.Height);
+            bool shouldRender =
+                IsRealtime ||
+                _renderRequested ||
+                _renderBurstFrames > 0 ||
+                cameraInput ||
+                _leftDown;
+            if (!shouldRender ||
+                !_swap.TryAcquireNextImage(
+                    out acquiredImage) ||
+                acquiredImage is null)
+            {
+                return;
+            }
+
+            _gameLoop.RenderFrame(
+                acquiredImage,
+                _swap.Width,
+                _swap.Height);
+            _swap.Present();
+            _renderRequested = false;
+            if (_renderBurstFrames > 0)
+                _renderBurstFrames--;
         }
         catch (Exception ex)
         {
@@ -648,8 +1049,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         }
         finally
         {
-            _swap.Present();
-            image.Dispose();
+            acquiredImage?.Dispose();
         }
     }
 
@@ -662,6 +1062,14 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     private bool _rightDown;
     private bool _middleDown;
     private bool _keyW, _keyA, _keyS, _keyD, _keyP;
+    private bool _renderRequested = true;
+    private int _renderBurstFrames;
+
+    /// <summary>Requests a viewport frame while low-power rendering is active.</summary>
+    public void RequestRender()
+    {
+        _renderRequested = true;
+    }
 
     public void AddPointerDelta(float dx, float dy)
     {

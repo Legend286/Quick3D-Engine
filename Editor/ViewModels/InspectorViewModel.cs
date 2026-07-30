@@ -2,6 +2,7 @@
 using System;
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Engine.Editor.Commands;
 using Engine.RHI;
 using Engine.Scene;
 using Engine.Scene.Components;
@@ -15,6 +16,10 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
     private Avalonia.Threading.DispatcherTimer _timer;
     private bool _isUpdatingFromWorld;
     private System.Numerics.Quaternion _lastSyncedRotation = System.Numerics.Quaternion.Identity;
+
+    /// <summary>Occurs after an inspector edit changes entity component state.</summary>
+    public event Action<string, EntitySnapshot, EntitySnapshot>?
+        EntityEdited;
 
     [ObservableProperty]
     private bool _hasSelection;
@@ -75,6 +80,7 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
     private void UpdateWorldRotation()
     {
         if (_isUpdatingFromWorld || _isEditingRotation || _world == null || !_selectedEntity.HasValue) return;
+        EntitySnapshot? before = CaptureSelected();
         if (_world.TryGet<Transform>(_selectedEntity.Value, out var t))
         {
             float rx = SanitizeFloat((float)RotX);
@@ -90,6 +96,7 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
             _lastSyncedRotation = t.Rotation;
             _world.Set(_selectedEntity.Value, t);
             SyncLightDirectionFromTransform();
+            PublishEdit("Rotate Entity", before);
         }
     }
 
@@ -101,6 +108,7 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
     {
         if (_isUpdatingFromWorld || _world == null || !_selectedEntity.HasValue) return;
 
+        EntitySnapshot? before = CaptureSelected();
         if (_world.TryGet<Transform>(_selectedEntity.Value, out var t))
         {
             t.Position = new System.Numerics.Vector3(
@@ -115,6 +123,7 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
 
             t.Rotation = SanitizeQuaternion(t.Rotation);
             _world.Set(_selectedEntity.Value, t);
+            PublishEdit("Transform Entity", before);
         }
     }
 
@@ -122,6 +131,7 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
     {
         if (_isUpdatingFromWorld || _world == null || !_selectedEntity.HasValue) return;
 
+        EntitySnapshot? before = CaptureSelected();
         if (_world.TryGet<PointLightComponent>(_selectedEntity.Value, out var light))
         {
             light.Color = new System.Numerics.Vector3(
@@ -133,6 +143,7 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
             light.SourceRadius = MathF.Max(SanitizeFloat((float)PointLightSourceRadius, 0f), 0f);
             light.CastShadows = PointLightCastShadows;
             _world.Set(_selectedEntity.Value, light);
+            PublishEdit("Edit Point Light", before);
         }
     }
 
@@ -140,6 +151,7 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
     {
         if (_isUpdatingFromWorld || _world == null || !_selectedEntity.HasValue) return;
 
+        EntitySnapshot? before = CaptureSelected();
         if (_world.TryGet<SpotLightComponent>(_selectedEntity.Value, out var light))
         {
             var direction = new System.Numerics.Vector3(
@@ -171,6 +183,7 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
                 _lastSyncedRotation = transform.Rotation;
                 _world.Set(_selectedEntity.Value, transform);
             }
+            PublishEdit("Edit Spot Light", before);
         }
     }
 
@@ -178,6 +191,7 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
     {
         if (_isUpdatingFromWorld || _world == null || !_selectedEntity.HasValue) return;
 
+        EntitySnapshot? before = CaptureSelected();
         if (_world.TryGet<DirectionalLightComponent>(_selectedEntity.Value, out var light))
         {
             var direction = new System.Numerics.Vector3(
@@ -195,6 +209,7 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
             light.AngularRadius = MathF.Max(SanitizeFloat((float)DirectionalLightAngularRadius, 0.00465f), 0f);
             light.CastShadows = DirectionalLightCastShadows;
             _world.Set(_selectedEntity.Value, light);
+            PublishEdit("Edit Directional Light", before);
         }
     }
 
@@ -213,8 +228,10 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
         {
             return;
         }
+        EntitySnapshot? before = CaptureSelected();
         model.StaticShadowCaster = value;
         _world.Set(_selectedEntity.Value, model);
+        PublishEdit("Edit Model", before);
     }
     [ObservableProperty] private bool _hasDirectionalLight;
     [ObservableProperty] private bool _hasPointLight;
@@ -291,6 +308,26 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
         HasSelection = entityId.HasValue;
         EntityName = entityId.HasValue ? $"Entity {entityId.Value}" : "No Selection";
         Refresh();
+    }
+
+    private EntitySnapshot? CaptureSelected()
+        => _world != null && _selectedEntity.HasValue
+            ? EntitySnapshot.Capture(
+                _world,
+                _selectedEntity.Value)
+            : null;
+
+    private void PublishEdit(
+        string name,
+        EntitySnapshot? before)
+    {
+        EntitySnapshot? after = CaptureSelected();
+        if (before != null &&
+            after != null &&
+            before != after)
+        {
+            EntityEdited?.Invoke(name, before, after);
+        }
     }
 
     private void OnTick(object? sender, EventArgs e)

@@ -33,10 +33,13 @@ public partial class WelcomeWindow : Window
         var topLevel = TopLevel.GetTopLevel(this);
         if (topLevel == null) return;
 
+        var startLocation =
+            await GetLastProjectDirectoryAsync(topLevel);
         var folders = await topLevel.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
         {
             Title = "Select Target Directory",
-            AllowMultiple = false
+            AllowMultiple = false,
+            SuggestedStartLocation = startLocation
         });
 
         if (folders.Count > 0 && DataContext is WelcomeViewModel vm)
@@ -50,10 +53,13 @@ public partial class WelcomeWindow : Window
         var topLevel = TopLevel.GetTopLevel(this);
         if (topLevel == null) return;
 
+        var startLocation =
+            await GetLastProjectDirectoryAsync(topLevel);
         var folders = await topLevel.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
         {
             Title = "Open Project Folder",
-            AllowMultiple = false
+            AllowMultiple = false,
+            SuggestedStartLocation = startLocation
         });
 
         if (folders is { Count: > 0 })
@@ -99,6 +105,17 @@ public partial class WelcomeWindow : Window
         mainWindow.Show();
         _windowToCloseOnLaunch?.Close();
         this.Close();
+    }
+
+    private static async System.Threading.Tasks.Task<IStorageFolder?>
+        GetLastProjectDirectoryAsync(TopLevel topLevel)
+    {
+        string directory =
+            Services.EditorSettingsStore.LastProjectDirectory;
+        return string.IsNullOrEmpty(directory)
+            ? null
+            : await topLevel.StorageProvider
+                .TryGetFolderFromPathAsync(directory);
     }
 
     private void GenerateNewProject(string newProjectPath, string projectName, string organization)

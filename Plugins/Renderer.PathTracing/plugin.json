@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "id": "core.renderer.path-tracing",
+  "name": "Path Tracing Renderer",
+  "description": "Progressive bindless path tracer with solid-angle lighting.",
+  "plugin_version": "1.0.0",
+  "kind": "Renderer",
+  "required": false,
+  "assembly": "Engine.Plugin.Renderer.PathTracing.dll",
+  "entry_point": "Engine.Plugin.Renderer.PathTracing.PathTracingRendererPlugin",
+  "shader_files": [
+    "../../Content/shaders/path_tracer.slang",
+    "../../Content/shaders/scene_data.slang",
+    "../../Content/shaders/disney_bsdf.slang",
+    "../../Content/shaders/nishita_sky.slang",
+    "../../Content/shaders/blit.slang",
+    "../../Content/shaders/blit_depth.slang"
+  ]
+}

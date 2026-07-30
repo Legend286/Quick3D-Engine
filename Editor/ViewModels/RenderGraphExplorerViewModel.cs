@@ -285,7 +285,8 @@ public partial class RenderGraphExplorerViewModel : ObservableObject, IDisposabl
                 Budget = $"{budget.BudgetMilliseconds:0.00} ms",
                 EstimatedCost = $"{budget.EstimatedUnitMilliseconds:0.000} ms/unit",
                 Admitted =
-                    $"{budget.AdmittedUnits} / {budget.TotalAdmittedUnits:N0}",
+                    $"{budget.AdmittedUnits} / {budget.MaximumUnits} cap · " +
+                    $"{budget.TotalAdmittedUnits:N0} total",
                 Deferred =
                     $"{budget.DeferredUnits} / {budget.TotalDeferredUnits:N0}",
             });
@@ -304,19 +305,24 @@ public partial class RenderGraphExplorerViewModel : ObservableObject, IDisposabl
             foreach (RenderGraphShadowFaceDiagnostics face in shadows.Faces)
             {
                 string state = face.TransformPending
-                    ? "transform queued"
+                    ? $"transform queued · {face.UpdateIntervalFrames}f"
                     : !face.StaticValid || !face.DynamicValid
                         ? "warming"
                         : face.CameraRelevant
-                            ? "resident / visible"
+                            ? $"resident / visible · {face.UpdateIntervalFrames}f"
                             : "resident / culled";
                 ShadowFaces.Add(new RenderGraphShadowFaceRowViewModel
                 {
                     Diagnostics = face,
                     Light =
-                        $"L{face.LightIndex} | entity {face.EntityId}",
+                        $"L{face.LightIndex} | entity {face.EntityId} | " +
+                        $"P{face.VisualPriority:0.00}",
                     Face = face.FaceIndex.ToString(),
-                    State = state,
+                    State =
+                        $"{state} · age " +
+                        (face.FramesSinceUpdate == int.MaxValue
+                            ? "new"
+                            : $"{face.FramesSinceUpdate}f"),
                     StaticTile =
                         $"P{face.StaticPageIndex}:S{face.StaticSlotIndex} " +
                         $"{face.TileX},{face.TileY}",

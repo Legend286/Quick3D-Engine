@@ -56,13 +56,13 @@
                       PointerReleased="OnAssetPointerReleased" 
                       DoubleTapped="OnAssetDoubleTapped" 
                       ToolTip.Tip="{Binding FullPath}">
-                <StackPanel Spacing="8" IsHitTestVisible="False">
+                <StackPanel Spacing="8">
                   <Border Background="#1c1f24" BorderBrush="#2d3139" BorderThickness="1" CornerRadius="8" Width="104" Height="104" HorizontalAlignment="Center">
                     <Panel>
                       <TextBlock Text="{Binding IconGlyph}" 
                                  FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" 
                                  FontSize="48" 
-                                 Foreground="#aab0b6" 
+                                 Foreground="{Binding IconColor}"
                                  HorizontalAlignment="Center" 
                                  VerticalAlignment="Center" 
                                  IsVisible="{Binding ThumbnailBitmap, Converter={x:Static ObjectConverters.IsNull}}" />
@@ -71,6 +71,31 @@
                              HorizontalAlignment="Stretch" 
                              VerticalAlignment="Stretch"
                              IsVisible="{Binding ThumbnailBitmap, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                      <Border Background="#D90B1119"
+                              CornerRadius="4"
+                              Padding="3"
+                              Margin="5"
+                              HorizontalAlignment="Left"
+                              VerticalAlignment="Top"
+                              IsVisible="{Binding CanExpand}"
+                              Tapped="OnModelExpansionTapped">
+                        <TextBlock Text="{Binding ExpansionGlyph}"
+                                   FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons"
+                                   FontSize="16"
+                                   Foreground="#DDE6F2" />
+                      </Border>
+                      <Border Background="#D955D6BE"
+                              CornerRadius="3"
+                              Padding="4,2"
+                              Margin="5"
+                              HorizontalAlignment="Right"
+                              VerticalAlignment="Bottom"
+                              IsVisible="{Binding IsModelPart}">
+                        <TextBlock Text="PART"
+                                   FontSize="8"
+                                   FontWeight="Bold"
+                                   Foreground="#07110F" />
+                      </Border>
                     </Panel>
                   </Border>
                   <TextBlock Text="{Binding Name}" 

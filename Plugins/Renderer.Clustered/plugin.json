@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "core.renderer.clustered",
+  "name": "Clustered Forward Renderer",
+  "description": "Required mesh-driven clustered Forward+ raster renderer.",
+  "plugin_version": "1.0.0",
+  "kind": "Renderer",
+  "required": true,
+  "assembly": "Engine.Plugin.Renderer.Clustered.dll",
+  "entry_point": "Engine.Plugin.Renderer.Clustered.ClusteredRendererPlugin",
+  "shader_files": [
+    "../../Content/shaders/pbr.slang",
+    "../../Content/shaders/pbr_sky.slang",
+    "../../Content/shaders/cull.slang",
+    "../../Content/shaders/cluster_lights.slang",
+    "../../Content/shaders/scene_data.slang",
+    "../../Content/shaders/disney_bsdf.slang",
+    "../../Content/shaders/nishita_sky.slang",
+    "../../Content/shaders/shadow_depth.slang",
+    "../../Content/shaders/shadow_cull.slang",
+    "../../Content/shaders/punctual_shadow_cull.slang",
+    "../../Content/shaders/shadow_tile_clear.slang",
+    "../../Content/shaders/grid.slang",
+    "../../Content/shaders/outline_mask.slang",
+    "../../Content/shaders/outline_composite.slang",
+    "../../Content/shaders/shadow_atlas_preview.slang"
+  ]
+}

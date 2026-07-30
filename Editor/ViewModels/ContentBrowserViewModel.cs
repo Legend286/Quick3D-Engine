@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
@@ -30,14 +31,42 @@ public partial class ContentAsset : ObservableObject
     [ObservableProperty] private string _assetType;
     [ObservableProperty] private string _iconGlyph;
     [ObservableProperty] private Bitmap? _thumbnailBitmap;
+    [ObservableProperty] private bool _isExpanded;
 
-    public ContentAsset(string name, string fullPath, string assetType, string iconGlyph)
+    public int ModelPartIndex { get; }
+    public int ModelPartCount { get; }
+    public bool IsModelPart => ModelPartIndex >= 0;
+    public bool CanExpand =>
+        AssetType == "Model" && ModelPartCount > 0;
+    public string PreviewAssetType =>
+        IsModelPart ? "Model" : AssetType;
+    public string ThumbnailIdentity =>
+        $"{FullPath}|{ModelPartIndex}";
+    public string ExpansionGlyph =>
+        IsExpanded ? "\uE5CE" : "\uE5CF";
+    public string IconColor =>
+        AssetType == "Scene" ? "#7AA2F7" : "#AAB0B6";
+
+    public ContentAsset(
+        string name,
+        string fullPath,
+        string assetType,
+        string iconGlyph,
+        int modelPartIndex = -1,
+        int modelPartCount = 0,
+        bool isExpanded = false)
     {
         Name = name;
         FullPath = fullPath;
         AssetType = assetType;
         IconGlyph = iconGlyph;
+        ModelPartIndex = modelPartIndex;
+        ModelPartCount = modelPartCount;
+        IsExpanded = isExpanded;
     }
+
+    partial void OnIsExpandedChanged(bool value)
+        => OnPropertyChanged(nameof(ExpansionGlyph));
 }
 
 public partial class ContentBrowserViewModel : ObservableObject, IDisposable
@@ -63,6 +92,8 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
     private ContentAsset? _pendingHoverAsset;
     private ContentAsset? _activeHoverAsset;
     private int _hoverRequestId;
+    private readonly HashSet<string> _expandedModelPaths =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public ContentBrowserViewModel()
     {
@@ -113,17 +144,23 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
         _activeHoverAsset = asset;
         HoverPreviewAsset = asset;
         HoverPreviewTitle = asset.Name;
-        HoverPreviewAssetType = asset.AssetType;
+        HoverPreviewAssetType = asset.PreviewAssetType;
         HoverPreviewVisible = true;
         HoverPreviewShowLive = false;
         HoverPreviewShowImage = true;
         HoverPreviewBitmap = asset.ThumbnailBitmap;
 
-        if (asset.AssetType == "Model" || asset.AssetType == "Material")
+        if (asset.PreviewAssetType == "Model" ||
+            asset.PreviewAssetType == "Material")
             return;
 
         int requestId = _hoverRequestId;
-        var preview = await Services.ThumbnailGenerator.GetOrGenerateThumbnailAsync(asset.FullPath, asset.AssetType, HoverPreviewRenderSize);
+        var preview =
+            await Services.ThumbnailGenerator.GetOrGenerateThumbnailAsync(
+                asset.FullPath,
+                asset.PreviewAssetType,
+                HoverPreviewRenderSize,
+                asset.ModelPartIndex);
         if (requestId != _hoverRequestId || _activeHoverAsset != asset || preview == null)
             return;
 
@@ -171,12 +208,24 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
         LoadAssetsForFolder(newValue);
     }
 
+    public void ToggleModelExpansion(ContentAsset asset)
+    {
+        if (!asset.CanExpand)
+            return;
+        if (!_expandedModelPaths.Add(asset.FullPath))
+            _expandedModelPaths.Remove(asset.FullPath);
+        LoadAssetsForFolder(SelectedFolder);
+    }
+
     private void LoadAssetsForFolder(ContentFolder? folder)
     {
         EndAssetHover();
         var existingThumbnails = CurrentAssets
             .Where(asset => asset.ThumbnailBitmap != null)
-            .ToDictionary(asset => asset.FullPath, asset => asset.ThumbnailBitmap);
+            .GroupBy(asset => asset.ThumbnailIdentity)
+            .ToDictionary(
+                group => group.Key,
+                group => group.First().ThumbnailBitmap);
 
         CurrentAssets.Clear();
         if (folder == null || !Directory.Exists(folder.FullPath)) return;
@@ -208,48 +257,118 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
                         break;
                     case ".scene.json":
                         type = "Scene";
-                        icon = "\uE8B8"; // settings/world icon
+                        icon = "\uE3F7";
                         break;
                     default:
                         continue; // Skip unrecognized
                 }
 
-                var asset = new ContentAsset(Path.GetFileName(file), file, type, icon);
-                if (existingThumbnails.TryGetValue(file, out var existingBitmap))
+                int partCount = 0;
+                Engine.Assets.ModelDefinition? modelDefinition = null;
+                if (type == "Model")
                 {
-                    asset.ThumbnailBitmap = existingBitmap;
-                }
-                else if (type == "Model" || type == "Material" || type == "Texture")
-                {
-                    string cacheFile = Services.ThumbnailGenerator.GetCacheFilePath(file, type);
-                    if (File.Exists(cacheFile))
+                    try
                     {
-                        try
-                        {
-                            asset.ThumbnailBitmap = new Bitmap(cacheFile);
-                        }
-                        catch
-                        {
-                        }
+                        modelDefinition =
+                            Engine.Assets.ModelLoader.ReadDefinition(file);
+                        partCount = modelDefinition.Parts.Length;
+                    }
+                    catch
+                    {
                     }
                 }
 
-                CurrentAssets.Add(asset);
+                bool isExpanded =
+                    _expandedModelPaths.Contains(file);
+                var asset = new ContentAsset(
+                    Path.GetFileName(file),
+                    file,
+                    type,
+                    icon,
+                    modelPartCount: partCount,
+                    isExpanded: isExpanded);
+                AddAsset(asset, existingThumbnails);
 
-                if ((type == "Model" || type == "Material" || type == "Texture") && asset.ThumbnailBitmap == null)
+                if (!isExpanded || modelDefinition == null)
+                    continue;
+                for (int partIndex = 0;
+                     partIndex < modelDefinition.Parts.Length;
+                     ++partIndex)
                 {
-                    Task.Run(async () =>
-                    {
-                        var bmp = await Services.ThumbnailGenerator.GetOrGenerateThumbnailAsync(file, type);
-                        if (bmp != null)
-                        {
-                            Dispatcher.UIThread.Post(() => asset.ThumbnailBitmap = bmp);
-                        }
-                    });
+                    Engine.Assets.ModelPartDefinition definition =
+                        modelDefinition.Parts[partIndex];
+                    string partName =
+                        !string.IsNullOrWhiteSpace(definition.Name)
+                            ? definition.Name
+                            : Path.GetFileNameWithoutExtension(
+                                definition.Mesh);
+                    if (string.IsNullOrWhiteSpace(partName))
+                        partName = $"Part {partIndex + 1}";
+                    var partAsset = new ContentAsset(
+                        partName,
+                        file,
+                        "Model Part",
+                        "\uE1B0",
+                        modelPartIndex: partIndex);
+                    AddAsset(partAsset, existingThumbnails);
                 }
             }
         }
         catch { }
+    }
+
+    private void AddAsset(
+        ContentAsset asset,
+        IReadOnlyDictionary<string, Bitmap?> existingThumbnails)
+    {
+        if (existingThumbnails.TryGetValue(
+                asset.ThumbnailIdentity,
+                out Bitmap? existingBitmap))
+        {
+            asset.ThumbnailBitmap = existingBitmap;
+        }
+        else if (asset.PreviewAssetType is
+                 "Model" or "Material" or "Texture")
+        {
+            string cacheFile =
+                Services.ThumbnailGenerator.GetCacheFilePath(
+                    asset.FullPath,
+                    asset.PreviewAssetType,
+                    modelPartIndex: asset.ModelPartIndex);
+            if (File.Exists(cacheFile))
+            {
+                try
+                {
+                    asset.ThumbnailBitmap = new Bitmap(cacheFile);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        CurrentAssets.Add(asset);
+        if (asset.PreviewAssetType is not
+                ("Model" or "Material" or "Texture") ||
+            asset.ThumbnailBitmap != null)
+        {
+            return;
+        }
+
+        Task.Run(async () =>
+        {
+            Bitmap? bitmap =
+                await Services.ThumbnailGenerator
+                    .GetOrGenerateThumbnailAsync(
+                        asset.FullPath,
+                        asset.PreviewAssetType,
+                        modelPartIndex: asset.ModelPartIndex);
+            if (bitmap != null)
+            {
+                Dispatcher.UIThread.Post(
+                    () => asset.ThumbnailBitmap = bitmap);
+            }
+        });
     }
 
     private FileSystemWatcher? _contentWatcher;

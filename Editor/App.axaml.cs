@@ -51,6 +51,7 @@ internal static class EngineLogBootstrap
     {
         App.ProjectRoot = projectRoot;
         App.EngineSourceRoot = ResolveEngineSourceRoot();
+        Services.EditorSettingsStore.RememberProject(projectRoot);
         Console.WriteLine($"[AppBootstrap] Resolved ProjectRoot: '{projectRoot}'");
         Console.WriteLine($"[AppBootstrap] Resolved EngineSourceRoot: '{App.EngineSourceRoot}'");
         Console.WriteLine($"[AppBootstrap] AppDomain BaseDirectory: '{AppDomain.CurrentDomain.BaseDirectory}'");

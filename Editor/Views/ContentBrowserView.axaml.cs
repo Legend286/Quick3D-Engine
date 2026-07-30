@@ -18,7 +18,6 @@ public partial class ContentBrowserView : UserControl
     private const double HoverPreviewOffsetY = 14;
 
     private ContentBrowserViewModel? _vm;
-    private static readonly DataFormat<string> AssetPathFormat = DataFormat.CreateInProcessFormat<string>("quick3d.asset-path");
     private AssetHoverPopupWindow? _hoverPopupWindow;
     private ContentAsset? _pointerHoverAsset;
     private PixelPoint _hoverPreviewScreenPosition;
@@ -129,7 +128,9 @@ public partial class ContentBrowserView : UserControl
                 _vm.HoverPreviewAsset!.FullPath,
                 _vm.HoverPreviewAssetType,
                 _vm.HoverPreviewTitle,
-                _vm.HoverPreviewBitmap);
+                _vm.HoverPreviewBitmap,
+                _vm.HoverPreviewAsset.ModelPartIndex,
+                _vm.HoverPreviewAsset.AssetType);
         }
         else
         {
@@ -347,7 +348,14 @@ public partial class ContentBrowserView : UserControl
             }
 
             var dragData = new DataTransfer();
-            dragData.Add(DataTransferItem.CreateText(asset.FullPath));
+            var dragItem = new DataTransferItem();
+            dragItem.Set(
+                AssetDragData.Format,
+                new AssetDragPayload(
+                    asset.FullPath,
+                    asset.ModelPartIndex));
+            dragItem.SetText(asset.FullPath);
+            dragData.Add(dragItem);
 
             await DragDrop.DoDragDropAsync(dragStartEvent, dragData, DragDropEffects.Copy);
             
@@ -402,6 +410,29 @@ public partial class ContentBrowserView : UserControl
                 var window = new MaterialEditorWindow(asset.FullPath);
                 window.Show();
             }
+            else if (asset.AssetType == "Model")
+            {
+                (DataContext as ContentBrowserViewModel)
+                    ?.ToggleModelExpansion(asset);
+            }
+            else if (asset.AssetType == "Scene" &&
+                     TopLevel.GetTopLevel(this) is MainWindow mainWindow)
+            {
+                mainWindow.OpenSceneFromPath(asset.FullPath);
+            }
+        }
+    }
+
+    private void OnModelExpansionTapped(
+        object? sender,
+        TappedEventArgs e)
+    {
+        if (sender is Control control &&
+            control.DataContext is ContentAsset asset)
+        {
+            (DataContext as ContentBrowserViewModel)
+                ?.ToggleModelExpansion(asset);
+            e.Handled = true;
         }
     }
 }

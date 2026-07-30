@@ -36,6 +36,7 @@ public sealed class GameAssemblyLoadContext : AssemblyLoadContext
             string.Equals(assemblyName.Name, "Engine.RenderGraph", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(assemblyName.Name, "Engine.Scene", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(assemblyName.Name, "Engine.Assets", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(assemblyName.Name, "Engine.Plugins", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(assemblyName.Name, "Engine.CBindings", StringComparison.OrdinalIgnoreCase))
         {
             return Default.LoadFromAssemblyName(assemblyName);
@@ -44,4 +45,3 @@ public sealed class GameAssemblyLoadContext : AssemblyLoadContext
         return null;
     }
 }
-

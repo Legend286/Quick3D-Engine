@@ -9,9 +9,13 @@ namespace Engine.Editor.Views;
 
 public partial class ViewportPanelView : UserControl
 {
+    private readonly ViewportMetalLayerHost? _metalHost;
+
     public ViewportPanelView()
     {
         InitializeComponent();
+        _metalHost =
+            this.FindControl<ViewportMetalLayerHost>("MetalHost");
 
         Focusable = true;
         PointerPressed += OnPointerPressed;
@@ -29,14 +33,21 @@ public partial class ViewportPanelView : UserControl
     private void InitializeComponent() => AvaloniaXamlLoader.Load(this);
 
     private bool _isDragging;
+    private bool _viewportInteractionActive;
     private Avalonia.Point _lastPoint;
 
     private void OnPointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
     {
-        var props = e.GetCurrentPoint(this).Properties;
+        if (_metalHost is null)
+            return;
+        var p = e.GetPosition(_metalHost);
+        if (!IsInsideViewport(p))
+            return;
+
+        var props = e.GetCurrentPoint(_metalHost).Properties;
+        _viewportInteractionActive = true;
         if (DataContext is ViewportPanelViewModel vm)
         {
-            var p = e.GetPosition(this);
             vm.UpdatePointerState((float)p.X, (float)p.Y, props.IsLeftButtonPressed, props.IsRightButtonPressed, props.IsMiddleButtonPressed);
 
             int btn = props.PointerUpdateKind switch
@@ -52,7 +63,7 @@ public partial class ViewportPanelView : UserControl
         if (props.IsRightButtonPressed)
         {
             _isDragging = true;
-            _lastPoint = e.GetPosition(this);
+            _lastPoint = p;
             e.Pointer.Capture(this);
             Focus();
             e.Handled = true;
@@ -61,11 +72,22 @@ public partial class ViewportPanelView : UserControl
 
     private void OnPointerMoved(object? sender, Avalonia.Input.PointerEventArgs e)
     {
-        var props = e.GetCurrentPoint(this).Properties;
+        if (_metalHost is null)
+            return;
+        var p = e.GetPosition(_metalHost);
+        var props = e.GetCurrentPoint(_metalHost).Properties;
+        bool insideViewport = IsInsideViewport(p);
         if (DataContext is ViewportPanelViewModel vm)
         {
-            var p = e.GetPosition(this);
-            vm.UpdatePointerState((float)p.X, (float)p.Y, props.IsLeftButtonPressed, props.IsRightButtonPressed, props.IsMiddleButtonPressed);
+            bool forwardButtons =
+                insideViewport ||
+                _viewportInteractionActive;
+            vm.UpdatePointerState(
+                (float)p.X,
+                (float)p.Y,
+                forwardButtons && props.IsLeftButtonPressed,
+                forwardButtons && props.IsRightButtonPressed,
+                forwardButtons && props.IsMiddleButtonPressed);
 
             if (_isDragging)
             {
@@ -78,10 +100,12 @@ public partial class ViewportPanelView : UserControl
 
     private void OnPointerReleased(object? sender, Avalonia.Input.PointerReleasedEventArgs e)
     {
-        var props = e.GetCurrentPoint(this).Properties;
+        if (_metalHost is null)
+            return;
+        var p = e.GetPosition(_metalHost);
+        var props = e.GetCurrentPoint(_metalHost).Properties;
         if (DataContext is ViewportPanelViewModel vm)
         {
-            var p = e.GetPosition(this);
             vm.UpdatePointerState((float)p.X, (float)p.Y, props.IsLeftButtonPressed, props.IsRightButtonPressed, props.IsMiddleButtonPressed);
 
             int btn = props.PointerUpdateKind switch
@@ -91,7 +115,8 @@ public partial class ViewportPanelView : UserControl
                 Avalonia.Input.PointerUpdateKind.MiddleButtonReleased => 2,
                 _ => -1
             };
-            if (btn != -1) vm.QueueMouseButtonEvent(btn, false);
+            if (btn != -1 && _viewportInteractionActive)
+                vm.QueueMouseButtonEvent(btn, false);
         }
 
         if (props.PointerUpdateKind == Avalonia.Input.PointerUpdateKind.RightButtonReleased)
@@ -100,12 +125,30 @@ public partial class ViewportPanelView : UserControl
             e.Pointer.Capture(null);
             e.Handled = true;
         }
+        if (!props.IsLeftButtonPressed &&
+            !props.IsRightButtonPressed &&
+            !props.IsMiddleButtonPressed)
+        {
+            _viewportInteractionActive = false;
+        }
     }
 
     private void OnDrop(object? sender, DragEventArgs e)
     {
         if (DataContext is not ViewportPanelViewModel vm)
             return;
+
+        AssetDragPayload? assetPayload =
+            e.DataTransfer.TryGetValue(AssetDragData.Format);
+        if (assetPayload != null)
+        {
+            ApplyDroppedPath(
+                vm,
+                assetPayload.AssetPath,
+                e,
+                assetPayload.ModelPartIndex);
+            return;
+        }
 
         var files = e.DataTransfer.TryGetFiles();
         if (files == null)
@@ -127,19 +170,39 @@ public partial class ViewportPanelView : UserControl
         }
     }
 
-    private void ApplyDroppedPath(ViewportPanelViewModel vm, string path, DragEventArgs e)
+    private void ApplyDroppedPath(
+        ViewportPanelViewModel vm,
+        string path,
+        DragEventArgs e,
+        int modelPartIndex = -1)
     {
-        var pos = e.GetPosition(this);
-        uint x = (uint)pos.X;
-        uint y = (uint)pos.Y;
-        uint w = (uint)System.Math.Max(1, Bounds.Width);
-        uint h = (uint)System.Math.Max(1, Bounds.Height);
+        if (_metalHost is null)
+            return;
+        var pos = e.GetPosition(_metalHost);
+        if (!IsInsideViewport(pos))
+            return;
+        double scale =
+            TopLevel.GetTopLevel(_metalHost)?.RenderScaling ?? 1.0;
+        uint w = (uint)System.Math.Max(
+            1,
+            System.Math.Round(_metalHost.Bounds.Width * scale));
+        uint h = (uint)System.Math.Max(
+            1,
+            System.Math.Round(_metalHost.Bounds.Height * scale));
+        uint x = (uint)System.Math.Clamp(
+            System.Math.Round(pos.X * scale),
+            0,
+            w - 1);
+        uint y = (uint)System.Math.Clamp(
+            System.Math.Round(pos.Y * scale),
+            0,
+            h - 1);
 
         string ext = System.IO.Path.GetExtension(path).ToLower();
         if (ext == ".mdl" || path.EndsWith(".scene.json"))
         {
             Engine.CBindings.Log.Info($"Dropped Model/Scene: {path}", "Editor");
-            vm.InstantiateModel(path);
+            vm.InstantiateModel(path, modelPartIndex);
         }
         else if (ext == ".mat")
         {
@@ -172,9 +235,20 @@ public partial class ViewportPanelView : UserControl
 
     private void OnPointerWheelChanged(object? sender, Avalonia.Input.PointerWheelEventArgs e)
     {
-        if (DataContext is ViewportPanelViewModel vm)
+        if (_metalHost is not null &&
+            IsInsideViewport(e.GetPosition(_metalHost)) &&
+            DataContext is ViewportPanelViewModel vm)
         {
             vm.QueueScrollEvent((float)e.Delta.X, (float)e.Delta.Y);
         }
+    }
+
+    private bool IsInsideViewport(Avalonia.Point point)
+    {
+        return _metalHost is not null &&
+            point.X >= 0 &&
+            point.Y >= 0 &&
+            point.X < _metalHost.Bounds.Width &&
+            point.Y < _metalHost.Bounds.Height;
     }
 }

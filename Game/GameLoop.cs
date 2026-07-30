@@ -4,25 +4,86 @@ using Engine.CBindings;
 using Engine.RHI;
 using static Engine.CBindings.Log;
 using System.Numerics;
+using Engine.Scene;
 using Engine.Scene.Components;
+using Camera = Engine.Scene.Components.Camera;
+using ImGuizmoNET;
 
 namespace Engine.Game;
 
 public sealed class GameLoop : IGameLoop
 {
     private const float ModelPreviewYaw = -0.55f;
-    private const float ModelPreviewPitch = -0.26f;
+    private const float ModelPreviewPitch = 0.0f;
     private const float MaterialPreviewYaw = -0.35f;
-    private const float MaterialPreviewPitch = -0.18f;
+    private const float MaterialPreviewPitch = 0.0f;
+    private const float PreviewCameraElevationRadians = 0.12f;
+    private const float PreviewFieldOfViewYRadians =
+        40.0f * (MathF.PI / 180.0f);
+    private const float ModelPreviewViewportFill = 0.78f;
+    private const float MaterialPreviewViewportFill = 0.9f;
 
     private RhiDevice? _device;
     private RhiSwapchain? _swap;
     private IEntityStore? _world;
     private Renderer? _renderer;
     private ImGuiRenderer? _imguiRenderer;
+    private RendererPluginRuntime? _pluginRuntime;
     private uint _lastWidth = 1280;
     private uint _lastHeight = 720;
     private bool _enableImGui;
+    private float _editorFieldOfViewDegrees = 60.0f;
+    private bool _gizmoWasUsing;
+    private bool _gizmoConsumesPointer;
+    private ulong _gizmoEntity;
+
+    private static Vector3 GetPreviewPivotPosition(
+        Vector3 boundsCenter,
+        Quaternion rotation)
+        => -Vector3.Transform(boundsCenter, rotation);
+
+    private static Transform GetPreviewCameraTransform(float distance)
+        => new()
+        {
+            Position = new Vector3(
+                0.0f,
+                MathF.Sin(PreviewCameraElevationRadians) * distance,
+                -MathF.Cos(PreviewCameraElevationRadians) * distance),
+            Rotation = Quaternion.CreateFromAxisAngle(
+                Vector3.UnitX,
+                PreviewCameraElevationRadians),
+            Scale = Vector3.One
+        };
+
+    private static float GetSpherePreviewDistance(
+        float radius,
+        float aspect,
+        float viewportFill)
+    {
+        float halfFovY = PreviewFieldOfViewYRadians * 0.5f;
+        float halfFovX = MathF.Atan(MathF.Tan(halfFovY) * aspect);
+        float limitingHalfFov = MathF.Min(halfFovY, halfFovX);
+        float framedHalfAngle = MathF.Atan(
+            MathF.Tan(limitingHalfFov) *
+            viewportFill);
+        return radius / MathF.Sin(framedHalfAngle);
+    }
+
+    private static Camera GetPreviewCamera(
+        float radius,
+        float distance)
+    {
+        float nearClip = MathF.Max(
+            distance - radius * 1.25f,
+            MathF.Max(radius * 0.01f, 0.00001f));
+        return new Camera
+        {
+            FieldOfView = PreviewFieldOfViewYRadians,
+            NearClip = nearClip,
+            FarClip = distance + radius * 1.25f
+        };
+    }
+
     private bool _imGuiFrameStarted = false;
 
     public GameLoop() 
@@ -50,8 +111,21 @@ public sealed class GameLoop : IGameLoop
         if (_enableImGui)
         {
             _imguiRenderer = new ImGuiRenderer(_device!);
+            _imguiRenderer.DrawViewportOverlay =
+                DrawEditorGizmo;
         }
-        _renderer = new Renderer(_device!, _swap!, _world!, _imguiRenderer);
+        _pluginRuntime =
+            new RendererPluginRuntime();
+        IRendererPlanPlugin clusteredPlugin =
+            _pluginRuntime.LoadClustered()
+            ?? throw new InvalidOperationException(
+                "Required clustered renderer plugin could not be loaded.");
+        _renderer = new Renderer(
+            _device!,
+            _swap!,
+            _world!,
+            _imguiRenderer,
+            clusteredPlugin);
         Info("[GameLoop] Initialized successfully", "Game");
     }
 
@@ -63,6 +137,64 @@ public sealed class GameLoop : IGameLoop
     private ulong _editorCameraEnt = 0;
 
     public event Action<ulong>? OnEntityPicked;
+    /// <inheritdoc />
+    public event Action<ViewportRendererMode>? RendererModeChanged;
+    /// <inheritdoc />
+    public event Action<ViewportProjectionMode>? ProjectionModeChanged;
+    /// <inheritdoc />
+    public event Action<ViewportDebugView>? DebugViewChanged;
+    /// <inheritdoc />
+    public event Action<ulong>? EntityTransformEditStarted;
+    /// <inheritdoc />
+    public event Action<ulong>? EntityTransformEditCompleted;
+    /// <inheritdoc />
+    public event Action<string>?
+        RendererPluginEnableRequested;
+
+    /// <inheritdoc />
+    public ViewportGizmoOperation GizmoOperation { get; set; } =
+        ViewportGizmoOperation.Translate;
+
+    /// <inheritdoc />
+    public ViewportGizmoSpace GizmoSpace { get; set; } =
+        ViewportGizmoSpace.Local;
+
+    /// <inheritdoc />
+    public bool GizmoSnapping { get; set; }
+
+    /// <inheritdoc />
+    private bool _isPathTracingRendererAvailable;
+
+    /// <inheritdoc />
+    public bool IsPathTracingRendererAvailable
+    {
+        get => _isPathTracingRendererAvailable;
+        set
+        {
+            if (value)
+            {
+                IRendererPlanPlugin? plugin =
+                    _pluginRuntime
+                        ?.LoadPathTracing();
+                _isPathTracingRendererAvailable =
+                    plugin != null;
+                _renderer?.SetPathTracingPlugin(
+                    plugin);
+                return;
+            }
+
+            if (RendererMode ==
+                ViewportRendererMode.PathTracing)
+            {
+                RendererMode =
+                    ViewportRendererMode.Raster;
+            }
+            _renderer?.SetPathTracingPlugin(null);
+            _pluginRuntime?.Unload(
+                "core.renderer.path-tracing");
+            _isPathTracingRendererAvailable = false;
+        }
+    }
 
     public ulong SelectedEntity
     {
@@ -78,15 +210,110 @@ public sealed class GameLoop : IGameLoop
         SelectedEntity = entityId;
     }
 
+    /// <inheritdoc />
+    public ViewportRendererMode RendererMode
+    {
+        get => _renderer?.UsePathTracer == true
+            ? ViewportRendererMode.PathTracing
+            : ViewportRendererMode.Raster;
+        set
+        {
+            if (_renderer == null || RendererMode == value)
+                return;
+            if (value ==
+                    ViewportRendererMode.PathTracing &&
+                !IsPathTracingRendererAvailable)
+            {
+                RendererPluginEnableRequested?.Invoke(
+                    "core.renderer.path-tracing");
+                return;
+            }
+
+            _renderer.UsePathTracer =
+                value == ViewportRendererMode.PathTracing;
+            RendererModeChanged?.Invoke(value);
+        }
+    }
+
+    /// <inheritdoc />
+    public ViewportProjectionMode ProjectionMode
+    {
+        get => _renderer?.ProjectionMode ??
+            ViewportProjectionMode.Perspective;
+        set
+        {
+            if (_renderer == null || _renderer.ProjectionMode == value)
+                return;
+            _renderer.ProjectionMode = value;
+            ProjectionModeChanged?.Invoke(value);
+        }
+    }
+
+    /// <inheritdoc />
+    public ViewportDebugView DebugView
+    {
+        get => _renderer?.DebugView ?? ViewportDebugView.Lit;
+        set
+        {
+            if (_renderer == null || _renderer.DebugView == value)
+                return;
+            _renderer.DebugView = value;
+            DebugViewChanged?.Invoke(value);
+        }
+    }
+
+    /// <inheritdoc />
+    public float CameraFieldOfViewDegrees
+    {
+        get => _editorFieldOfViewDegrees;
+        set
+        {
+            _editorFieldOfViewDegrees =
+                Math.Clamp(value, 15.0f, 120.0f);
+            if (_world != null &&
+                _editorCameraEnt != 0 &&
+                _world.TryGet<Camera>(
+                    _editorCameraEnt,
+                    out Camera camera))
+            {
+                camera.FieldOfView =
+                    _editorFieldOfViewDegrees *
+                    (MathF.PI / 180.0f);
+                _world.Set(_editorCameraEnt, camera);
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public float OrthographicSize
+    {
+        get => _renderer?.OrthographicSize ?? 20.0f;
+        set
+        {
+            if (_renderer != null)
+                _renderer.OrthographicSize =
+                    Math.Clamp(value, 0.1f, 1000.0f);
+        }
+    }
+
     private void EnsureCamera()
     {
         if (_world == null) return;
-        if (_editorCameraEnt != 0) return;
+        if (_editorCameraEnt != 0 &&
+            _world.TryGet<Camera>(
+                _editorCameraEnt,
+                out _))
+        {
+            return;
+        }
+        _editorCameraEnt = 0;
 
         _editorCameraEnt = _world.CreateEntity();
         _world.Set(_editorCameraEnt, new Camera
         {
-            FieldOfView = 60.0f * (MathF.PI / 180.0f),
+            FieldOfView =
+                _editorFieldOfViewDegrees *
+                (MathF.PI / 180.0f),
             NearClip = 0.1f,
             FarClip = 1000.0f
         });
@@ -107,17 +334,223 @@ public sealed class GameLoop : IGameLoop
     private bool _wasMouseDownLeft;
     private float _sceneAnimationTime;
 
+    private void DrawEditorGizmo(
+        InputState input,
+        uint width,
+        uint height)
+    {
+        _gizmoConsumesPointer = false;
+        if (_world == null ||
+            _renderer == null ||
+            SelectedEntity == 0 ||
+            SelectedEntity == _editorCameraEnt ||
+            !_world.TryGet<Transform>(
+                SelectedEntity,
+                out Transform transform) ||
+            !_world.TryGet<Camera>(
+                _editorCameraEnt,
+                out Camera camera) ||
+            !_world.TryGet<Transform>(
+                _editorCameraEnt,
+                out Transform cameraTransform))
+        {
+            CompleteGizmoEdit();
+            return;
+        }
+
+        float logicalWidth = input.LogicalWidth > 0.0f
+            ? input.LogicalWidth
+            : width;
+        float logicalHeight = input.LogicalHeight > 0.0f
+            ? input.LogicalHeight
+            : height;
+        float aspect =
+            logicalWidth /
+            MathF.Max(logicalHeight, 1.0f);
+        ViewportCameraProjection.BuildMatrices(
+            camera,
+            cameraTransform,
+            Vector3.UnitZ,
+            aspect,
+            _renderer.ProjectionBlend,
+            _renderer.OrthographicSize,
+            out Matrix4x4 view,
+            out Matrix4x4 projection,
+            out _);
+
+        Matrix4x4 model =
+            Matrix4x4.CreateScale(transform.Scale) *
+            Matrix4x4.CreateFromQuaternion(
+                transform.Rotation) *
+            Matrix4x4.CreateTranslation(
+                transform.Position);
+        Matrix4x4 gizmoView = Matrix4x4.Transpose(view);
+        Matrix4x4 gizmoProjection =
+            Matrix4x4.Transpose(projection);
+        Matrix4x4 gizmoModel =
+            Matrix4x4.Transpose(model);
+        Matrix4x4 delta = Matrix4x4.Identity;
+        float snap = GizmoOperation switch
+        {
+            ViewportGizmoOperation.Rotate => 15.0f,
+            ViewportGizmoOperation.Scale => 0.1f,
+            _ => 0.5f
+        };
+
+        ImGuizmo.BeginFrame();
+        ImGuizmo.SetDrawlist();
+        ImGuizmo.SetRect(
+            0.0f,
+            0.0f,
+            logicalWidth,
+            logicalHeight);
+        ImGuizmo.SetOrthographic(
+            _renderer.ProjectionBlend >= 0.5f);
+        ImGuizmo.SetGizmoSizeClipSpace(0.12f);
+        bool changed = GizmoSnapping
+            ? ImGuizmo.Manipulate(
+                ref gizmoView.M11,
+                ref gizmoProjection.M11,
+                GetGizmoOperation(),
+                GetGizmoMode(),
+                ref gizmoModel.M11,
+                ref delta.M11,
+                ref snap)
+            : ImGuizmo.Manipulate(
+                ref gizmoView.M11,
+                ref gizmoProjection.M11,
+                GetGizmoOperation(),
+                GetGizmoMode(),
+                ref gizmoModel.M11);
+        bool isUsing = ImGuizmo.IsUsing();
+        _gizmoConsumesPointer =
+            isUsing ||
+            ImGuizmo.IsOver();
+
+        if (isUsing && !_gizmoWasUsing)
+        {
+            _gizmoEntity = SelectedEntity;
+            EntityTransformEditStarted?.Invoke(
+                _gizmoEntity);
+        }
+
+        if (changed)
+        {
+            Matrix4x4 result =
+                Matrix4x4.Transpose(gizmoModel);
+            if (Matrix4x4.Decompose(
+                    result,
+                    out Vector3 scale,
+                    out Quaternion rotation,
+                    out Vector3 translation))
+            {
+                transform.Position = translation;
+                transform.Rotation =
+                    LightMath.SanitizeQuaternion(rotation);
+                transform.Scale = new Vector3(
+                    SanitizeGizmoScale(scale.X),
+                    SanitizeGizmoScale(scale.Y),
+                    SanitizeGizmoScale(scale.Z));
+                _world.Set(
+                    SelectedEntity,
+                    transform);
+                SyncLightDirectionFromTransform(
+                    SelectedEntity,
+                    transform);
+            }
+        }
+
+        if (!isUsing && _gizmoWasUsing)
+            CompleteGizmoEdit();
+        _gizmoWasUsing = isUsing;
+    }
+
+    private ImGuizmoNET.OPERATION GetGizmoOperation()
+        => GizmoOperation switch
+        {
+            ViewportGizmoOperation.Rotate =>
+                ImGuizmoNET.OPERATION.ROTATE,
+            ViewportGizmoOperation.Scale =>
+                ImGuizmoNET.OPERATION.SCALE,
+            _ => ImGuizmoNET.OPERATION.TRANSLATE
+        };
+
+    private ImGuizmoNET.MODE GetGizmoMode()
+        => GizmoSpace == ViewportGizmoSpace.World
+            ? ImGuizmoNET.MODE.WORLD
+            : ImGuizmoNET.MODE.LOCAL;
+
+    private static float SanitizeGizmoScale(float value)
+        => float.IsFinite(value) &&
+           MathF.Abs(value) >= 0.0001f
+            ? value
+            : 1.0f;
+
+    private void SyncLightDirectionFromTransform(
+        ulong entity,
+        Transform transform)
+    {
+        if (_world == null)
+            return;
+
+        Vector3 direction =
+            LightMath.GetSpotDirection(
+                transform.Rotation);
+        if (_world.TryGet<SpotLightComponent>(
+                entity,
+                out SpotLightComponent spot))
+        {
+            spot.Direction = direction;
+            _world.Set(entity, spot);
+        }
+        if (_world.TryGet<DirectionalLightComponent>(
+                entity,
+                out DirectionalLightComponent directional))
+        {
+            directional.Direction = direction;
+            _world.Set(entity, directional);
+        }
+    }
+
+    private void CompleteGizmoEdit()
+    {
+        if (_gizmoWasUsing && _gizmoEntity != 0)
+        {
+            EntityTransformEditCompleted?.Invoke(
+                _gizmoEntity);
+        }
+        _gizmoWasUsing = false;
+        _gizmoEntity = 0;
+    }
+
     public void Update(InputState input)
     {
         if (_world == null) return;
         EnsureCamera();
+        _renderer?.UpdateProjectionTransition(input.DeltaTime);
         UpdateOrbitingLights(input.DeltaTime);
 
         // Toggle between path tracer and rasterizer with P key
         if (input.KeyP && !_wasKeyPDown)
         {
-            _renderer!.UsePathTracer = !_renderer.UsePathTracer;
-            var mode = _renderer.UsePathTracer ? "Path Tracer" : "Rasterizer (PBR)";
+            if (RendererMode ==
+                    ViewportRendererMode.Raster &&
+                !IsPathTracingRendererAvailable)
+            {
+                RendererPluginEnableRequested?.Invoke(
+                    "core.renderer.path-tracing");
+            }
+            else
+            {
+                RendererMode =
+                    RendererMode ==
+                        ViewportRendererMode.Raster
+                        ? ViewportRendererMode.PathTracing
+                        : ViewportRendererMode.Raster;
+            }
+            var mode = RendererMode == ViewportRendererMode.PathTracing
+                ? "Path Tracer"
+                : "Rasterizer (PBR)";
             Info($"[GameLoop] Switched to {mode}", "Game");
         }
         _wasKeyPDown = input.KeyP;
@@ -127,7 +560,12 @@ public sealed class GameLoop : IGameLoop
             _imguiRenderer.BeginFrame(input, _lastWidth, _lastHeight, input.Events, ref _imGuiFrameStarted);
         }
 
-        if (input.MouseDownLeft && !_wasMouseDownLeft && _renderer != null && _lastWidth > 0 && _lastHeight > 0)
+        if (input.MouseDownLeft &&
+            !_wasMouseDownLeft &&
+            !_gizmoConsumesPointer &&
+            _renderer != null &&
+            _lastWidth > 0 &&
+            _lastHeight > 0)
         {
             uint px = (uint)Math.Clamp(input.MouseX * input.RenderScale, 0, _lastWidth - 1);
             uint py = (uint)Math.Clamp(input.MouseY * input.RenderScale, 0, _lastHeight - 1);
@@ -185,6 +623,7 @@ public sealed class GameLoop : IGameLoop
     public void LoadScene(string contentRoot, string sceneName)
     {
         _sceneAnimationTime = 0.0f;
+        _pluginRuntime?.SetProjectRoot(contentRoot);
         _imguiRenderer?.LoadShaders(contentRoot);
         _renderer?.LoadScene(contentRoot, sceneName);
         // Re-seed AFTER scene load so game-code edits always override scene defaults.
@@ -238,6 +677,17 @@ public sealed class GameLoop : IGameLoop
     {
         if (_renderer == null) return 0;
         return _renderer.AddPointLight(position, color, intensity, range, sourceRadius, castShadows);
+    }
+
+    public ulong AddDirectionalLight(Vector3 direction, Vector3 color, float intensity, float angularRadius, bool castShadows = true)
+    {
+        if (_renderer == null) return 0;
+        return _renderer.AddDirectionalLight(
+            direction,
+            color,
+            intensity,
+            angularRadius,
+            castShadows);
     }
 
     public ulong AddSpotLight(Vector3 position, Vector3 direction, Vector3 color, float intensity, float range, float innerCone, float outerCone, float sourceRadius, bool castShadows = true)
@@ -296,56 +746,47 @@ public sealed class GameLoop : IGameLoop
             waitValue,
             signalValue) ?? false;
 
-    public void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target, uint width = 256, uint height = 256, float orbitRadians = 0.0f, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
+    public void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target, uint width = 256, uint height = 256, float orbitRadians = 0.0f, int modelPartIndex = -1, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
     {
         if (_device == null) return;
 
         var tempWorld = new EcsWorld();
         ulong camEnt = tempWorld.CreateEntity();
-        const float thumbnailFovY = 40.0f * (MathF.PI / 180.0f);
         float thumbnailAspect = height > 0 ? width / (float)height : 1.0f;
-        tempWorld.Set(camEnt, new Engine.Scene.Components.Camera { FieldOfView = thumbnailFovY, NearClip = 0.1f, FarClip = 100.0f });
+        tempWorld.Set(camEnt, GetPreviewCamera(0.5f, 3.0f));
         tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, -3.0f), Rotation = Quaternion.Identity });
 
         if (assetType == "Model")
         {
             var model = Engine.Assets.ModelLoader.LoadMdl(_device, assetPath);
+            if (modelPartIndex >= 0)
+            {
+                model = Engine.Assets.ModelLoader.SelectPart(
+                    model,
+                    modelPartIndex);
+            }
             ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
 
-            Vector3 min = new Vector3(float.MaxValue);
-            Vector3 max = new Vector3(float.MinValue);
-            bool hasBounds = false;
-            foreach (var part in model.Parts)
-            {
-                if (part.BoundsMin != Vector3.Zero || part.BoundsMax != Vector3.Zero)
-                {
-                    min = Vector3.Min(min, part.BoundsMin);
-                    max = Vector3.Max(max, part.BoundsMax);
-                    hasBounds = true;
-                }
-            }
-
-            Vector3 center = Vector3.Zero;
-            Vector3 size = Vector3.One;
-            if (hasBounds)
-            {
-                center = (min + max) * 0.5f;
-                size = Vector3.Max(max - min, new Vector3(0.001f));
-            }
-
-            float radius = size.Length() * 0.5f;
-            float halfFovY = thumbnailFovY * 0.5f;
-            float halfFovX = MathF.Atan(MathF.Tan(halfFovY) * thumbnailAspect);
-            float distance = radius / MathF.Min(MathF.Tan(halfFovY), MathF.Tan(halfFovX));
-            distance += radius * 0.35f;
+            (Vector3 center, float radius) =
+                Engine.Assets.ModelLoader.GetBoundingSphere(model);
+            float distance = GetSpherePreviewDistance(
+                radius,
+                thumbnailAspect,
+                ModelPreviewViewportFill);
 
             Quaternion previewRotation = Quaternion.CreateFromYawPitchRoll(ModelPreviewYaw + orbitRadians, ModelPreviewPitch, 0f);
-            Vector3 previewPosition = -Vector3.Transform(center, previewRotation);
+            Vector3 previewPosition =
+                GetPreviewPivotPosition(center, previewRotation);
 
             ulong ent = tempWorld.CreateEntity();
             tempWorld.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
             tempWorld.Set(ent, new Transform { Position = previewPosition, Scale = Vector3.One, Rotation = previewRotation });
-            tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, -MathF.Max(distance, 1.5f)), Rotation = Quaternion.Identity });
+            tempWorld.Set(
+                camEnt,
+                GetPreviewCameraTransform(distance));
+            tempWorld.Set(
+                camEnt,
+                GetPreviewCamera(radius, distance));
         }
         else if (assetType == "Material")
         {
@@ -373,7 +814,16 @@ public sealed class GameLoop : IGameLoop
                 Rotation = Quaternion.CreateFromYawPitchRoll(MaterialPreviewYaw + orbitRadians, MaterialPreviewPitch, 0f),
                 Scale = Vector3.One
             });
-            tempWorld.Set(camEnt, new Transform { Position = new Vector3(0, 0, -3.6f), Rotation = Quaternion.Identity });
+            float materialDistance = GetSpherePreviewDistance(
+                1.0f,
+                thumbnailAspect,
+                MaterialPreviewViewportFill);
+            tempWorld.Set(
+                camEnt,
+                GetPreviewCameraTransform(materialDistance));
+            tempWorld.Set(
+                camEnt,
+                GetPreviewCamera(1.0f, materialDistance));
         }
         else if (assetType == "Texture")
         {
@@ -410,7 +860,10 @@ public sealed class GameLoop : IGameLoop
     private float _previewDistance = 3.0f;
     private string? _previewAssetType;
 
-    public void LoadModelPreview(string contentRoot, string modelPath)
+    public void LoadModelPreview(
+        string contentRoot,
+        string modelPath,
+        int modelPartIndex = -1)
     {
         if (_device == null || _world == null || _renderer == null) return;
         _world.Clear();
@@ -421,46 +874,36 @@ public sealed class GameLoop : IGameLoop
         _previewDistance = 3.0f;
 
         ulong camEnt = _world.CreateEntity();
-        const float previewFovY = 40.0f * (MathF.PI / 180.0f);
-        _world.Set(camEnt, new Engine.Scene.Components.Camera { FieldOfView = previewFovY, NearClip = 0.1f, FarClip = 100.0f });
+        _world.Set(camEnt, GetPreviewCamera(0.5f, 3.0f));
         _world.Set(camEnt, new Transform { Position = new Vector3(0, 0, -4.0f), Rotation = Quaternion.Identity });
         _renderer.ActiveCameraEntity = camEnt;
         _previewCameraEntity = camEnt;
 
         var model = Engine.Assets.ModelLoader.LoadMdl(_device, modelPath);
+        if (modelPartIndex >= 0)
+        {
+            model = Engine.Assets.ModelLoader.SelectPart(
+                model,
+                modelPartIndex);
+        }
         ulong modelId = Engine.Assets.AssetRegistry.RegisterModel(model);
 
-        Vector3 min = new Vector3(float.MaxValue);
-        Vector3 max = new Vector3(float.MinValue);
-        bool hasBounds = false;
-        foreach (var part in model.Parts)
-        {
-            if (part.BoundsMin != Vector3.Zero || part.BoundsMax != Vector3.Zero)
-            {
-                min = Vector3.Min(min, part.BoundsMin);
-                max = Vector3.Max(max, part.BoundsMax);
-                hasBounds = true;
-            }
-        }
-
-        Vector3 center = Vector3.Zero;
-        Vector3 size = Vector3.One;
-        if (hasBounds)
-        {
-            center = (min + max) * 0.5f;
-            size = Vector3.Max(max - min, new Vector3(0.001f));
-        }
+        (Vector3 center, float radius) =
+            Engine.Assets.ModelLoader.GetBoundingSphere(model);
         _previewCenter = center;
 
-        float radius = size.Length() * 0.5f;
-        float halfFovY = previewFovY * 0.5f;
-        float halfFovX = MathF.Atan(MathF.Tan(halfFovY));
-        float distance = radius / MathF.Min(MathF.Tan(halfFovY), MathF.Tan(halfFovX));
-        distance += radius * 0.4f;
-        _previewDistance = MathF.Max(distance, 2.0f);
+        _previewDistance =
+            GetSpherePreviewDistance(
+                radius,
+                1.0f,
+                ModelPreviewViewportFill);
+        _world.Set(
+            camEnt,
+            GetPreviewCamera(radius, _previewDistance));
 
         Quaternion previewRotation = Quaternion.CreateFromYawPitchRoll(ModelPreviewYaw, ModelPreviewPitch, 0f);
-        Vector3 previewPosition = -Vector3.Transform(center, previewRotation);
+        Vector3 previewPosition =
+            GetPreviewPivotPosition(center, previewRotation);
 
         ulong ent = _world.CreateEntity();
         _previewEntity = ent;
@@ -472,7 +915,9 @@ public sealed class GameLoop : IGameLoop
             Scale = Vector3.One
         });
 
-        _world.Set(camEnt, new Transform { Position = new Vector3(0, 0, -_previewDistance), Rotation = Quaternion.Identity });
+        _world.Set(
+            camEnt,
+            GetPreviewCameraTransform(_previewDistance));
         _renderer.UsePathTracer = false;
         _renderer.BuildThumbnailPlan(contentRoot);
     }
@@ -484,11 +929,19 @@ public sealed class GameLoop : IGameLoop
         _previewAssetType = "Material";
         _previewEntity = 0;
         _previewCenter = Vector3.Zero;
-        _previewDistance = 3.25f;
+        _previewDistance =
+            GetSpherePreviewDistance(
+                1.0f,
+                1.0f,
+                MaterialPreviewViewportFill);
 
         ulong camEnt = _world.CreateEntity();
-        _world.Set(camEnt, new Engine.Scene.Components.Camera { FieldOfView = 60.0f * (MathF.PI / 180.0f), NearClip = 0.1f, FarClip = 100.0f });
-        _world.Set(camEnt, new Transform { Position = new Vector3(0, 0, -3.0f), Rotation = Quaternion.Identity });
+        _world.Set(
+            camEnt,
+            GetPreviewCamera(1.0f, _previewDistance));
+        _world.Set(
+            camEnt,
+            GetPreviewCameraTransform(_previewDistance));
         _renderer.ActiveCameraEntity = camEnt;
         _previewCameraEntity = camEnt;
 
@@ -536,15 +989,18 @@ public sealed class GameLoop : IGameLoop
 
             previewTransform.Rotation = rotation;
             previewTransform.Position = _previewAssetType == "Model"
-                ? -Vector3.Transform(_previewCenter, rotation)
+                ? GetPreviewPivotPosition(_previewCenter, rotation)
                 : Vector3.Zero;
             _world.Set(_previewEntity, previewTransform);
         }
 
         if (_world.TryGet<Transform>(_previewCameraEntity, out var cameraTransform))
         {
-            cameraTransform.Position = new Vector3(0, 0, -_previewDistance);
-            cameraTransform.Rotation = Quaternion.Identity;
+            Transform targetCamera =
+                GetPreviewCameraTransform(_previewDistance);
+            cameraTransform.Position = targetCamera.Position;
+            cameraTransform.Rotation = targetCamera.Rotation;
+            cameraTransform.Scale = targetCamera.Scale;
             _world.Set(_previewCameraEntity, cameraTransform);
         }
 
@@ -600,12 +1056,61 @@ public sealed class GameLoop : IGameLoop
         }
     }
 
+    /// <inheritdoc />
+    public void ReloadPluginShaders(string pluginId)
+    {
+        _renderer?.ReloadPluginShaders(pluginId);
+    }
+
+    /// <inheritdoc />
+    public void ReloadPluginCode(string pluginId)
+    {
+        if (pluginId ==
+            "core.renderer.clustered")
+        {
+            _renderer?.SetClusteredPlugin(null);
+            _pluginRuntime?.Unload(pluginId);
+            IRendererPlanPlugin? clustered =
+                _pluginRuntime?.LoadClustered();
+            if (clustered == null)
+            {
+                throw new InvalidOperationException(
+                    "Required clustered renderer plugin reload failed.");
+            }
+            _renderer?.SetClusteredPlugin(
+                clustered);
+            return;
+        }
+        if (pluginId !=
+            "core.renderer.path-tracing")
+            return;
+
+        bool reactivate =
+            RendererMode ==
+            ViewportRendererMode.PathTracing;
+        if (reactivate)
+            RendererMode =
+                ViewportRendererMode.Raster;
+        _renderer?.SetPathTracingPlugin(null);
+        _pluginRuntime?.Unload(pluginId);
+        IRendererPlanPlugin? plugin =
+            _pluginRuntime?.LoadPathTracing();
+        _renderer?.SetPathTracingPlugin(plugin);
+        _isPathTracingRendererAvailable =
+            plugin != null;
+        if (reactivate && plugin != null)
+            RendererMode =
+                ViewportRendererMode.PathTracing;
+    }
+
     public void Dispose()
     {
         _renderer?.Dispose();
         _renderer = null;
         _imguiRenderer?.Dispose();
         _imguiRenderer = null;
+        _pluginRuntime?.Dispose();
+        _pluginRuntime = null;
         _swap?.Dispose();
         _swap = null;
         _device?.Dispose();

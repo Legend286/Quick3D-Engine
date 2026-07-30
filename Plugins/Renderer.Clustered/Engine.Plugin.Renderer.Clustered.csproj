@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Engine.Plugin.Renderer.Clustered</AssemblyName>
+    <RootNamespace>Engine.Plugin.Renderer.Clustered</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\engine_cs\Engine.Plugins\Engine.Plugins.csproj" />
+    <ProjectReference Include="..\..\Game\Engine.Game.csproj" />
+  </ItemGroup>
+</Project>

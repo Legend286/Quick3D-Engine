@@ -20,6 +20,7 @@ public partial class AssetHoverPopupWindow : Window
     private EcsWorld? _previewWorld;
     private string? _liveAssetPath;
     private string? _liveAssetType;
+    private int _liveModelPartIndex = -1;
     private RhiTexture? _liveTexture;
     private RhiFence? _liveFence;
     private IntPtr _externalImageHandle;
@@ -50,7 +51,7 @@ public partial class AssetHoverPopupWindow : Window
         this.FindControl<TextBlock>("TypeText")!.Text = assetType;
     }
 
-    public async void StartLivePreview(ViewportPanelViewModel viewport, string assetPath, string assetType, string title, Bitmap? fallbackBitmap = null)
+    public async void StartLivePreview(ViewportPanelViewModel viewport, string assetPath, string assetType, string title, Bitmap? fallbackBitmap = null, int modelPartIndex = -1, string? displayAssetType = null)
     {
         if (assetType != "Model" && assetType != "Material")
         {
@@ -64,14 +65,20 @@ public partial class AssetHoverPopupWindow : Window
         try
         {
             bool viewportChanged = _viewport != viewport;
-            bool assetChanged = _liveAssetPath != assetPath || _liveAssetType != assetType || viewportChanged;
+            bool assetChanged =
+                _liveAssetPath != assetPath ||
+                _liveAssetType != assetType ||
+                _liveModelPartIndex != modelPartIndex ||
+                viewportChanged;
             _viewport = viewport;
             _liveAssetPath = assetPath;
             _liveAssetType = assetType;
+            _liveModelPartIndex = modelPartIndex;
             _orbitRadians = 0.0f;
 
             this.FindControl<TextBlock>("TitleText")!.Text = title;
-            this.FindControl<TextBlock>("TypeText")!.Text = assetType;
+            this.FindControl<TextBlock>("TypeText")!.Text =
+                displayAssetType ?? assetType;
             if (fallbackBitmap != null)
                 image.Source = fallbackBitmap;
             image.IsVisible = image.Source != null;
@@ -101,7 +108,10 @@ public partial class AssetHoverPopupWindow : Window
                     await gpuPreview.SetExternalImageAsync(exported.Handle, exported.Width, exported.Height, MapExternalImageFormat(exported.Format), exportedSemaphore.Handle);
                 }
                 if (assetType == "Model")
-                    _previewLoop.LoadModelPreview(viewport.ContentRoot, assetPath);
+                    _previewLoop.LoadModelPreview(
+                        viewport.ContentRoot,
+                        assetPath,
+                        modelPartIndex);
                 else
                     _previewLoop.LoadMaterialPreview(viewport.ContentRoot, assetPath, usePathTracer: false);
             }
@@ -191,6 +201,7 @@ public partial class AssetHoverPopupWindow : Window
         _refreshInFlight = false;
         _liveAssetPath = null;
         _liveAssetType = null;
+        _liveModelPartIndex = -1;
         _orbitRadians = 0.0f;
         DisposePreviewLoop();
     }

@@ -12,7 +12,8 @@ public partial class WelcomeViewModel : ObservableObject
     private string _organization = "My Company";
 
     [ObservableProperty]
-    private string _targetDirectory = string.Empty;
+    private string _targetDirectory =
+        Services.EditorSettingsStore.LastProjectDirectory;
 
     [ObservableProperty]
     private string _statusMessage = string.Empty;

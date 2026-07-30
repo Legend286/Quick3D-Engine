@@ -1,13 +1,10 @@
 using System;
-using System.Diagnostics;
 using System.IO;
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Engine.Editor.ViewModels;
-using static Engine.CBindings.Log;
 
 namespace Engine.Editor.Views;
 
@@ -50,11 +47,7 @@ public partial class AssetImportWindow : Window
                 vm.AssetType = "Model";
         }
     }
-
-
-
-
-    private async void OnImportClicked(object? sender, RoutedEventArgs e)
+    private void OnImportClicked(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not AssetImportViewModel vm) return;
 
@@ -64,144 +57,17 @@ public partial class AssetImportWindow : Window
             return;
         }
 
-        string targetDirectory = Path.Combine(App.ProjectRoot, "Content");
-        if (!Directory.Exists(targetDirectory))
-            Directory.CreateDirectory(targetDirectory);
-
-        vm.StatusMessage = "Cooking asset... Please wait.";
-        vm.IsCooking = true;
-
-        // Run engine_cook
-        var tcs = new TaskCompletionSource<bool>();
-        // Find engine_cook executable robustly
-        string? cookExe = null;
-        string currentDir = AppDomain.CurrentDomain.BaseDirectory;
-
-        while (currentDir != null && currentDir.Length > 0)
+        if (!Services.AssetImportService.Shared.TryStart(
+                vm.SourceFile,
+                vm.AssetType,
+                vm.ScaleX,
+                vm.ScaleY,
+                vm.ScaleZ))
         {
-            string testPath = Path.Combine(currentDir, "engine_cook");
-            if (File.Exists(testPath))
-            {
-                cookExe = testPath;
-                break;
-            }
-
-            testPath = Path.Combine(currentDir, "out", "engine_cook");
-            if (File.Exists(testPath))
-            {
-                cookExe = testPath;
-                break;
-            }
-
-            var parent = Directory.GetParent(currentDir);
-            if (parent == null || parent.FullName == currentDir) break;
-            currentDir = parent.FullName;
-        }
-
-        if (cookExe == null || !File.Exists(cookExe))
-        {
-            string err = $"Error: engine_cook executable not found! Searched up from {AppDomain.CurrentDomain.BaseDirectory}";
-            vm.StatusMessage = err;
-            vm.IsCooking = false;
-            Error(err, "Editor");
+            vm.StatusMessage = "Another asset import is already running.";
             return;
         }
 
-        // basisu ships next to engine_cook in the published .app bundle
-        // (`Engine.app/Contents/MacOS/basisu` next to
-        // `Engine.app/Contents/MacOS/engine_cook`, per scripts/build-mac-app.sh
-        // stage 3). The most reliable resolution is "same dir as cookExe".
-        // Pre-resolve and pass --basisu-path so Cook doesn't have to guess
-        // through a 4-level ancestor walk that doesn't match bundle layout.
-        string basisuPath = Path.Combine(Path.GetDirectoryName(cookExe) ?? string.Empty, "basisu");
-        string basisuFlag = File.Exists(basisuPath) ? $" --basisu-path \"{basisuPath}\"" : string.Empty;
-
-        var processInfo = new ProcessStartInfo
-        {
-            FileName = cookExe,
-            Arguments = $"\"{vm.SourceFile}\" \"{targetDirectory}\" -scale {vm.ScaleX} {vm.ScaleY} {vm.ScaleZ}{basisuFlag}",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        vm.CookProgress = 0;
-        vm.IsIndeterminate = true;
-
-        System.Text.StringBuilder outputBuilder = new();
-        System.Text.StringBuilder errorBuilder = new();
-
-        try
-        {
-            var process = Process.Start(processInfo);
-            if (process != null)
-            {
-                process.OutputDataReceived += (s, args) =>
-                {
-                    if (args.Data != null)
-                    {
-                        outputBuilder.AppendLine(args.Data);
-                        if (args.Data.StartsWith("[PROGRESS]"))
-                        {
-                            var parts = args.Data.Substring(10).Trim().Split('|');
-                            if (parts.Length == 3 && double.TryParse(parts[1], out double current) && double.TryParse(parts[2], out double max))
-                            {
-                                string stageName = parts[0];
-                                Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-                                {
-                                    vm.IsIndeterminate = false;
-                                    vm.CookProgress = current;
-                                    vm.CookProgressMax = max;
-                                    vm.StatusMessage = $"Stage: {stageName} ({current} out of {max})";
-                                });
-                            }
-                        }
-                    }
-                };
-
-                process.ErrorDataReceived += (s, args) =>
-                {
-                    if (args.Data != null)
-                    {
-                        errorBuilder.AppendLine(args.Data);
-                    }
-                };
-
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-
-                await process.WaitForExitAsync();
-
-                string error = errorBuilder.ToString();
-                string output = outputBuilder.ToString();
-
-                if (process.ExitCode != 0)
-                {
-                    string failMsg = $"Import failed (code {process.ExitCode}): {error}";
-                    vm.StatusMessage = failMsg;
-                    vm.IsCooking = false;
-                    Error(failMsg, "Editor");
-                }
-                else
-                {
-                    vm.StatusMessage = "Import completed successfully!";
-                    vm.IsCooking = false;
-                    vm.ImportSucceeded = true;
-                    vm.ImportedSceneName = Path.GetFileNameWithoutExtension(vm.SourceFile);
-                    Info($"Import succeeded:\n{output}", "Editor");
-                    // Wait a moment then close
-                    await Task.Delay(1000);
-                    Close();
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            string exMsg = $"Exception during import: {ex.Message}";
-            vm.StatusMessage = exMsg;
-            vm.IsCooking = false;
-            Error(exMsg, "Editor");
-        }
+        Close();
     }
 }

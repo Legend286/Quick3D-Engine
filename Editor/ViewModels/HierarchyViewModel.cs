@@ -71,6 +71,7 @@ public partial class HierarchyViewModel : ObservableObject, IDisposable
         if (_world != null)
         {
             _world.OnEntityCreated += HandleEntityCreated;
+            _world.OnEntityDeleted += HandleEntityDeleted;
             _world.OnWorldCleared += HandleWorldCleared;
             Refresh();
         }
@@ -90,6 +91,22 @@ public partial class HierarchyViewModel : ObservableObject, IDisposable
         {
             Entities.Clear();
             SelectedEntity = null;
+        });
+    }
+
+    private void HandleEntityDeleted(ulong id)
+    {
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            for (int index = Entities.Count - 1;
+                 index >= 0;
+                 --index)
+            {
+                if (Entities[index].Id == id)
+                    Entities.RemoveAt(index);
+            }
+            if (SelectedEntity?.Id == id)
+                SelectedEntity = null;
         });
     }
 
@@ -129,6 +146,7 @@ public partial class HierarchyViewModel : ObservableObject, IDisposable
         if (_world != null)
         {
             _world.OnEntityCreated -= HandleEntityCreated;
+            _world.OnEntityDeleted -= HandleEntityDeleted;
             _world.OnWorldCleared -= HandleWorldCleared;
         }
     }

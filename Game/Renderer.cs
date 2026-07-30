@@ -21,6 +21,22 @@ namespace Engine.Game;
 
 public sealed class Renderer : IDisposable
 {
+    private sealed class CachedRenderPlan : IDisposable
+    {
+        public required RenderPlan Plan { get; init; }
+        public RasterSceneGpuCache? RasterSceneCache { get; init; }
+        public DirectionalShadowState? DirectionalShadowState { get; init; }
+        public DirectionalShadowPass? DirectionalShadowPass { get; init; }
+        public PunctualShadowState? PunctualShadowState { get; init; }
+        public PunctualShadowPass? PunctualShadowPass { get; init; }
+
+        public void Dispose()
+        {
+            Plan.Passes.DisposeAll();
+            RasterSceneCache?.Dispose();
+        }
+    }
+
     private readonly RhiDevice _device;
     private readonly RhiSwapchain _swap;
     private readonly IEntityStore _world;
@@ -34,6 +50,8 @@ public sealed class Renderer : IDisposable
     private readonly GpuWorkScheduler _gpuWorkScheduler = new();
     private long _renderedFrameCount;
     private long _renderPlanVersion;
+    private CachedRenderPlan? _rasterPlan;
+    private CachedRenderPlan? _pathTracingPlan;
 
     /// <summary>Sentinel handle on which the executor binds the swapchain
     /// back-buffer before each frame. Console-friendly constant so callers
@@ -50,7 +68,7 @@ public sealed class Renderer : IDisposable
         => new(DirectionalShadowMapHandleBase + (uint)pageIndex);
 
     private string _lastSceneName = "";
-    private bool _usePathTracer = true;
+    private bool _usePathTracer;
     private bool _renderSky = true;
     private bool _renderGrid = true;
     private bool _renderShadows = true;
@@ -62,6 +80,11 @@ public sealed class Renderer : IDisposable
     private PunctualShadowPass? _punctualShadowPass;
     private ShadowAtlasPreviewRenderer? _shadowAtlasPreviewRenderer;
     private long _lastConsumedGpuTimingFrame = -1;
+    private ViewportProjectionMode _projectionMode;
+    private float _projectionBlend;
+    private ViewportDebugView _debugView;
+    private IRendererPlanPlugin? _clusteredPlugin;
+    private IRendererPlanPlugin? _pathTracingPlugin;
 
     private RhiTexture? _depthTexture;
     private RhiTexture? _outlineMaskTexture;
@@ -75,6 +98,47 @@ public sealed class Renderer : IDisposable
     }
 
     public ulong ActiveCameraEntity { get; set; }
+    public float OrthographicSize { get; set; } = 20.0f;
+    internal float ProjectionBlend => _projectionBlend;
+
+    public ViewportProjectionMode ProjectionMode
+    {
+        get => _projectionMode;
+        set => _projectionMode = value;
+    }
+
+    internal void UpdateProjectionTransition(float deltaTime)
+    {
+        float target = ProjectionMode ==
+            ViewportProjectionMode.Orthographic
+                ? 1.0f
+                : 0.0f;
+        float step = MathF.Max(0.0f, deltaTime) * 5.0f;
+        _projectionBlend = target > _projectionBlend
+            ? MathF.Min(target, _projectionBlend + step)
+            : MathF.Max(target, _projectionBlend - step);
+    }
+
+    public ViewportDebugView DebugView
+    {
+        get => _debugView;
+        set => _debugView = value;
+    }
+
+    internal uint DebugFlags => (uint)_debugView;
+
+    internal CameraData BuildCameraData(
+        Engine.Scene.Components.Camera camera,
+        Transform transform,
+        float aspect,
+        Vector3 localForward)
+        => ViewportCameraProjection.Build(
+            camera,
+            transform,
+            localForward,
+            aspect,
+            _projectionBlend,
+            OrthographicSize);
 
 
     public bool UsePathTracer
@@ -86,17 +150,27 @@ public sealed class Renderer : IDisposable
             {
                 _usePathTracer = value;
                 if (_currentScene != null)
-                    RebuildRenderPlan(_currentScene, _contentRoot);
+                    ActivateOrCompileRenderPlan(
+                        _currentScene,
+                        _contentRoot);
             }
         }
     }
 
-    public Renderer(RhiDevice device, RhiSwapchain swap, IEntityStore world, ImGuiRenderer? imguiRenderer = null)
+    public Renderer(
+        RhiDevice device,
+        RhiSwapchain swap,
+        IEntityStore world,
+        ImGuiRenderer? imguiRenderer = null,
+        IRendererPlanPlugin? clusteredPlugin = null,
+        IRendererPlanPlugin? pathTracingPlugin = null)
     {
         _device = device;
         _swap = swap;
         _world = world;
         _imguiRenderer = imguiRenderer;
+        _clusteredPlugin = clusteredPlugin;
+        _pathTracingPlugin = pathTracingPlugin;
         _sharedBindlessHeap = new RhiBindlessHeap(_device, 4096);
         _graphExecutor = new RenderGraphExecutor(_device)
         {
@@ -105,6 +179,68 @@ public sealed class Renderer : IDisposable
     }
 
     public IEntityStore World => _world;
+
+    public void SetPathTracingPlugin(
+        IRendererPlanPlugin? plugin)
+    {
+        if (ReferenceEquals(
+                _pathTracingPlugin,
+                plugin))
+        {
+            return;
+        }
+
+        _pathTracingPlan?.Dispose();
+        if (_plan == _pathTracingPlan?.Plan)
+            _plan = null;
+        _pathTracingPlan = null;
+        _pathTracingPlugin = plugin;
+        if (_usePathTracer &&
+            plugin == null)
+        {
+            _usePathTracer = false;
+            if (_currentScene != null)
+            {
+                ActivateOrCompileRenderPlan(
+                    _currentScene,
+                    _contentRoot);
+            }
+        }
+    }
+
+    public void SetClusteredPlugin(
+        IRendererPlanPlugin? plugin)
+    {
+        if (ReferenceEquals(
+                _clusteredPlugin,
+                plugin))
+        {
+            return;
+        }
+
+        bool wasActive =
+            _plan == _rasterPlan?.Plan;
+        _rasterPlan?.Dispose();
+        if (wasActive)
+        {
+            _plan = null;
+            _rasterSceneCache = null;
+            _directionalShadowState = null;
+            _directionalShadowPass = null;
+            _punctualShadowState = null;
+            _punctualShadowPass = null;
+        }
+        _rasterPlan = null;
+        _clusteredPlugin = plugin;
+        if (!_usePathTracer &&
+            plugin != null &&
+            _currentScene != null)
+        {
+            ActivateOrCompileRenderPlan(
+                _currentScene,
+                _contentRoot);
+        }
+    }
 
     public void LoadScene(string contentRoot, string sceneName)
     {
@@ -129,6 +265,12 @@ public sealed class Renderer : IDisposable
             try
             {
                 model = Engine.Assets.ModelLoader.LoadMdl(_device, mdlPath);
+                if (modelRef.PartIndex is int partIndex)
+                {
+                    model = Engine.Assets.ModelLoader.SelectPart(
+                        model,
+                        partIndex);
+                }
             }
             catch (Exception ex)
             {
@@ -238,13 +380,14 @@ public sealed class Renderer : IDisposable
             new TextureThumbnailPass(_device, sourceTexture, contentRoot)
         };
 
-        var previous = _plan;
+        DisposeRenderPlans();
         _plan = new RenderGraphCompiler().Compile(passes);
         _renderPlanVersion++;
-        previous?.Passes?.DisposeAll();
-        _rasterSceneCache?.Dispose();
         _rasterSceneCache = null;
         _directionalShadowState = null;
+        _directionalShadowPass = null;
+        _punctualShadowState = null;
+        _punctualShadowPass = null;
     }
 
     public ulong AddPointLight(Vector3 position, Vector3 color, float intensity, float range, float sourceRadius, bool castShadows = true)
@@ -258,6 +401,30 @@ public sealed class Renderer : IDisposable
             Intensity = intensity,
             Range = range,
             SourceRadius = sourceRadius,
+            CastShadows = castShadows
+        };
+        _currentScene?.Lights.Add(light);
+        return CreateLightEntity(light);
+    }
+
+    public ulong AddDirectionalLight(Vector3 direction, Vector3 color, float intensity, float angularRadius, bool castShadows = true)
+    {
+        Vector3 normalizedDirection = NormalizeOrFallback(
+            direction,
+            new Vector3(-0.4f, -1.0f, -0.35f));
+        var light = new LightNode
+        {
+            Type = "directional",
+            Position = new[] { 0.0f, 0.0f, 0.0f },
+            Direction = new[]
+            {
+                normalizedDirection.X,
+                normalizedDirection.Y,
+                normalizedDirection.Z
+            },
+            Color = new[] { color.X, color.Y, color.Z },
+            Intensity = intensity,
+            SunRadius = angularRadius,
             CastShadows = castShadows
         };
         _currentScene?.Lights.Add(light);
@@ -291,7 +458,8 @@ public sealed class Renderer : IDisposable
         ulong ent = _world.CreateEntity();
         Vector3 position = ReadVector3(light.Position, Vector3.Zero);
         Vector3 direction = NormalizeOrFallback(ReadVector3(light.Direction, LightMath.SpotLocalDirection), LightMath.SpotLocalDirection);
-        Quaternion rotation = light.Type == "spot"
+        Quaternion rotation =
+            light.Type is "spot" or "directional"
             ? LightMath.GetSpotRotation(direction)
             : Quaternion.Identity;
 
@@ -362,72 +530,106 @@ public sealed class Renderer : IDisposable
 
     private void RebuildRenderPlan(SceneGraph scene, string contentRoot)
     {
-        var passes = new List<RenderPass>();
-        RasterSceneGpuCache? newRasterSceneCache = null;
-        DirectionalShadowState? shadowState = null;
-        DirectionalShadowPass? directionalShadowPass = null;
-        PunctualShadowState? punctualShadowState = null;
-        PunctualShadowPass? punctualShadowPass = null;
+        DisposeRenderPlans();
+        ActivateOrCompileRenderPlan(scene, contentRoot);
+    }
 
-        if (_usePathTracer)
-        {
-            foreach (var scenePass in scene.Passes)
-            {
-                passes.Add(new PathTracerPass(_device, _world, scene, scenePass, contentRoot, _sharedBindlessHeap, this));
-            }
-        }
+    public void ReloadPluginShaders(string pluginId)
+    {
+        if (_currentScene == null)
+            return;
+
+        bool pathTracing =
+            pluginId == "core.renderer.path-tracing";
+        CachedRenderPlan? stale = pathTracing
+            ? _pathTracingPlan
+            : _rasterPlan;
+        bool wasActive =
+            stale != null &&
+            _plan == stale.Plan;
+        stale?.Dispose();
+        if (pathTracing)
+            _pathTracingPlan = null;
         else
+            _rasterPlan = null;
+
+        if (wasActive)
         {
-            newRasterSceneCache = new RasterSceneGpuCache(
-                _device,
-                _world,
+            _plan = null;
+            _rasterSceneCache = null;
+            _directionalShadowState = null;
+            _directionalShadowPass = null;
+            _punctualShadowState = null;
+            _punctualShadowPass = null;
+            ActivateOrCompileRenderPlan(
+                _currentScene,
+                _contentRoot);
+        }
+    }
+
+    private void ActivateOrCompileRenderPlan(
+        SceneGraph scene,
+        string contentRoot)
+    {
+        CachedRenderPlan? state = _usePathTracer
+            ? _pathTracingPlan
+            : _rasterPlan;
+        if (state == null)
+        {
+            state = CompileRenderPlan(
                 scene,
-                _sharedBindlessHeap,
-                this);
+                contentRoot,
+                _usePathTracer);
+            if (_usePathTracer)
+                _pathTracingPlan = state;
+            else
+                _rasterPlan = state;
+        }
 
-            if (_renderShadows && scene.Passes.Count > 0)
-            {
-                shadowState = new DirectionalShadowState(
-                    _device,
-                    _sharedBindlessHeap);
-                directionalShadowPass = new DirectionalShadowPass(
-                    _device,
-                    contentRoot,
-                    newRasterSceneCache,
-                    shadowState,
-                    _gpuWorkScheduler);
-                punctualShadowState = new PunctualShadowState(
-                    _device,
-                    shadowState.Atlas,
-                    _sharedBindlessHeap);
-                punctualShadowPass = new PunctualShadowPass(
-                    _device,
-                    contentRoot,
-                    newRasterSceneCache,
-                    punctualShadowState,
-                    _gpuWorkScheduler);
-            }
+        ActivateRenderPlan(state);
+    }
 
-            var pbrPasses = new List<PbrPass>();
-            foreach (var scenePass in scene.Passes)
+    private CachedRenderPlan CompileRenderPlan(
+        SceneGraph scene,
+        string contentRoot,
+        bool usePathTracer)
+    {
+        var passes = new List<RenderPass>();
+        IRendererPlanPlugin? plugin =
+            usePathTracer
+                ? _pathTracingPlugin
+                : _clusteredPlugin;
+        if (plugin == null)
+        {
+            throw new InvalidOperationException(
+                usePathTracer
+                    ? "Path-tracing renderer plugin is not loaded."
+                    : "Required clustered renderer plugin is not loaded.");
+        }
+
+        var pluginContext =
+            new RendererPluginContext
             {
-                pbrPasses.Add(new PbrPass(
-                    _device,
-                    scenePass,
-                    contentRoot,
-                    _sharedBindlessHeap,
-                    newRasterSceneCache,
-                    shadowState,
-                    punctualShadowState,
-                    _renderSky));
-            }
-            foreach (PbrPass pbrPass in pbrPasses)
-                passes.Add(pbrPass.CreateComputePass());
-            if (directionalShadowPass != null)
-                passes.Add(directionalShadowPass);
-            if (punctualShadowPass != null)
-                passes.Add(punctualShadowPass);
-            passes.AddRange(pbrPasses);
+                Device = _device,
+                World = _world,
+                Scene = scene,
+                ContentRoot = contentRoot,
+                BindlessHeap = _sharedBindlessHeap,
+                Renderer = this,
+                GpuWorkScheduler =
+                    _gpuWorkScheduler,
+                RenderShadows = _renderShadows,
+                RenderSky = _renderSky
+            };
+        RendererPluginPlan pluginPlan =
+            plugin.BuildPlan(pluginContext);
+        passes.AddRange(pluginPlan.Passes);
+
+        if (!usePathTracer &&
+            pluginPlan.RasterSceneCache == null)
+        {
+            throw new InvalidOperationException(
+                "Clustered renderer plugin did not create a raster scene cache.");
         }
 
         passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));
@@ -441,22 +643,57 @@ public sealed class Renderer : IDisposable
         if (_imguiRenderer != null)
             passes.Add(new ImGuiPass(_imguiRenderer));
 
-        var previous = _plan;
-        RasterSceneGpuCache? previousRasterSceneCache = _rasterSceneCache;
-
         Info($"[Renderer] Compiling render graph with {passes.Count} pass(es)...", "Renderer");
         var newPlan = new RenderGraphCompiler().Compile(passes);
 
-        _plan = newPlan;
-        _renderPlanVersion++;
-        _rasterSceneCache = newRasterSceneCache;
-        _directionalShadowState = shadowState;
-        _directionalShadowPass = directionalShadowPass;
-        _punctualShadowState = punctualShadowState;
-        _punctualShadowPass = punctualShadowPass;
-        previous?.Passes?.DisposeAll();
-        previousRasterSceneCache?.Dispose();
         Info("[Renderer] Render graph compiled successfully", "Renderer");
+        return new CachedRenderPlan
+        {
+            Plan = newPlan,
+            RasterSceneCache =
+                pluginPlan.RasterSceneCache,
+            DirectionalShadowState =
+                pluginPlan.DirectionalShadowState,
+            DirectionalShadowPass =
+                pluginPlan.DirectionalShadowPass,
+            PunctualShadowState =
+                pluginPlan.PunctualShadowState,
+            PunctualShadowPass =
+                pluginPlan.PunctualShadowPass
+        };
+    }
+
+    private void ActivateRenderPlan(CachedRenderPlan state)
+    {
+        _plan = state.Plan;
+        _rasterSceneCache = state.RasterSceneCache;
+        _directionalShadowState = state.DirectionalShadowState;
+        _directionalShadowPass = state.DirectionalShadowPass;
+        _punctualShadowState = state.PunctualShadowState;
+        _punctualShadowPass = state.PunctualShadowPass;
+        _renderPlanVersion++;
+    }
+
+    private void DisposeRenderPlans()
+    {
+        RenderPlan? activePlan = _plan;
+        bool activePlanIsCached =
+            activePlan != null &&
+            (activePlan == _rasterPlan?.Plan ||
+             activePlan == _pathTracingPlan?.Plan);
+        _rasterPlan?.Dispose();
+        _pathTracingPlan?.Dispose();
+        if (!activePlanIsCached)
+            activePlan?.Passes.DisposeAll();
+
+        _rasterPlan = null;
+        _pathTracingPlan = null;
+        _plan = null;
+        _rasterSceneCache = null;
+        _directionalShadowState = null;
+        _directionalShadowPass = null;
+        _punctualShadowState = null;
+        _punctualShadowPass = null;
     }
 
     public void RenderFrame(RhiTexture backBuffer, uint width, uint height, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
@@ -529,10 +766,22 @@ public sealed class Renderer : IDisposable
         }
 
         _lastConsumedGpuTimingFrame = timingFrame;
+        if (_graphExecutor.LastGpuFrameMilliseconds is
+                double completedFrameMilliseconds)
+        {
+            _gpuWorkScheduler.RecordFrameGpuTime(
+                completedFrameMilliseconds);
+        }
         var timings = _graphExecutor.LastPassTimings;
         for (int i = 0; i < timings.Count; ++i)
         {
             if (timings[i].GpuMilliseconds is not double milliseconds)
+            {
+                continue;
+            }
+            if (_graphExecutor.LastRawGpuFrameMilliseconds is
+                    double frameMilliseconds &&
+                milliseconds > frameMilliseconds * 1.05)
             {
                 continue;
             }
@@ -719,6 +968,7 @@ public sealed class Renderer : IDisposable
                 budget.Name,
                 budget.BudgetMilliseconds,
                 budget.EstimatedUnitMilliseconds,
+                budget.MaximumUnits,
                 budget.AdmittedUnits,
                 budget.DeferredUnits,
                 budget.TotalAdmittedUnits,
@@ -838,20 +1088,13 @@ public sealed class Renderer : IDisposable
 
     public void Dispose()
     {
-        _plan?.Passes?.DisposeAll();
-        _plan = null;
+        DisposeRenderPlans();
         _loader = null;
         _depthTexture?.Dispose();
         _depthTexture = null;
         _outlineMaskTexture?.Dispose();
         _outlineMaskTexture = null;
         _graphExecutor.Dispose();
-        _rasterSceneCache?.Dispose();
-        _rasterSceneCache = null;
-        _directionalShadowState = null;
-        _directionalShadowPass = null;
-        _punctualShadowState = null;
-        _punctualShadowPass = null;
         _shadowAtlasPreviewRenderer?.Dispose();
         _shadowAtlasPreviewRenderer = null;
         _sharedBindlessHeap?.Dispose();

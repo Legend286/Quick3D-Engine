@@ -34,7 +34,6 @@
       <MenuItem Header="_File">
         <MenuItem Header="_New Project…" Click="OnNewProjectClicked" />
         <MenuItem Header="_Open Project…" Click="OnOpenProjectClicked" />
-        <MenuItem Header="_Open Project…" Click="OnOpenProjectClicked" />
         <Separator />
         <MenuItem Header="_New Scene" Click="OnNewSceneClicked" />
         <MenuItem Header="_Open Scene…" Click="OnOpenSceneClicked" />
@@ -46,13 +45,23 @@
         <MenuItem Header="E_xit" Click="OnExitClicked" />
       </MenuItem>
       <MenuItem Header="_Edit">
-        <MenuItem Header="_Undo" />
-        <MenuItem Header="_Redo" />
+        <MenuItem Header="{Binding Commands.UndoLabel}"
+                  IsEnabled="{Binding Commands.CanUndo}"
+                  Click="OnUndoClicked" />
+        <MenuItem Header="{Binding Commands.RedoLabel}"
+                  IsEnabled="{Binding Commands.CanRedo}"
+                  Click="OnRedoClicked" />
+        <Separator />
+        <MenuItem Header="_Delete"
+                  Click="OnDeleteEntityClicked" />
       </MenuItem>
       <MenuItem Header="_Window">
         <MenuItem Header="_Reset Layout" />
       </MenuItem>
       <MenuItem Header="_Tools">
+        <MenuItem Header="_Plugins…"
+                  Click="OnPluginsClicked" />
+        <Separator />
         <MenuItem Header="_Material Editor" />
         <MenuItem Header="_Model Viewer" />
         <MenuItem Header="_Particle Editor" />
@@ -71,10 +80,37 @@
       <TabItem Header="Hierarchy">
         <Border Padding="8">
           <Grid RowDefinitions="Auto,*">
-            <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="6" Margin="0,0,0,8">
-              <Button Content="Point Light" Click="OnAddPointLightClicked" />
-              <Button Content="Spot Light" Click="OnAddSpotLightClicked" />
-            </StackPanel>
+            <Grid Grid.Row="0"
+                  ColumnDefinitions="*,Auto"
+                  Margin="0,0,0,8">
+              <Button Content="+ Create"
+                      HorizontalAlignment="Stretch">
+                <Button.Flyout>
+                  <MenuFlyout>
+                    <MenuItem Header="Empty Entity"
+                              Click="OnCreateEmptyEntityClicked" />
+                    <MenuItem Header="Camera"
+                              Click="OnCreateCameraClicked" />
+                    <Separator />
+                    <MenuItem Header="Light">
+                      <MenuItem Header="Directional Light"
+                                Click="OnAddDirectionalLightClicked" />
+                      <MenuItem Header="Point Light"
+                                Click="OnAddPointLightClicked" />
+                      <MenuItem Header="Spot Light"
+                                Click="OnAddSpotLightClicked" />
+                    </MenuItem>
+                  </MenuFlyout>
+                </Button.Flyout>
+              </Button>
+              <Button Grid.Column="1"
+                      Width="30"
+                      Margin="6,0,0,0"
+                      Content="&#xe872;"
+                      FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons"
+                      ToolTip.Tip="Delete selected entity"
+                      Click="OnDeleteEntityClicked" />
+            </Grid>
             <ListBox Grid.Row="1" ItemsSource="{Binding HierarchyVm.Entities}" SelectedItem="{Binding HierarchyVm.SelectedEntity}">
               <ListBox.ItemTemplate>
                 <DataTemplate>
@@ -329,8 +365,32 @@
     <!-- Status bar -->
     <Border Grid.Row="2" Grid.ColumnSpan="5"
             Background="#1c1f24" Padding="8,4">
-      <TextBlock Text="{Binding StatusText}"
-                 Foreground="#aab0b6" FontSize="12" />
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock Text="{Binding StatusText}"
+                   Foreground="#aab0b6"
+                   FontSize="12"
+                   VerticalAlignment="Center" />
+        <Grid Grid.Column="1"
+              ColumnDefinitions="Auto,180"
+              ColumnSpacing="10"
+              IsVisible="{Binding AssetImport.IsActive}">
+          <TextBlock Text="{Binding AssetImport.StatusMessage}"
+                     Foreground="#d0d4dc"
+                     FontSize="11"
+                     MaxWidth="360"
+                     TextTrimming="CharacterEllipsis"
+                     VerticalAlignment="Center" />
+          <ProgressBar Grid.Column="1"
+                       Width="180"
+                       Height="4"
+                       Value="{Binding AssetImport.Progress}"
+                       Maximum="{Binding AssetImport.ProgressMaximum}"
+                       IsIndeterminate="{Binding AssetImport.IsIndeterminate}"
+                       Foreground="#55d6be"
+                       Background="#12151c"
+                       VerticalAlignment="Center" />
+        </Grid>
+      </Grid>
     </Border>
 
   </Grid>

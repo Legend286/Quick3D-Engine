@@ -67,21 +67,123 @@
                       Spacing="6"
                       VerticalAlignment="Center">
             <Border Classes="ViewportPill">
-              <TextBlock Classes="ViewportLabel"
-                         Text="PERSPECTIVE"
-                         Foreground="#AEB9C8" />
+              <ComboBox ItemsSource="{Binding GizmoOperations}"
+                        SelectedItem="{Binding SelectedGizmoOperation}"
+                        MinWidth="76"
+                        Height="22"
+                        HorizontalContentAlignment="Center"
+                        ToolTip.Tip="Transform gizmo operation" />
             </Border>
             <Border Classes="ViewportPill">
-              <StackPanel Orientation="Horizontal" Spacing="5">
-                <Border Width="5"
-                        Height="5"
-                        Background="#7AA2F7"
-                        CornerRadius="3"
-                        VerticalAlignment="Center" />
-                <TextBlock Classes="ViewportLabel"
-                           Text="REALTIME"
-                           Foreground="#AEB9C8" />
-              </StackPanel>
+              <ComboBox ItemsSource="{Binding GizmoSpaces}"
+                        SelectedItem="{Binding SelectedGizmoSpace}"
+                        MinWidth="66"
+                        Height="22"
+                        HorizontalContentAlignment="Center"
+                        ToolTip.Tip="Transform coordinate space" />
+            </Border>
+            <ToggleButton Content="Snap"
+                          IsChecked="{Binding IsGizmoSnapping}"
+                          Height="22"
+                          Padding="8,0"
+                          ToolTip.Tip="Toggle transform snapping" />
+            <Border Classes="ViewportPill">
+              <Button Content="{Binding SelectedProjectionMode}"
+                      Width="112"
+                      Height="22"
+                      Padding="7,0"
+                      Background="Transparent"
+                      BorderThickness="0"
+                      Foreground="#AEB9C8"
+                      FontSize="10"
+                      FontWeight="SemiBold"
+                      HorizontalContentAlignment="Center">
+                <Button.Flyout>
+                  <Flyout Placement="BottomEdgeAlignedRight">
+                    <Border Width="286"
+                            Padding="14"
+                            Background="#171D26"
+                            BorderBrush="#364151"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                      <StackPanel Spacing="12">
+                        <TextBlock Text="EDITOR CAMERA"
+                                   Classes="ViewportLabel"
+                                   Foreground="#AEB9C8" />
+                        <ComboBox ItemsSource="{Binding ProjectionModes}"
+                                  SelectedItem="{Binding SelectedProjectionMode}"
+                                  HorizontalContentAlignment="Center" />
+                        <Grid RowDefinitions="Auto,Auto"
+                              ColumnDefinitions="*,Auto">
+                          <TextBlock Text="Field of view"
+                                     Foreground="#AEB9C8" />
+                          <TextBlock Grid.Column="1"
+                                     Text="{Binding CameraFieldOfView, StringFormat={}{0:0}°}"
+                                     Foreground="#55D6BE" />
+                          <Slider Grid.Row="1"
+                                  Grid.ColumnSpan="2"
+                                  Minimum="15"
+                                  Maximum="120"
+                                  Value="{Binding CameraFieldOfView}" />
+                        </Grid>
+                        <Grid RowDefinitions="Auto,Auto"
+                              ColumnDefinitions="*,Auto"
+                              IsVisible="{Binding IsOrthographic}">
+                          <TextBlock Text="Orthographic size"
+                                     Foreground="#AEB9C8" />
+                          <TextBlock Grid.Column="1"
+                                     Text="{Binding OrthographicSize, StringFormat={}{0:0.0}}"
+                                     Foreground="#7AA2F7" />
+                          <Slider Grid.Row="1"
+                                  Grid.ColumnSpan="2"
+                                  Minimum="1"
+                                  Maximum="200"
+                                  Value="{Binding OrthographicSize}" />
+                        </Grid>
+                        <Grid ColumnDefinitions="*,Auto">
+                          <StackPanel>
+                            <TextBlock Text="Realtime"
+                                       Foreground="#E4EAF2"
+                                       FontWeight="SemiBold" />
+                            <TextBlock Text="Render continuously"
+                                       Foreground="#7E8A9B"
+                                       FontSize="10" />
+                          </StackPanel>
+                          <ToggleSwitch Grid.Column="1"
+                                        IsChecked="{Binding IsRealtime}"
+                                        VerticalAlignment="Center" />
+                        </Grid>
+                      </StackPanel>
+                    </Border>
+                  </Flyout>
+                </Button.Flyout>
+              </Button>
+            </Border>
+            <Border Classes="ViewportPill">
+              <ComboBox ItemsSource="{Binding RendererModes}"
+                        SelectedItem="{Binding SelectedRendererMode}"
+                        MinWidth="104"
+                        Height="22"
+                        Padding="7,0"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Foreground="#AEB9C8"
+                        FontSize="10"
+                        FontWeight="SemiBold"
+                        HorizontalContentAlignment="Center" />
+            </Border>
+            <Border Classes="ViewportPill">
+              <ComboBox ItemsSource="{Binding DebugViews}"
+                        SelectedItem="{Binding SelectedDebugView}"
+                        MinWidth="116"
+                        Height="22"
+                        Padding="7,0"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Foreground="#AEB9C8"
+                        FontSize="10"
+                        FontWeight="SemiBold"
+                        HorizontalContentAlignment="Center" />
             </Border>
           </StackPanel>
         </Grid>

@@ -59,6 +59,12 @@ host layer uses continuous rounded clipping matching the inset render well;
 the swapchain drawable size still derives only from the native host bounds and
 active DPI scale.
 
+Pointer events are transformed into `ViewportMetalLayerHost` coordinates
+before they reach object picking or ImGui. The surrounding title, margin,
+border, and status chrome therefore cannot offset render-surface input.
+Drag-and-drop submesh picking additionally converts those logical host
+coordinates to physical pixels with the active `RenderScaling`.
+
 There is no `WriteableBitmap` + `Image` readback path
 anymore on macOS - Metal draws straight to the embedded
 NSView, so the Avl Skia round-trip is bypassed entirely.
@@ -85,9 +91,12 @@ main scene renderer defaults:
 
 1. Model thumbnails render through the raster PBR pass with the sky disabled,
    a fixed preview light rig, no editor grid, and a camera fitted from the
-   model bounds so the full asset stays inside the icon frame.
+   model's geometry-derived bounds sphere so yaw cannot clip the asset. Models
+   occupy 78 percent of the limiting viewport dimension to retain readable
+   breathing room.
 2. Material thumbnails render a preview sphere with the same no-sky light rig
-   and a closer negative-Z camera placement so the sphere fills the icon.
+   and a bounds-derived camera placement targeting 90 percent viewport
+   coverage. The live material preview uses the same FOV and fill ratio.
 3. Texture thumbnails bypass scene lighting entirely and use a dedicated blit
    pass that samples the texture directly into the icon target.
 4. The editor preserves already loaded thumbnail bitmaps across asset-list
@@ -96,6 +105,74 @@ main scene renderer defaults:
 5. Thumbnail generation now runs through a single preview worker. The asset
    loaders and registry still use shared global caches, so serializing icon
    renders avoids GPU and asset-cache races when browsing heavy model folders.
+
+Imported `.mdl` tiles expose an expansion control when parts are present.
+Expanding inserts one `PART` tile per stable source index. Each child has its
+own sphere-fitted icon and live preview. Drag payloads carry the source model
+path plus optional part index: dropping the parent instantiates the complete
+model, while dropping a child instantiates only that part. The part index is
+stored in scene JSON so save and reload preserve the choice.
+
+Pressing Import validates the request, enqueues it with the editor-wide asset
+import service, and closes the import window immediately. Cooking and model
+thumbnail generation run away from the UI thread. The main editor status bar
+shows the active cook or thumbnail stage at bottom right. Completion never
+loads a generated scene or instantiates the imported model into the active
+scene.
+
+Model import finishes with a separate `Generating thumbnails` progress stage.
+It renders the whole-model icon and every stable part icon before reporting
+success. Model and part tiles therefore use their static cache immediately
+when the content browser observes the imported files.
+
+## Project And Scene Navigation
+
+The welcome screen remembers the parent directory of the last opened or
+created project in the user's local Quick3D editor settings. Project folder
+pickers and the new-project location field start there on later launches.
+Writes use a flushed temporary file followed by an atomic replace.
+
+Open Scene and Save Scene As start in the active project's `Content/scenes`
+directory. Double-clicking a scene asset in the content browser opens it
+through the main editor scene-loading path. Scene paths below nested
+`Content/scenes` folders retain their relative directory component. Scene
+tiles use a blue Material Icons landscape glyph so they remain identifiable
+without generated thumbnails.
+
+## Viewport Renderer Mode
+
+The viewport title chrome exposes a PBR/path-tracing selector backed by
+`IGameLoop.RendererMode`. The selected value is reapplied after scene loads and
+game-assembly hot reloads. The `P` shortcut publishes the same mode-change
+event, keeping the selector synchronized.
+
+Raster and path tracing each retain a compiled render-plan state bundle for the
+active scene. Returning to a previously used mode activates its cached pass
+schedule and renderer-owned resources without invoking the graph compiler.
+Scene topology changes and preview-plan changes invalidate both bundles.
+
+## Viewport Camera And Debug Controls
+
+The projection button in the viewport chrome opens the editor-camera controls.
+Perspective and orthographic projection use one camera-data path across raster,
+path tracing, picking, selection outlines, and editor overlays. Switching
+projection animates a short matrix morph so the viewport retains spatial
+context instead of snapping between projections. Perspective exposes a
+15-120-degree vertical field-of-view slider; orthographic projection exposes
+its vertical world-space size.
+
+The Realtime toggle controls viewport presentation rather than simulation.
+Realtime mode continuously acquires, renders, and presents swapchain images.
+With Realtime disabled, the editor leaves the last frame resident and requests
+short render bursts for camera input, selection, scene edits, resize, renderer
+changes, projection transitions, and debug-view changes. This avoids continuous
+GPU presentation while inspecting a static scene on battery-powered systems.
+
+The debug selector is shared by PBR and path tracing. It currently exposes Lit,
+Wireframe, Depth, Vertex Normal, Pixel Normal, Albedo, RMA, Lighting Only,
+World Position, Emissive, UV, Tangent, and Bitangent. These modes are frame
+state and do not rebuild the render graph. Path-traced debug changes reset
+accumulation so samples from different visualizations cannot mix.
 
 ## Asset Hover Preview
 
@@ -108,7 +185,11 @@ scaling up a thumbnail bitmap or spinning up a second viewport host.
 The live preview surface uses the same engine renderer path as the rest of the
 editor, so model/material hover cards stay consistent with current shader and
 lighting behavior. The camera auto-orbits slowly to confirm the preview is
-live. Textures stay on the bitmap path because they are regular Avalonia image
+live. Model and material orbit is yaw-only so authored vertical axes remain
+vertical. Model bounds are centred at the preview origin before yaw is
+applied. The camera sits slightly above its fixed-radius orbit and pitches
+toward the origin, avoiding a dead-on view without rotating the asset.
+Textures stay on the bitmap path because they are regular Avalonia image
 content; live model/material previews render into an external-image
 `RhiTexture`, export the platform handle, and let Avalonia composite that
 surface inside the hover popup. The hover renderer now keeps a dedicated
@@ -157,6 +238,9 @@ history when switching between raster and path tracing.
 The Shadows tab reads immutable allocator diagnostics. Moving a light changes
 the face cache state to `transform queued` while page and slot labels remain
 stable; a changed label indicates an actual allocation lifecycle event.
+Each face row also reports its projected-importance score, target update
+cadence, current tile resolution, and frames since its last atomic light
+update.
 Clicking a face opens the Shadow Atlas Inspector. Static and Movable select
 the cached layer for that light face. The inspector blits the selected depth
 tile through the main RHI device into one reused composition target; it creates
@@ -164,11 +248,18 @@ no swapchain, secondary device, scene renderer, or CPU bitmap.
 
 ### Performance Characteristics
 The explorer refreshes at 4 Hz. Per-pass CPU timestamps are collected during
-normal graph execution. Metal GPU timings use draw and dispatch boundary
-counter samples plus completed command-buffer duration, resolved
+normal graph execution. Metal GPU timings use stage-boundary counter samples
+on Apple silicon and draw/dispatch-boundary samples where supported elsewhere.
+The required sample buffer is attached to every measured pass descriptor.
+Results and the completed command-buffer validation span resolve
 asynchronously through a triple-buffered timestamp pool; the render thread
 never waits for profiling results. Unsupported backends keep GPU fields
 explicitly pending.
+
+The GPU frame readout uses the lower median of the latest 15 summed graphics
+pass-marker workloads. Swapchain waits and fullscreen presentation pacing are
+outside those marker scopes, so they cannot inflate the render-work readout or
+throttle adaptive shadow updates.
 
 The Transient Heap metric reports the physical alias heap allocated by the
 render graph. GPU Committed reports live RHI allocation ownership. The
@@ -178,9 +269,9 @@ Heap aliases remain visible without being counted twice. All metrics select
 `B`, `KB`, `MB`, or `GB` based on magnitude.
 
 The Budgets tab reports each GPU work domain's target milliseconds, learned
-unit cost, current-frame admitted/deferred units, and cumulative totals. The
-cumulative values remain observable even when the 4 Hz editor poll misses the
-specific frame that performed an update.
+unit cost, adaptive unit cap, current-frame admitted/deferred units, and
+cumulative totals. Cumulative values remain observable even when the 4 Hz
+editor poll misses the specific frame that performed an update.
 
 The editor bottom panel opens at 375 logical pixels, providing 25 percent more
 vertical space for the content browser and diagnostics tools than the previous

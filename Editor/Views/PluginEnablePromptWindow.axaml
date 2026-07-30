@@ -1,0 +1,39 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Engine.Editor.Views.PluginEnablePromptWindow"
+        Width="460"
+        Height="230"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="Renderer Plugin Required"
+        Background="#151C25">
+  <Grid RowDefinitions="*,Auto"
+        Margin="20">
+    <StackPanel Spacing="10">
+      <TextBlock Text="PATH TRACING RENDERER"
+                 Foreground="#55D6BE"
+                 FontWeight="Bold"
+                 FontSize="15" />
+      <TextBlock Text="Path tracing is an optional engine plugin and is disabled for this project."
+                 Foreground="#E5EBF2"
+                 TextWrapping="Wrap"
+                 FontSize="14" />
+      <TextBlock Text="Enable it now to load the renderer and begin shader hot reload."
+                 Foreground="#8E9CAD"
+                 TextWrapping="Wrap" />
+    </StackPanel>
+    <StackPanel Grid.Row="1"
+                Orientation="Horizontal"
+                HorizontalAlignment="Right"
+                Spacing="8">
+      <Button Content="Cancel"
+              Click="OnCancelClicked" />
+      <Button Content="Open Plugins"
+              Click="OnOpenPluginsClicked" />
+      <Button Content="Enable Renderer"
+              Click="OnEnableClicked"
+              Background="#287D70"
+              Foreground="White" />
+    </StackPanel>
+  </Grid>
+</Window>

@@ -18,6 +18,9 @@ namespace Engine.Editor.Services;
 
 public static class ThumbnailGenerator
 {
+    private const int MaterialCacheVersion = 2;
+    private const int ModelCacheVersion = 4;
+
     private sealed class ThumbnailWorker : IDisposable
     {
         public required RhiDevice Device { get; init; }
@@ -103,25 +106,54 @@ public static class ThumbnailGenerator
         return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Engine.Game.dll");
     }
 
-    public static string GetCacheFilePath(string assetPath, string assetType, int size = 256)
+    public static string GetCacheFilePath(
+        string assetPath,
+        string assetType,
+        int size = 256,
+        int modelPartIndex = -1)
     {
         var cacheDir = Path.Combine(App.ProjectRoot, "out", ".cache", "thumbnails");
         Directory.CreateDirectory(cacheDir);
 
         var fileInfo = new FileInfo(assetPath);
-        string cacheKeySource = $"{assetType}\n{size}\n{Path.GetFullPath(assetPath)}\n{fileInfo.LastWriteTimeUtc.Ticks}";
+        int cacheVersion = assetType switch
+        {
+            "Material" => MaterialCacheVersion,
+            "Model" => ModelCacheVersion,
+            _ => 1
+        };
+        string cacheKeySource =
+            $"{cacheVersion}\n{assetType}\n{size}\n" +
+            $"{modelPartIndex}\n" +
+            $"{Path.GetFullPath(assetPath)}\n" +
+            $"{fileInfo.LastWriteTimeUtc.Ticks}";
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(cacheKeySource));
         string cacheKey = Convert.ToHexString(hash).ToLowerInvariant() + ".png";
         return Path.Combine(cacheDir, cacheKey);
     }
 
-    public static async Task<Bitmap?> GetOrGenerateThumbnailAsync(string assetPath, string assetType, int size = 256)
+    public static async Task<Bitmap?> GetOrGenerateThumbnailAsync(
+        string assetPath,
+        string assetType,
+        int size = 256,
+        int modelPartIndex = -1)
     {
-        string cacheFile = GetCacheFilePath(assetPath, assetType, size);
+        string cacheFile = GetCacheFilePath(
+            assetPath,
+            assetType,
+            size,
+            modelPartIndex);
         if (TryLoadBitmap(cacheFile, out var cachedBitmap))
             return cachedBitmap;
 
-        var task = _inFlight.GetOrAdd(cacheFile, _ => GenerateThumbnailAsync(assetPath, assetType, cacheFile, size));
+        var task = _inFlight.GetOrAdd(
+            cacheFile,
+            _ => GenerateThumbnailAsync(
+                assetPath,
+                assetType,
+                cacheFile,
+                size,
+                modelPartIndex));
         try
         {
             return await task;
@@ -132,7 +164,12 @@ public static class ThumbnailGenerator
         }
     }
 
-    private static async Task<Bitmap?> GenerateThumbnailAsync(string assetPath, string assetType, string cacheFile, int size)
+    private static async Task<Bitmap?> GenerateThumbnailAsync(
+        string assetPath,
+        string assetType,
+        string cacheFile,
+        int size,
+        int modelPartIndex)
     {
         try
         {
@@ -155,7 +192,14 @@ public static class ThumbnailGenerator
             {
                 using var target = RhiTexture.CreateRenderTarget(worker.Device, (uint)size, (uint)size, RhiNative.TextureFormat.Bgra8Unorm);
                 string contentRoot = Path.Combine(App.ProjectRoot, "Content");
-                worker.Loop.RenderThumbnail(contentRoot, assetPath, assetType, target, (uint)size, (uint)size);
+                worker.Loop.RenderThumbnail(
+                    contentRoot,
+                    assetPath,
+                    assetType,
+                    target,
+                    (uint)size,
+                    (uint)size,
+                    modelPartIndex: modelPartIndex);
 
                 var bytes = target.Readback((uint)size, (uint)size, (uint)(size * 4));
 
