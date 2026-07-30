@@ -98,7 +98,8 @@ dotnet publish "${PROJECT_ROOT}/Editor/Engine.Editor.csproj" \
 log_section "Stage 2b/8 - Build managed engine plugins"
 for PLUGIN_DIR in \
     "Renderer.Clustered" \
-    "Renderer.PathTracing"
+    "Renderer.PathTracing" \
+    "SurfaceAuditor"
 do
     PLUGIN_PROJECT="$(
         find "${PROJECT_ROOT}/Plugins/${PLUGIN_DIR}" \
@@ -107,7 +108,8 @@ do
             -print \
             -quit
     )"
-    PLUGIN_OUTPUT="${PUBLISH_FLAT}/Plugins/${PLUGIN_DIR}"
+    PLUGIN_SAFE_NAME="${PLUGIN_DIR//./_}"
+    PLUGIN_OUTPUT="${PUBLISH_FLAT}/Plugins/${PLUGIN_SAFE_NAME}"
     mkdir -p "${PLUGIN_OUTPUT}"
     dotnet publish "${PLUGIN_PROJECT}" \
         -c Release \

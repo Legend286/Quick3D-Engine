@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "core.diagnostics.surface-auditor",
+  "name": "Engine Surface Auditor",
+  "description": "Editor-only diagnostic plugin that crawls the engine's API surface and surfaces contract/coverage gaps.",
+  "plugin_version": "1.0.0",
+  "kind": "Editor",
+  "required": false,
+  "assembly": "Engine.Plugin.SurfaceAuditor.dll",
+  "entry_point": "Engine.Plugin.SurfaceAuditor.SurfaceAuditorPlugin",
+  "shader_files": []
+}
