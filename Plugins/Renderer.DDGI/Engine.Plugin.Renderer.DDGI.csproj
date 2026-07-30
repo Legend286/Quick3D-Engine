@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Engine.DDGI</RootNamespace>
+    <AssemblyName>Engine.Plugin.Renderer.DDGI</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\engine_cs\Engine.Renderer\Engine.Renderer.csproj" />
+    <ProjectReference Include="..\..\engine_cs\Engine.Plugins\Engine.Plugins.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="plugin.json" />
+    <Content Include="shaders\**\*.slang">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

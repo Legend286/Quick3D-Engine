@@ -599,8 +599,17 @@ float4 fragmentMain(
     }
     
     float3 ambient = float3(0.03, 0.03, 0.03) * albedo * ao;
-    
-    float3 color = ambient + Lo + emissive;
+
+#ifdef DDGI_PLUGIN
+#include "ddgi_sampling.slang"
+#else
+float3 SampleIndirectDiffuse(float3 worldPosition, float3 worldNormal)
+{
+    return float3(0, 0, 0);
+}
+#endif
+
+    float3 color = ambient + Lo + SampleIndirectDiffuse(input.worldPos, N) + emissive;
     if (debugView == 7u) {
         color =
             Lo / max(albedo, float3(0.04)) +

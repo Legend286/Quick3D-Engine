@@ -1,0 +1,12 @@
+{
+  "id": "renderer.ddgi",
+  "name": "DDGI Renderer Plugin",
+  "description": "Minimal demonstration of modular shader plumbing. Overrides host pbr.slang's indirect-diffuse stub with a DDGI-tinted contribution via Slang -D + #include.",
+  "plugin_version": "0.1.0",
+  "kind": "Renderer",
+  "required": false,
+  "assembly": "Engine.Plugin.Renderer.DDGI.dll",
+  "entry_point": "Engine.DDGI.DDGIRendererPlugin",
+  "shader_includes": ["shaders"],
+  "shader_features": ["DDGI_PLUGIN"]
+}
