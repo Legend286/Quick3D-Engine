@@ -20,6 +20,17 @@ ENGINE_API ecs_entity_t engine_ecs_create_entity(ecs_world_t* world) {
     return ecs_new(world);
 }
 
+ENGINE_API ecs_entity_t engine_ecs_restore_entity(ecs_world_t* world, ecs_entity_t entity) {
+    if (!world || !entity) return 0;
+    ecs_make_alive(world, entity);
+    return ecs_is_alive(world, entity) ? entity : 0;
+}
+
+ENGINE_API void engine_ecs_delete_entity(ecs_world_t* world, ecs_entity_t entity) {
+    if (!world || !entity || !ecs_is_alive(world, entity)) return;
+    ecs_delete(world, entity);
+}
+
 ENGINE_API ecs_entity_t engine_ecs_register_component(ecs_world_t* world, const char* name, size_t size, size_t alignment) {
     if (!world || !name) return 0;
     

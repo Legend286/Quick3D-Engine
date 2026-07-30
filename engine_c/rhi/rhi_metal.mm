@@ -87,8 +87,11 @@ struct RhiTimestampQueryPoolImpl {
     std::vector<uint8_t> sampled;
     uint32_t sample_count;
     uint32_t resolved_count;
+    bool supports_stage_sampling;
     bool supports_draw_sampling;
     bool supports_dispatch_sampling;
+    MTLTimestamp cpu_reference_start;
+    MTLTimestamp gpu_reference_start;
 };
 
 struct RhiTextureImpl {
@@ -952,10 +955,13 @@ static int32_t metal_create_timestamp_query_pool(
                 [di->device supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
             bool supports_dispatch =
                 [di->device supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
+            bool supports_stage =
+                [di->device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary];
 
             id<MTLCounterSampleBuffer> samples = nil;
             id<MTLBuffer> results = nil;
-            if (timestamp_set && (supports_draw || supports_dispatch)) {
+            if (timestamp_set &&
+                (supports_stage || supports_draw || supports_dispatch)) {
                 MTLCounterSampleBufferDescriptor* descriptor =
                     [[MTLCounterSampleBufferDescriptor alloc] init];
                 descriptor.counterSet = timestamp_set;
@@ -989,8 +995,11 @@ static int32_t metal_create_timestamp_query_pool(
             pool->sampled.resize(sample_count, 0);
             pool->sample_count = sample_count;
             pool->resolved_count = 0;
+            pool->supports_stage_sampling = supports_stage;
             pool->supports_draw_sampling = supports_draw;
             pool->supports_dispatch_sampling = supports_dispatch;
+            pool->cpu_reference_start = 0;
+            pool->gpu_reference_start = 0;
             *out = reinterpret_cast<RhiTimestampQueryPool*>(pool);
             return 0;
         }
@@ -1395,6 +1404,9 @@ static int32_t metal_cmd_resolve_timestamps(
                        destinationOffset:0];
                 [encoder endEncoding];
             }
+            [cli->buf.device
+                sampleTimestamps:&pi->cpu_reference_start
+                    gpuTimestamp:&pi->gpu_reference_start];
             pi->resolved_count = sample_count;
             pi->pending = cli->buf;
             return 0;
@@ -1439,18 +1451,32 @@ static int32_t metal_timestamp_query_pool_read_durations(
                 std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
                 return -1;
             }
-            uint64_t raw_begin = values[first_sample].timestamp;
-            uint64_t raw_end = values[last_sample].timestamp;
-            if (raw_end <= raw_begin) {
+            MTLTimestamp cpu_reference_end = 0;
+            MTLTimestamp gpu_reference_end = 0;
+            [pi->pending.device
+                sampleTimestamps:&cpu_reference_end
+                    gpuTimestamp:&gpu_reference_end];
+            double cpu_span =
+                cpu_reference_end > pi->cpu_reference_start
+                    ? static_cast<double>(
+                        cpu_reference_end -
+                        pi->cpu_reference_start)
+                    : 0.0;
+            double gpu_span =
+                gpu_reference_end > pi->gpu_reference_start
+                    ? static_cast<double>(
+                        gpu_reference_end -
+                        pi->gpu_reference_start)
+                    : 0.0;
+            double command_gpu_nanoseconds =
+                (pi->pending.GPUEndTime - pi->pending.GPUStartTime) *
+                1000000000.0;
+            if (cpu_span <= 0.0 || gpu_span <= 0.0) {
                 pi->pending = nil;
                 std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
                 return -1;
             }
-
-            double gpu_nanoseconds =
-                (pi->pending.GPUEndTime - pi->pending.GPUStartTime) * 1000000000.0;
-            double nanoseconds_per_tick =
-                gpu_nanoseconds / static_cast<double>(raw_end - raw_begin);
+            double nanoseconds_per_gpu_tick = cpu_span / gpu_span;
             for (uint32_t i = 0; i < duration_count; ++i) {
                 uint64_t begin = values[i * 2].timestamp;
                 uint64_t end = values[i * 2 + 1].timestamp;
@@ -1462,8 +1488,16 @@ static int32_t metal_timestamp_query_pool_read_durations(
                     out_duration_nanoseconds[i] = UINT64_MAX;
                     continue;
                 }
-                out_duration_nanoseconds[i] = static_cast<uint64_t>(
-                    static_cast<double>(end - begin) * nanoseconds_per_tick);
+                double duration =
+                    static_cast<double>(end - begin) *
+                    nanoseconds_per_gpu_tick;
+                if (command_gpu_nanoseconds <= 0.0 ||
+                    duration > command_gpu_nanoseconds * 1.05) {
+                    out_duration_nanoseconds[i] = UINT64_MAX;
+                    continue;
+                }
+                out_duration_nanoseconds[i] =
+                    static_cast<uint64_t>(duration);
             }
             pi->pending = nil;
             std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
@@ -1525,6 +1559,28 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
             }
             pd.depthAttachment.clearDepth   = 1.0;
         }
+        if (cli->timing_pool && cli->timing_pool->samples) {
+            MTLRenderPassSampleBufferAttachmentDescriptor* attachment =
+                pd.sampleBufferAttachments[0];
+            attachment.sampleBuffer = cli->timing_pool->samples;
+            attachment.startOfVertexSampleIndex = MTLCounterDontSample;
+            attachment.endOfVertexSampleIndex = MTLCounterDontSample;
+            attachment.startOfFragmentSampleIndex = MTLCounterDontSample;
+            attachment.endOfFragmentSampleIndex = MTLCounterDontSample;
+            if (cli->timing_pool->supports_stage_sampling) {
+                if (!cli->timing_started) {
+                    attachment.startOfVertexSampleIndex =
+                        cli->timing_start_index;
+                    cli->timing_pool->sampled[
+                        cli->timing_start_index] = 1;
+                    cli->timing_started = true;
+                }
+                attachment.endOfFragmentSampleIndex =
+                    cli->timing_end_index;
+                cli->timing_pool->sampled[
+                    cli->timing_end_index] = 1;
+            }
+        }
         id<MTLRenderCommandEncoder> enc = [cli->buf renderCommandEncoderWithDescriptor:pd];
 
         // Apple docs: without a bound MTLDepthStencilState, depth test, read,
@@ -1542,6 +1598,7 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
         if (cli->timing_pool &&
             !cli->timing_started &&
             cli->timing_pool->samples &&
+            !cli->timing_pool->supports_stage_sampling &&
             cli->timing_pool->supports_draw_sampling) {
             [enc sampleCountersInBuffer:cli->timing_pool->samples
                           atSampleIndex:cli->timing_start_index
@@ -1556,7 +1613,30 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
 static RhiEncoder* metal_begin_compute_pass(RhiCommandList* cl, const char* name) {
     @autoreleasepool {
         RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-        id<MTLComputeCommandEncoder> enc = [cli->buf computeCommandEncoder];
+        MTLComputePassDescriptor* pd =
+            [MTLComputePassDescriptor computePassDescriptor];
+        if (cli->timing_pool && cli->timing_pool->samples) {
+            MTLComputePassSampleBufferAttachmentDescriptor* attachment =
+                pd.sampleBufferAttachments[0];
+            attachment.sampleBuffer = cli->timing_pool->samples;
+            attachment.startOfEncoderSampleIndex = MTLCounterDontSample;
+            attachment.endOfEncoderSampleIndex = MTLCounterDontSample;
+            if (cli->timing_pool->supports_stage_sampling) {
+                if (!cli->timing_started) {
+                    attachment.startOfEncoderSampleIndex =
+                        cli->timing_start_index;
+                    cli->timing_pool->sampled[
+                        cli->timing_start_index] = 1;
+                    cli->timing_started = true;
+                }
+                attachment.endOfEncoderSampleIndex =
+                    cli->timing_end_index;
+                cli->timing_pool->sampled[
+                    cli->timing_end_index] = 1;
+            }
+        }
+        id<MTLComputeCommandEncoder> enc =
+            [cli->buf computeCommandEncoderWithDescriptor:pd];
         if (name) [enc setLabel:[NSString stringWithUTF8String:name]];
         RhiEncoderImpl* ri = new RhiEncoderImpl();
         ri->render  = nil;
@@ -1566,6 +1646,7 @@ static RhiEncoder* metal_begin_compute_pass(RhiCommandList* cl, const char* name
         if (cli->timing_pool &&
             !cli->timing_started &&
             cli->timing_pool->samples &&
+            !cli->timing_pool->supports_stage_sampling &&
             cli->timing_pool->supports_dispatch_sampling) {
             [enc sampleCountersInBuffer:cli->timing_pool->samples
                           atSampleIndex:cli->timing_start_index
@@ -1582,7 +1663,9 @@ static void metal_end_pass(RhiEncoder* enc) {
         RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
         RhiCommandListImpl* cli = ri->command_list;
         if (cli && cli->timing_pool && cli->timing_end_requested) {
-            if (cli->timing_started && cli->timing_pool->samples) {
+            if (cli->timing_started &&
+                cli->timing_pool->samples &&
+                !cli->timing_pool->supports_stage_sampling) {
                 if (ri->render && cli->timing_pool->supports_draw_sampling) {
                     [ri->render sampleCountersInBuffer:cli->timing_pool->samples
                                          atSampleIndex:cli->timing_end_index

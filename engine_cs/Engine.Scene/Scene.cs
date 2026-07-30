@@ -90,4 +90,7 @@ public sealed class ModelRef
     [JsonPropertyName("rotation")] public float[] Rotation { get; set; } = new float[] { 0, 0, 0, 1 };
     [JsonPropertyName("scale")] public float[] Scale { get; set; } = new float[] { 1, 1, 1 };
     [JsonPropertyName("static_shadow_caster")] public bool StaticShadowCaster { get; set; } = true;
+    [JsonPropertyName("part_index")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? PartIndex { get; set; }
 }

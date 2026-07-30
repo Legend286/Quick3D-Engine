@@ -43,6 +43,10 @@ public static class SceneSaver
                         modelRef.Scale = new float[] { transform.Scale.X, transform.Scale.Y, transform.Scale.Z };
                         modelRef.StaticShadowCaster =
                             modelComponent.StaticShadowCaster;
+                        modelRef.PartIndex =
+                            model.SourcePartIndex >= 0
+                                ? model.SourcePartIndex
+                                : null;
 
                         baseScene.Models.Add(modelRef);
                     }

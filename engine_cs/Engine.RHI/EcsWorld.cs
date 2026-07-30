@@ -17,6 +17,7 @@ public sealed class EcsWorld : IEntityStore, IDisposable
     public IntPtr NativeWorld => _world;
     public System.Collections.Generic.IReadOnlyList<ulong> Entities => _entities;
     public event Action<ulong>? OnEntityCreated;
+    public event Action<ulong>? OnEntityDeleted;
     public event Action? OnWorldCleared;
 
     public EcsWorld()
@@ -45,6 +46,33 @@ public sealed class EcsWorld : IEntityStore, IDisposable
         _entities.Add(ent);
         OnEntityCreated?.Invoke(ent);
         return ent;
+    }
+
+    public ulong RestoreEntity(ulong entity)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (entity == 0 || _entities.Contains(entity))
+            return 0;
+
+        ulong restored =
+            EcsNative.EngineEcsRestoreEntity(_world, entity);
+        if (restored == 0)
+            return 0;
+
+        _entities.Add(restored);
+        OnEntityCreated?.Invoke(restored);
+        return restored;
+    }
+
+    public bool DeleteEntity(ulong entity)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_entities.Remove(entity))
+            return false;
+
+        EcsNative.EngineEcsDeleteEntity(_world, entity);
+        OnEntityDeleted?.Invoke(entity);
+        return true;
     }
 
     private ulong GetOrRegisterComponent<T>() where T : unmanaged

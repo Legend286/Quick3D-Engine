@@ -17,6 +17,16 @@ public static partial class EcsNative
     [LibraryImport(Library, EntryPoint = "engine_ecs_create_entity")]
     public static partial ulong EngineEcsCreateEntity(IntPtr world);
 
+    [LibraryImport(Library, EntryPoint = "engine_ecs_restore_entity")]
+    public static partial ulong EngineEcsRestoreEntity(
+        IntPtr world,
+        ulong entity);
+
+    [LibraryImport(Library, EntryPoint = "engine_ecs_delete_entity")]
+    public static partial void EngineEcsDeleteEntity(
+        IntPtr world,
+        ulong entity);
+
     [LibraryImport(Library, EntryPoint = "engine_ecs_register_component")]
     public static unsafe partial ulong EngineEcsRegisterComponent(
         IntPtr world,

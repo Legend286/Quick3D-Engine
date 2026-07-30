@@ -95,6 +95,29 @@ dotnet publish "${PROJECT_ROOT}/Editor/Engine.Editor.csproj" \
     -p:DebugType=embedded \
     -o "${PUBLISH_FLAT}"
 
+log_section "Stage 2b/8 - Build managed engine plugins"
+for PLUGIN_DIR in \
+    "Renderer.Clustered" \
+    "Renderer.PathTracing"
+do
+    PLUGIN_PROJECT="$(
+        find "${PROJECT_ROOT}/Plugins/${PLUGIN_DIR}" \
+            -maxdepth 1 \
+            -name '*.csproj' \
+            -print \
+            -quit
+    )"
+    PLUGIN_OUTPUT="${PUBLISH_FLAT}/Plugins/${PLUGIN_DIR}"
+    mkdir -p "${PLUGIN_OUTPUT}"
+    dotnet publish "${PLUGIN_PROJECT}" \
+        -c Release \
+        --no-self-contained \
+        -o "${PLUGIN_OUTPUT}"
+    cp -f \
+        "${PROJECT_ROOT}/Plugins/${PLUGIN_DIR}/plugin.json" \
+        "${PLUGIN_OUTPUT}/plugin.json"
+done
+
 # ---- stage 3: assemble .app bundle -----------------------------------------
 log_section "Stage 3/8 - Assemble .app bundle at ${APP_BUNDLE_DIR}"
 rm -rf "${APP_BUNDLE_DIR}"

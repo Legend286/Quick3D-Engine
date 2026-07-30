@@ -69,6 +69,97 @@ public sealed class GpuWorkSchedulerTests
     }
 
     [Fact]
+    public void PunctualShadowBudget_AdmitsOneTwentyFourFaceBatch()
+    {
+        var scheduler = new GpuWorkScheduler();
+        scheduler.BeginFrame(1);
+
+        Assert.True(
+            scheduler.TryAdmit(
+                GpuWorkDomain.PunctualShadows,
+                24));
+        Assert.False(
+            scheduler.TryAdmit(
+                GpuWorkDomain.PunctualShadows));
+
+        GpuWorkBudgetSnapshot punctual = scheduler.GetSnapshots()[1];
+        Assert.Equal(24, punctual.AdmittedUnits);
+        Assert.Equal(1, punctual.DeferredUnits);
+    }
+
+    [Fact]
+    public void PunctualShadowBudget_GrowsAfterSustainedFrameHeadroom()
+    {
+        var scheduler = new GpuWorkScheduler();
+
+        for (int sample = 0; sample < 4; ++sample)
+            scheduler.RecordFrameGpuTime(9.0);
+
+        GpuWorkBudgetSnapshot punctual = scheduler.GetSnapshots()[1];
+        Assert.Equal(30, punctual.MaximumUnits);
+        Assert.Equal(6.75, punctual.BudgetMilliseconds);
+        Assert.Equal(
+            27,
+            scheduler.GetUnitAllowance(
+                GpuWorkDomain.PunctualShadows,
+                6));
+    }
+
+    [Fact]
+    public void PunctualShadowBudget_IgnoresBriefFramePressure()
+    {
+        var scheduler = new GpuWorkScheduler();
+        for (int sample = 0; sample < 4; ++sample)
+            scheduler.RecordFrameGpuTime(9.0);
+
+        for (int sample = 0; sample < 7; ++sample)
+            scheduler.RecordFrameGpuTime(40.0);
+
+        GpuWorkBudgetSnapshot punctual = scheduler.GetSnapshots()[1];
+        Assert.Equal(30, punctual.MaximumUnits);
+        Assert.Equal(6.75, punctual.BudgetMilliseconds);
+    }
+
+    [Fact]
+    public void PunctualShadowBudget_ShrinksUnderSustainedFramePressure()
+    {
+        var scheduler = new GpuWorkScheduler();
+        for (int sample = 0; sample < 4; ++sample)
+            scheduler.RecordFrameGpuTime(9.0);
+
+        for (int sample = 0; sample < 8; ++sample)
+            scheduler.RecordFrameGpuTime(14.5);
+
+        GpuWorkBudgetSnapshot punctual = scheduler.GetSnapshots()[1];
+        Assert.Equal(24, punctual.MaximumUnits);
+        Assert.Equal(6.0, punctual.BudgetMilliseconds);
+    }
+
+    [Fact]
+    public void PunctualShadowBudget_ClampsAdaptiveRange()
+    {
+        var scheduler = new GpuWorkScheduler();
+
+        for (int sample = 0; sample < 64; ++sample)
+            scheduler.RecordFrameGpuTime(8.0);
+
+        GpuWorkBudgetSnapshot punctual = scheduler.GetSnapshots()[1];
+        Assert.Equal(48, punctual.MaximumUnits);
+        Assert.Equal(9.0, punctual.BudgetMilliseconds);
+    }
+
+    [Fact]
+    public void PunctualShadowBatch_HoldsFourPointOrTwentyFourSpotLights()
+    {
+        Assert.Equal(
+            4,
+            PunctualShadowPass.GetMaximumLightsPerBatch(6));
+        Assert.Equal(
+            24,
+            PunctualShadowPass.GetMaximumLightsPerBatch(1));
+    }
+
+    [Fact]
     public void PunctualShadowBudget_AdmitsFacePairsAtomically()
     {
         var scheduler = new GpuWorkScheduler();

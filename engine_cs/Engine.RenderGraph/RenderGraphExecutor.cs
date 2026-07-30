@@ -18,6 +18,8 @@ namespace Engine.RenderGraph;
 
 public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 {
+    private const int GpuFrameHistoryCapacity = 15;
+
     private readonly RhiDevice _device;
     private CommandRecorder? _rec;
     private readonly RenderGraphContext _ctx = new();
@@ -31,6 +33,11 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     private readonly RhiTimestampQueryPool?[] _computeTimestampPools = new RhiTimestampQueryPool?[3];
     private readonly long[] _computeTimestampPoolFrames = new long[3];
     private double?[] _lastGpuPassMilliseconds = Array.Empty<double?>();
+    private readonly double[] _gpuFrameHistory =
+        new double[GpuFrameHistoryCapacity];
+    private int _gpuFrameHistoryCount;
+    private int _gpuFrameHistoryIndex;
+    private double? _lastRawGpuFrameMilliseconds;
     private double? _lastGpuFrameMilliseconds;
     private long _lastGpuTimingFrameNumber = -1;
     private int _timestampPassCount;
@@ -50,6 +57,11 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 
     public RenderGraphContext Context => _ctx;
     public IReadOnlyList<RenderPassTiming> LastPassTimings => _lastPassTimings;
+    /// <summary>
+    /// Gets the command-buffer span for same-capture sample validation.
+    /// </summary>
+    public double? LastRawGpuFrameMilliseconds =>
+        _lastRawGpuFrameMilliseconds;
     public double? LastGpuFrameMilliseconds => _lastGpuFrameMilliseconds;
     public long LastGpuTimingFrameNumber => _lastGpuTimingFrameNumber;
     public bool EnableGpuTiming { get; set; }
@@ -331,7 +343,6 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             return;
 
         long newestFrame = -1;
-        long newestFrameDurationFrame = -1;
         double? newestFrameMilliseconds = null;
         double?[]? newestDurations = null;
         for (int poolIndex = 0; poolIndex < _timestampPools.Length; ++poolIndex)
@@ -340,12 +351,11 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             if (pool is not { HasPendingResults: true })
                 continue;
 
-            if (pool.TryReadFrameDuration(out ulong frameDurationNanoseconds) &&
-                _timestampPoolFrames[poolIndex] > newestFrameDurationFrame)
-            {
-                newestFrameDurationFrame = _timestampPoolFrames[poolIndex];
-                newestFrameMilliseconds = frameDurationNanoseconds / 1_000_000.0;
-            }
+            double? poolFrameMilliseconds =
+                pool.TryReadFrameDuration(
+                    out ulong frameDurationNanoseconds)
+                    ? frameDurationNanoseconds / 1_000_000.0
+                    : null;
 
             var durationsNanoseconds = new ulong[passCount];
             if (!pool.TryReadDurations(durationsNanoseconds) ||
@@ -355,6 +365,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             }
 
             newestFrame = _timestampPoolFrames[poolIndex];
+            newestFrameMilliseconds = poolFrameMilliseconds;
             newestDurations = new double?[passCount];
             for (int passIndex = 0; passIndex < passCount; ++passIndex)
             {
@@ -369,17 +380,62 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 
         if (newestDurations != null)
         {
+            double activeGraphicsMilliseconds = 0.0;
+            bool hasActiveGraphicsDuration = false;
             for (int passIndex = 0;
                  passIndex < newestDurations.Length;
                  ++passIndex)
             {
-                if (newestDurations[passIndex] is double duration)
-                    _lastGpuPassMilliseconds[passIndex] = duration;
+                _lastGpuPassMilliseconds[passIndex] =
+                    newestDurations[passIndex];
+                if (newestDurations[passIndex] is double duration &&
+                    double.IsFinite(duration) &&
+                    duration >= 0.0)
+                {
+                    activeGraphicsMilliseconds += duration;
+                    hasActiveGraphicsDuration = true;
+                }
             }
             _lastGpuTimingFrameNumber = newestFrame;
+            _lastRawGpuFrameMilliseconds =
+                newestFrameMilliseconds;
+            if (hasActiveGraphicsDuration &&
+                activeGraphicsMilliseconds > 0.0)
+            {
+                _lastGpuFrameMilliseconds =
+                    RecordGpuFrameDuration(
+                        activeGraphicsMilliseconds);
+            }
         }
-        if (newestFrameMilliseconds != null)
-            _lastGpuFrameMilliseconds = newestFrameMilliseconds;
+    }
+
+    private double RecordGpuFrameDuration(double milliseconds)
+    {
+        _gpuFrameHistory[_gpuFrameHistoryIndex] = milliseconds;
+        _gpuFrameHistoryIndex =
+            (_gpuFrameHistoryIndex + 1) % GpuFrameHistoryCapacity;
+        _gpuFrameHistoryCount = Math.Min(
+            _gpuFrameHistoryCount + 1,
+            GpuFrameHistoryCapacity);
+
+        Span<double> sorted = stackalloc double[GpuFrameHistoryCapacity];
+        for (int i = 0; i < _gpuFrameHistoryCount; ++i)
+            sorted[i] = _gpuFrameHistory[i];
+        for (int i = 1; i < _gpuFrameHistoryCount; ++i)
+        {
+            double value = sorted[i];
+            int insertionIndex = i - 1;
+            while (insertionIndex >= 0 &&
+                   sorted[insertionIndex] > value)
+            {
+                sorted[insertionIndex + 1] =
+                    sorted[insertionIndex];
+                --insertionIndex;
+            }
+            sorted[insertionIndex + 1] = value;
+        }
+
+        return sorted[(_gpuFrameHistoryCount - 1) / 2];
     }
 
     private void PollComputeGpuTimings(int passCount)
@@ -432,6 +488,10 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         Array.Clear(_computeTimestampPools);
         Array.Clear(_computeTimestampPoolFrames);
         _timestampPassCount = 0;
+        Array.Clear(_gpuFrameHistory);
+        _gpuFrameHistoryCount = 0;
+        _gpuFrameHistoryIndex = 0;
+        _lastRawGpuFrameMilliseconds = null;
         _lastGpuFrameMilliseconds = null;
         _lastGpuTimingFrameNumber = -1;
     }

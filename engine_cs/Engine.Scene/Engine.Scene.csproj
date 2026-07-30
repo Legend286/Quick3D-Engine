@@ -10,5 +10,6 @@
   <ItemGroup>
     <ProjectReference Include="..\Engine.RHI\Engine.RHI.csproj" />
     <ProjectReference Include="..\Engine.Assets\Engine.Assets.csproj" />
+    <ProjectReference Include="..\Engine.Plugins\Engine.Plugins.csproj" />
   </ItemGroup>
 </Project>

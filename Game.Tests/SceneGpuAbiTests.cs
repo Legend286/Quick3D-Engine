@@ -25,9 +25,19 @@ public sealed class SceneGpuAbiTests
     [Fact]
     public void SharedSceneRecords_MatchShaderLayout()
     {
-        Assert.Equal(64, Marshal.SizeOf<PartData>());
+        Assert.Equal(80, Marshal.SizeOf<PartData>());
+        Assert.Equal(
+            32,
+            Marshal.OffsetOf<PartData>(
+                nameof(PartData.LocalOffset))
+                .ToInt32());
         Assert.Equal(128, Marshal.SizeOf<InstanceData>());
         Assert.Equal(64, Marshal.SizeOf<LightData>());
-        Assert.Equal(112, Marshal.SizeOf<PunctualShadowFaceData>());
+        Assert.Equal(128, Marshal.SizeOf<PunctualShadowFaceData>());
+        Assert.Equal(
+            112,
+            Marshal.OffsetOf<PunctualShadowFaceData>(
+                nameof(PunctualShadowFaceData.CommittedLightPosition))
+                .ToInt32());
     }
 }
