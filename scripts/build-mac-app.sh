@@ -96,11 +96,23 @@ dotnet publish "${PROJECT_ROOT}/Editor/Engine.Editor.csproj" \
     -o "${PUBLISH_FLAT}"
 
 log_section "Stage 2b/8 - Build managed engine plugins"
-for PLUGIN_DIR in \
-    "Renderer.Clustered" \
-    "Renderer.PathTracing" \
-    "SurfaceAuditor"
-do
+# Auto-discover: every subdirectory of Plugins/ that carries its own
+# plugin.json is treated as a managed engine plugin. The dot -> underscore
+# substitution keeps the publish layout safe for case-sensitive filesystems
+# and matches the convention the editor's PluginCatalogService expects when
+# it enumerates EngineRoot/Plugins/<dir>/plugin.json at runtime.
+shopt -s nullglob
+PLUGIN_DIRS=()
+for CANDIDATE in "${PROJECT_ROOT}/Plugins"/*; do
+    [[ -d "${CANDIDATE}" ]] || continue
+    [[ -f "${CANDIDATE}/plugin.json" ]] || continue
+    PLUGIN_DIRS+=("$(basename "${CANDIDATE}")")
+done
+shopt -u nullglob
+if [[ ${#PLUGIN_DIRS[@]} -eq 0 ]]; then
+    log_warn "No plugins discovered under Plugins/ - stage 2b is a no-op."
+fi
+for PLUGIN_DIR in "${PLUGIN_DIRS[@]}"; do
     PLUGIN_PROJECT="$(
         find "${PROJECT_ROOT}/Plugins/${PLUGIN_DIR}" \
             -maxdepth 1 \
@@ -108,6 +120,10 @@ do
             -print \
             -quit
     )"
+    if [[ -z "${PLUGIN_PROJECT}" ]]; then
+        log_warn "Skipping plugin '${PLUGIN_DIR}' - no .csproj in directory root."
+        continue
+    fi
     PLUGIN_SAFE_NAME="${PLUGIN_DIR//./_}"
     PLUGIN_OUTPUT="${PUBLISH_FLAT}/Plugins/${PLUGIN_SAFE_NAME}"
     mkdir -p "${PLUGIN_OUTPUT}"
@@ -118,6 +134,7 @@ do
     cp -f \
         "${PROJECT_ROOT}/Plugins/${PLUGIN_DIR}/plugin.json" \
         "${PLUGIN_OUTPUT}/plugin.json"
+    log_info "Built plugin '${PLUGIN_DIR}' -> ${PLUGIN_OUTPUT}"
 done
 
 # ---- stage 3: assemble .app bundle -----------------------------------------
