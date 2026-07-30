@@ -45,6 +45,8 @@ public class PbrPass : RenderPass
     private readonly PunctualShadowState? _punctualShadow;
     private readonly bool _renderSky;
     private readonly IReadOnlyList<string>? _cliArgs;
+    private readonly IReadOnlyList<string>? _includeDirs;
+    private readonly ShaderCompileCache? _compileCache;
 
     private readonly RhiShader _vs;
     private readonly RhiShader _fs;
@@ -87,7 +89,9 @@ public class PbrPass : RenderPass
         DirectionalShadowState? directionalShadow,
         PunctualShadowState? punctualShadow,
         bool renderSky,
-        IReadOnlyList<string>? cliArgs = null)
+        IReadOnlyList<string>? cliArgs = null,
+        IReadOnlyList<string>? includeDirs = null,
+        ShaderCompileCache? compileCache = null)
     {
         _device = device;
         _contentRoot = contentRoot;
@@ -96,6 +100,8 @@ public class PbrPass : RenderPass
         _punctualShadow = punctualShadow;
         _renderSky = renderSky;
         _cliArgs = cliArgs;
+        _includeDirs = includeDirs;
+        _compileCache = compileCache;
         Name = string.IsNullOrWhiteSpace(scenePass.Name) ||
             scenePass.Name.Equals("PbrPass", StringComparison.OrdinalIgnoreCase)
             ? "Forward PBR"
@@ -104,8 +110,8 @@ public class PbrPass : RenderPass
         string shaderDir = Path.Combine(_contentRoot, "shaders");
 
         string src = LoadShaderSource("shaders/pbr.slang");
-        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex, new[] { shaderDir }, _cliArgs);
-        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment, new[] { shaderDir }, _cliArgs);
+        _vs = CompileCached(src, "vertexMain", RhiNative.ShaderStage.Vertex);
+        _fs = CompileCached(src, "fragmentMain", RhiNative.ShaderStage.Fragment);
 
         _pipeline = RhiPipeline.CreateGraphics(
             _device, _vs, _fs,
@@ -113,16 +119,16 @@ public class PbrPass : RenderPass
             enableDepth: true);
 
         string cullSrc = LoadShaderSource("shaders/cull.slang");
-        _cullCs = RhiShader.FromSource(_device, cullSrc, "computeMain", RhiNative.ShaderStage.Compute, new[] { shaderDir }, _cliArgs);
+        _cullCs = CompileCached(cullSrc, "computeMain", RhiNative.ShaderStage.Compute);
         _cullPipeline = RhiPipeline.CreateCompute(_device, _cullCs);
 
         string clusterSrc = LoadShaderSource("shaders/cluster_lights.slang");
-        _clusterCs = RhiShader.FromSource(_device, clusterSrc, "computeMain", RhiNative.ShaderStage.Compute, new[] { shaderDir }, _cliArgs);
+        _clusterCs = CompileCached(clusterSrc, "computeMain", RhiNative.ShaderStage.Compute);
         _clusterPipeline = RhiPipeline.CreateCompute(_device, _clusterCs);
 
         string skySrc = LoadShaderSource("shaders/pbr_sky.slang");
-        _skyVs = RhiShader.FromSource(_device, skySrc, "vertexMain", RhiNative.ShaderStage.Vertex, new[] { shaderDir }, _cliArgs);
-        _skyFs = RhiShader.FromSource(_device, skySrc, "fragmentMain", RhiNative.ShaderStage.Fragment, new[] { shaderDir }, _cliArgs);
+        _skyVs = CompileCached(skySrc, "vertexMain", RhiNative.ShaderStage.Vertex);
+        _skyFs = CompileCached(skySrc, "fragmentMain", RhiNative.ShaderStage.Fragment);
         _skyPipeline = RhiPipeline.CreateGraphics(_device, _skyVs, _skyFs, RhiNative.TextureFormat.Bgra8Unorm, enableDepth: true);
 
         _sampler = RhiSampler.Create(_device);
@@ -371,6 +377,18 @@ public class PbrPass : RenderPass
         return File.ReadAllText(full);
     }
 
+    private RhiShader CompileCached(
+        string source, string entry, RhiNative.ShaderStage stage)
+    {
+        string shaderDir = Path.Combine(_contentRoot, "shaders");
+        IReadOnlyList<string>? dirs = _includeDirs ?? new[] { shaderDir };
+        if (_compileCache == null)
+            return RhiShader.FromSource(_device, source, entry, stage, dirs, _cliArgs);
+        return (RhiShader)_compileCache.GetOrCompileHash(
+            source, entry, stage, dirs, _cliArgs,
+            () => RhiShader.FromSource(_device, source, entry, stage, dirs, _cliArgs));
+    }
+
     private void EnsureBuffer(ref RhiBuffer buffer, ulong requiredSize, RhiNative.BufferUsage usage)
     {
         if (requiredSize == 0) requiredSize = 16;
@@ -391,12 +409,6 @@ public class PbrPass : RenderPass
         _cullPipeline?.Dispose();
         _clusterPipeline?.Dispose();
         _skyPipeline?.Dispose();
-        _vs?.Dispose();
-        _fs?.Dispose();
-        _cullCs?.Dispose();
-        _clusterCs?.Dispose();
-        _skyVs?.Dispose();
-        _skyFs?.Dispose();
         _sampler?.Dispose();
         _drawCmdBuffer?.Dispose();
         _drawCountBuffer?.Dispose();

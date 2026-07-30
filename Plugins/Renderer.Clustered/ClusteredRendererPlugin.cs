@@ -34,6 +34,7 @@ public sealed class ClusteredRendererPlugin :
     {
         var result = new RendererPluginPlan();
         var cliArgs = context.ShaderCliArgs;
+        var includeDirs = context.ShaderIncludeDirs;
         result.RasterSceneCache =
             new RasterSceneGpuCache(
                 context.Device,
@@ -84,7 +85,9 @@ public sealed class ClusteredRendererPlugin :
                     result.DirectionalShadowState,
                     result.PunctualShadowState,
                     context.RenderSky,
-                    cliArgs));
+                    cliArgs,
+                    includeDirs,
+                    context.Renderer.ShaderCompileCache));
         }
 
         foreach (PbrPass pass in pbrPasses)

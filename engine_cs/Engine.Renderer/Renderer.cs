@@ -88,7 +88,19 @@ public sealed class Renderer : IDisposable
     private bool _renderShadows = true;
     private RhiBindlessHeap _sharedBindlessHeap;
     private ShaderCompileCache _compileCache = new();
+
+    /// <summary>Process-wide shader compile cache. Plugins and
+    /// passes thread shader compilations through this cache via
+    /// <see cref="ShaderCompileCache.GetOrCompileHash"/> so toggling
+    /// plugins that don't actually change a shader's source bytes
+    /// return the existing compiled <see cref="Engine.RHI.RhiShader"/>
+    /// handle instead of forcing a Slang recompile + Metal pipeline
+    /// state recreation. See
+    /// <c>docs/renderer/shader-cache.md</c> for the public API and
+    /// perf characteristics.</summary>
+    public ShaderCompileCache ShaderCompileCache => _compileCache;
     private IReadOnlyList<string>? _activeShaderCliArgs;
+    private IReadOnlyList<string>? _activeShaderIncludeDirs;
     private RasterSceneGpuCache? _rasterSceneCache;
     private DirectionalShadowState? _directionalShadowState;
     private DirectionalShadowPass? _directionalShadowPass;
@@ -201,12 +213,15 @@ public sealed class Renderer : IDisposable
         {
             EnableGpuTiming = true,
         };
-        EditorShaderBridge.ActiveShaderCliArgsChanged += OnActiveShaderCliArgsChanged;
+        EditorShaderBridge.ActiveShaderContextChanged += OnActiveShaderContextChanged;
     }
 
-    private void OnActiveShaderCliArgsChanged(IReadOnlyList<string>? cliArgs)
+    private void OnActiveShaderContextChanged(
+        IReadOnlyList<string>? cliArgs,
+        IReadOnlyList<string>? includeDirs)
     {
         _activeShaderCliArgs = cliArgs;
+        _activeShaderIncludeDirs = includeDirs;
         ReloadPluginShaders(ClusteredPluginId);
     }
 
@@ -650,7 +665,8 @@ public sealed class Renderer : IDisposable
                     _gpuWorkScheduler,
                 RenderShadows = _renderShadows,
                 RenderSky = _renderSky,
-                ShaderCliArgs = _activeShaderCliArgs
+                ShaderCliArgs = _activeShaderCliArgs,
+                ShaderIncludeDirs = _activeShaderIncludeDirs
             };
         RendererPluginPlan pluginPlan =
             plugin.BuildPlan(pluginContext);
@@ -1132,7 +1148,7 @@ public sealed class Renderer : IDisposable
         _sharedBindlessHeap = null!;
         _compileCache?.Dispose();
         _compileCache = null!;
-        EditorShaderBridge.ActiveShaderCliArgsChanged -= OnActiveShaderCliArgsChanged;
+        EditorShaderBridge.ActiveShaderContextChanged -= OnActiveShaderContextChanged;
     }
 }
 
