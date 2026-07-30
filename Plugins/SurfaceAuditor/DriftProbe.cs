@@ -49,6 +49,32 @@ internal static class DriftProbe
             return;
         }
 
+        // Bail before per-source reads when the engine root resolves to a
+        // packaged .app bundle (Plugins/MacOS/Contents/...) instead of the
+        // live source tree. Reporting "7/7 drift" on an empty source dict
+        // is a false positive; surface one explainer instead so the user
+        // can recover (set QUICK3D_ENGINE_ROOT, launch from source, etc.).
+        int foundSources = 0;
+        foreach (var (_, relPath) in Sources)
+        {
+            if (File.Exists(Path.Combine(engineRoot, relPath)))
+                ++foundSources;
+        }
+        if (foundSources == 0)
+        {
+            Warn(
+                Prefix +
+                    $"engine root '{engineRoot}' does not appear to be the " +
+                    "engine source tree (none of the 4 audited allow-list " +
+                    "files found under it). The drift probe requires live " +
+                    "source files relative to the engine root. Set the " +
+                    "QUICK3D_ENGINE_ROOT environment variable to the engine " +
+                    "repo root and re-run; or launch the editor from a " +
+                    "`dotnet build`-emitted binary (not a packaged .app).",
+                "SurfaceAuditor");
+            return;
+        }
+
         var sourceContents = new Dictionary<string, string>(StringComparer.Ordinal);
         var missingSources = new List<string>();
         foreach (var (label, relPath) in Sources)

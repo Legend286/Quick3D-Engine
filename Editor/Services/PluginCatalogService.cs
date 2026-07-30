@@ -84,7 +84,7 @@ public sealed partial class PluginEntryViewModel :
 
 /// <summary>Discovers, configures, watches, and reloads managed engine plugins.</summary>
 public sealed class PluginCatalogService :
-    IEnginePluginHost,
+    IEditorPluginHost,
     IDisposable
 {
     private sealed class RuntimePlugin
@@ -633,7 +633,10 @@ public sealed class PluginCatalogService :
                 context.Unload();
                 return;
             }
-            instance.Initialize(this);
+            if (instance is IEditorPlugin editorPlugin)
+                editorPlugin.InitializeEditor(this);
+            else
+                instance.Initialize(this);
             _runtime[plugin.Id] =
                 new RuntimePlugin
                 {
@@ -687,6 +690,7 @@ public sealed class PluginCatalogService :
         runtime.Instance.Shutdown();
         runtime.Instance.Dispose();
         runtime.Context.Unload();
+        DynamicMenuService.Shared.UnregisterPlugin(pluginId);
     }
 
     private string GetConfigurationPath()
@@ -697,6 +701,16 @@ public sealed class PluginCatalogService :
 
     private static string LocateEngineRoot()
     {
+        string? overrideRoot =
+            Environment.GetEnvironmentVariable("QUICK3D_ENGINE_ROOT");
+        if (!string.IsNullOrEmpty(overrideRoot) &&
+            Directory.Exists(overrideRoot) &&
+            Directory.Exists(
+                Path.Combine(overrideRoot, "Plugins")))
+        {
+            return overrideRoot;
+        }
+
         string[] starts =
         [
             Environment.CurrentDirectory,
@@ -748,5 +762,20 @@ public sealed class PluginCatalogService :
             }
             _debounce.Clear();
         }
+    }
+
+    public void RegisterMenuAction(string pluginId, string menuPath, string itemName, Action onExecute)
+    {
+        DynamicMenuService.Shared.RegisterMenuAction(pluginId, menuPath, itemName, onExecute);
+    }
+
+    public void RegisterImGuiOverlay(string pluginId, Action onDraw)
+    {
+        DynamicMenuService.Shared.RegisterImGuiOverlay(pluginId, onDraw);
+    }
+
+    public void RegisterToolPanel(string pluginId, string title, object avaloniaControl)
+    {
+        DynamicMenuService.Shared.RegisterToolPanel(pluginId, title, avaloniaControl);
     }
 }
