@@ -118,6 +118,35 @@ admission over time.
 | --- | --- |
 | CPU scaffolding (volume + priority + light BVH) | landed (`54df63c`) |
 | Budget gate + plugin lifecycle + sampler + docs (this doc) | landed (Phase 2) |
+| Probe-position debug visualization (this update) | landed (Phase 2.5) |
 | Metal RT gather + SH projection + atlas write dispatch | pending (Phase 3) |
-| Editor visualisation (probe density heat-map) | pending (Phase 4) |
-| Two-bounce cascade | deferred (per user choice; tracked separately) |
+| Two-bounce cascade | pending (Phase 4) |
+
+## Debugging — probe visualisation
+
+Once `renderer.ddgi` is enabled, the editor's debug-view dropdown
+includes **DDGI Probes** (uses `ViewportDebugView.DDGIProbes`).
+Selecting it overlays every probe in the active
+`DDGIProbeVolume` as a small world-space quad:
+
+* **Topology:** `TriangleList`, 4 vertices per probe.
+* **Depth:** pipeline-level depth-test disabled so probes remain
+  visible behind geometry — useful for diagnosing probe placement
+  inside a volume or spotting leak paths.
+* **Wire-in:** the canonical
+  [`ClusteredRendererPlugin`][clustered] reads the plugin-shared
+  [DDGIVolumeRegistry][registry] during its `BuildPlan`; when
+  `DebugView` includes `DDGIProbes` it appends a `DDGIDebugPass`
+  to the per-frame plan; the pass reads probe positions from the
+  plugin-owned `DDGIProbeVolume` and uploads them into a transient
+  `RhiBuffer` once per frame. The pass uses
+  `Renderer.TryGetActiveCameraData(width, height, …)` to recover
+  viewProj from the active scene camera entity.
+* **First-cut limits:** only probe positions are rendered. SH2
+  principal-lobe arrows ship when the SH2 atlas upload lands in
+  Phase 3 — until then the marker is a single quad with colour
+  modulated by `|center.y| / extent.y` so probes above vs below
+  the volume baseline read distinct.
+
+[clustered]: ../../Plugins/Renderer.Clustered/ClusteredRendererPlugin.cs
+[registry]:  ../../engine_cs/Engine.Renderer/DDGI/DDGIVolumeRegistry.cs

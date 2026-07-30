@@ -64,7 +64,13 @@ public enum ViewportDebugView
     Tangent,
 
     /// <summary>Displays the surface bitangent direction.</summary>
-    Bitangent
+    Bitangent,
+
+    /// <summary>Overlays DDGI probe grid centers as world-space
+    /// markers. Implemented by the renderer.ddgi plugin; ignored
+    /// when the plugin is not enabled. See
+    /// <c>docs/renderer/ddgi.md</c> for the visualization details.</summary>
+    DDGIProbes
 }
 
 /// <summary>Identifies the active editor transform gizmo operation.</summary>
@@ -137,6 +143,9 @@ public interface IGameLoop : IDisposable
 
     /// <summary>Recreates pipelines whose shaders are owned by a plugin.</summary>
     void ReloadPluginShaders(string pluginId);
+
+    /// <summary>Invoked during the ImGui viewport overlay pass to draw plugin-contributed ImGui.</summary>
+    Action<InputState, uint, uint>? DrawPluginOverlay { get; set; }
 
     /// <summary>Reloads a managed plugin assembly in its collectible context.</summary>
     void ReloadPluginCode(string pluginId);

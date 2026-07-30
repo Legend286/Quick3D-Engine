@@ -127,6 +127,43 @@ public sealed class Renderer : IDisposable
 
     public ulong ActiveCameraEntity { get; set; }
     public float OrthographicSize { get; set; } = 20.0f;
+
+    /// <summary>Reads the active scene-camera entity's
+    /// <see cref="Engine.Scene.Components.Camera"/> + Transform
+    /// components out of the world and produces the matching
+    /// <see cref="CameraData"/> for the given viewport
+    /// <paramref name="width"/> × <paramref name="height"/>. Returns
+    /// false when no active camera entity is set or the entity does
+    /// not carry a <see cref="Engine.Scene.Components.Camera"/>
+    /// component; callers should fall back to identity viewProj in
+    /// that case.</summary>
+    public bool TryGetActiveCameraData(
+        uint width, uint height,
+        out Engine.Scene.Components.Camera camera,
+        out Engine.Scene.Components.Transform transform,
+        out CameraData cameraData)
+    {
+        camera = default;
+        transform = default;
+        cameraData = default;
+        if (_world is null || ActiveCameraEntity == 0)
+            return false;
+        if (!_world.TryGet(
+                ActiveCameraEntity,
+                out camera))
+            return false;
+        transform = _world.TryGet(
+                ActiveCameraEntity,
+                out Engine.Scene.Components.Transform t)
+            ? t
+            : Engine.Scene.Components.Transform.Default;
+        if (height == 0)
+            return false;
+        float aspect = (float)width / height;
+        cameraData = BuildCameraData(
+            camera, transform, aspect, Vector3.UnitZ);
+        return true;
+    }
     internal float ProjectionBlend => _projectionBlend;
 
     /// <summary>Per-frame upstream-derived Slang <c>-D</c> argv tokens,

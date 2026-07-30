@@ -88,7 +88,8 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         "Emissive",
         "UV",
         "Tangent",
-        "Bitangent"
+        "Bitangent",
+        "DDGI Probes"
     ];
 
     /// <summary>Gets transform gizmo operations displayed in viewport chrome.</summary>
@@ -302,9 +303,11 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 if (match.Success)
                 {
                     string scenePath = match.Groups[1].Value;
-                    string name = Path.GetFileNameWithoutExtension(
-                        Path.GetFileNameWithoutExtension(scenePath));
-                    return name;
+                    if (scenePath.StartsWith("Content/", StringComparison.OrdinalIgnoreCase))
+                        scenePath = scenePath["Content/".Length..];
+                    if (scenePath.EndsWith(".scene.json", StringComparison.OrdinalIgnoreCase))
+                        scenePath = scenePath[..^".scene.json".Length];
+                    return scenePath;
                 }
             }
         }
@@ -444,6 +447,13 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         _gameLoop.RendererPluginEnableRequested +=
             pluginId =>
                 OnPluginEnableRequested?.Invoke(pluginId);
+        _gameLoop.DrawPluginOverlay = (input, width, height) =>
+        {
+            foreach (var action in Editor.Services.DynamicMenuService.Shared.GetImGuiOverlays())
+            {
+                action.Invoke();
+            }
+        };
     }
 
     public event Action<ulong>? OnEntityPicked;
@@ -511,7 +521,13 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     public void SaveScene()
     {
         if (_world == null) return;
-        string path = Path.Combine(_contentRoot, "scenes", CurrentSceneName + ".scene.json");
+        string path = Path.IsPathRooted(CurrentSceneName)
+            ? CurrentSceneName
+            : Path.Combine(_contentRoot, CurrentSceneName);
+        if (!path.EndsWith(".scene.json", StringComparison.OrdinalIgnoreCase))
+            path += ".scene.json";
+        
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         Engine.Scene.SceneSaver.Save(_world, _baseScene, path);
         IsDirty = false;
     }
@@ -630,6 +646,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 "UV" => ViewportDebugView.Uv,
                 "Tangent" => ViewportDebugView.Tangent,
                 "Bitangent" => ViewportDebugView.Bitangent,
+                "DDGI Probes" => ViewportDebugView.DDGIProbes,
                 _ => ViewportDebugView.Lit
             };
         _gameLoop.CameraFieldOfViewDegrees =
@@ -666,6 +683,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
             ViewportDebugView.WorldPosition => "World Position",
             ViewportDebugView.Rma => "RMA",
             ViewportDebugView.Uv => "UV",
+            ViewportDebugView.DDGIProbes => "DDGI Probes",
             _ => mode.ToString()
         };
 
@@ -1229,13 +1247,13 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         _sceneWatcher?.Dispose();
         _sceneWatcher = null;
 
-        string scenesDir = Path.Combine(contentRoot, "scenes");
-        if (Directory.Exists(scenesDir))
+        if (Directory.Exists(contentRoot))
         {
-            _sceneWatcher = new FileSystemWatcher(scenesDir, "*.scene.json")
+            _sceneWatcher = new FileSystemWatcher(contentRoot, "*.scene.json")
             {
                 EnableRaisingEvents = true,
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
+                IncludeSubdirectories = true
             };
             _sceneWatcher.Changed += (s, e) =>
             {

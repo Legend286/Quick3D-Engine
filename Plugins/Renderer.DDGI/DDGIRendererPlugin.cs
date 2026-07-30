@@ -22,7 +22,8 @@ namespace Engine.DDGI;
 /// </summary>
 public sealed class DDGIRendererPlugin :
     IEnginePlugin,
-    IRendererPlanPlugin
+    IRendererPlanPlugin,
+    IRendererPlanPluginLite
 {
     /// <inheritdoc />
     public string Id => "renderer.ddgi";
@@ -62,11 +63,13 @@ public sealed class DDGIRendererPlugin :
     /// <inheritdoc />
     public void Initialize(IEnginePluginHost host)
     {
+        DDGIVolumeRegistry.Register(this, _volume);
     }
 
     /// <inheritdoc />
     public void Shutdown()
     {
+        DDGIVolumeRegistry.Unregister(this);
     }
 
     /// <inheritdoc />

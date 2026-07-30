@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 using Engine.Plugins;
 using Engine.Renderer;
+using Engine.RHI;
+using Engine.Renderer.DDGI;
 
 namespace Engine.Plugin.Renderer.Clustered;
 
@@ -99,6 +101,28 @@ public sealed class ClusteredRendererPlugin :
             result.Passes.Add(
                 result.PunctualShadowPass);
         result.Passes.AddRange(pbrPasses);
+
+        // Plugin-shared debug overlays run AFTER Pbr so probes are
+        // overlay-drawn on the populated scene rather than wiped by
+        // Pbr's `BeginRenderPass(LoadOp.Clear)`. The DDGIVolumeRegistry
+        // is a process-wide singleton so a single secondary plugin
+        // (renderer.ddgi) can contribute a debug pass without a full
+        // IRendererPlanPlugin aggregation refactor.
+        DDGIProbeVolume? ddgiVolume =
+            Engine.DDGI.DDGIVolumeRegistry.ActiveVolume;
+        if (ddgiVolume != null &&
+            (context.Renderer.DebugView & ViewportDebugView.DDGIProbes) != 0)
+        {
+            result.Passes.Add(
+                new Engine.DDGI.DDGIDebugPass(
+                    context.Device,
+                    ddgiVolume,
+                    context.Renderer,
+                    context.ContentRoot,
+                    cliArgs,
+                    includeDirs,
+                    context.Renderer.ShaderCompileCache));
+        }
         return result;
     }
 }
