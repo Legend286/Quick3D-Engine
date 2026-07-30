@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-using System.Collections.Generic;
 using Engine.Plugins;
 using Engine.Renderer;
 
@@ -13,15 +12,30 @@ namespace Engine.DDGI;
 /// #ifdef DDGI_PLUGIN / #include "ddgi_sampling.slang" override path
 /// that engages when this plugin is enabled.
 /// </summary>
-public sealed class DDGIRendererPlugin : IRendererPlanPlugin
+public sealed class DDGIRendererPlugin :
+    IEnginePlugin,
+    IRendererPlanPlugin
 {
+    /// <inheritdoc />
     public string Id => "renderer.ddgi";
 
-    public RendererPluginPlan BuildPlan(RendererPluginContext context)
+    /// <inheritdoc />
+    public void Initialize(IEnginePluginHost host)
     {
-        return new RendererPluginPlan
-        {
-            Passes = new List<RenderPass>(),
-        };
     }
+
+    /// <inheritdoc />
+    public void Shutdown()
+    {
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        Shutdown();
+    }
+
+    /// <inheritdoc />
+    public RendererPluginPlan BuildPlan(
+        RendererPluginContext context) => new();
 }
