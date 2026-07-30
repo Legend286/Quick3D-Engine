@@ -15,6 +15,8 @@ using Engine.RenderGraph;
 using Engine.Scene;
 using Engine.Scene.Components;
 using Engine.Assets;
+using Engine.Plugins;
+using Engine.Renderer.Shaders;
 using static Engine.CBindings.Log;
 
 namespace Engine.Renderer;
@@ -61,6 +63,18 @@ public sealed class Renderer : IDisposable
     public static readonly ResourceHandle OutlineMaskHandle = new(0x80000002);
     private const uint DirectionalShadowMapHandleBase = 0x80000003;
 
+    /// <summary>The well-known identifier of the canonical Forward+
+    /// raster renderer plugin. Used by the editor-bridge subscription
+    /// handler to bust the raster render plan when the active shader
+    /// feature set changes.</summary>
+    public const string ClusteredPluginId = "core.renderer.clustered";
+
+    /// <summary>The well-known identifier of the canonical path-tracing
+    /// renderer plugin. Used by <see cref="ReloadPluginShaders"/> to
+    /// decide which cached plan to bust when the engine asks for a
+    /// shader rebuild.</summary>
+    public const string PathTracingPluginId = "core.renderer.path-tracing";
+
     public static ResourceHandle GetDirectionalShadowMapHandle(int cascadeIndex)
         => GetShadowPageHandle(cascadeIndex);
 
@@ -74,6 +88,7 @@ public sealed class Renderer : IDisposable
     private bool _renderShadows = true;
     private RhiBindlessHeap _sharedBindlessHeap;
     private ShaderCompileCache _compileCache = new();
+    private IReadOnlyList<string>? _activeShaderCliArgs;
     private RasterSceneGpuCache? _rasterSceneCache;
     private DirectionalShadowState? _directionalShadowState;
     private DirectionalShadowPass? _directionalShadowPass;
@@ -101,6 +116,14 @@ public sealed class Renderer : IDisposable
     public ulong ActiveCameraEntity { get; set; }
     public float OrthographicSize { get; set; } = 20.0f;
     internal float ProjectionBlend => _projectionBlend;
+
+    /// <summary>Per-frame upstream-derived Slang <c>-D</c> argv tokens,
+    /// refreshed whenever <see cref="ReloadPluginShaders"/> is invoked.
+    /// Plugins read this via <c>RendererPluginContext.ShaderCliArgs</c> and
+    /// forward it to <c>RhiShader.FromSource(... cliArgs)</c> so host shaders
+    /// can gate plugin-shader override paths.</summary>
+    public IReadOnlyList<string>? ActiveShaderCliArgs =>
+        _activeShaderCliArgs;
     internal IRendererPlanPlugin? ClusteredPlugin => _clusteredPlugin;
 
     public ViewportProjectionMode ProjectionMode
@@ -178,6 +201,13 @@ public sealed class Renderer : IDisposable
         {
             EnableGpuTiming = true,
         };
+        EditorShaderBridge.ActiveShaderCliArgsChanged += OnActiveShaderCliArgsChanged;
+    }
+
+    private void OnActiveShaderCliArgsChanged(IReadOnlyList<string>? cliArgs)
+    {
+        _activeShaderCliArgs = cliArgs;
+        ReloadPluginShaders(ClusteredPluginId);
     }
 
     public IEntityStore World => _world;
@@ -538,7 +568,7 @@ public sealed class Renderer : IDisposable
             return;
 
         bool pathTracing =
-            pluginId == "core.renderer.path-tracing";
+            pluginId == PathTracingPluginId;
         CachedRenderPlan? stale = pathTracing
             ? _pathTracingPlan
             : _rasterPlan;
@@ -619,7 +649,8 @@ public sealed class Renderer : IDisposable
                 GpuWorkScheduler =
                     _gpuWorkScheduler,
                 RenderShadows = _renderShadows,
-                RenderSky = _renderSky
+                RenderSky = _renderSky,
+                ShaderCliArgs = _activeShaderCliArgs
             };
         RendererPluginPlan pluginPlan =
             plugin.BuildPlan(pluginContext);
@@ -1101,6 +1132,7 @@ public sealed class Renderer : IDisposable
         _sharedBindlessHeap = null!;
         _compileCache?.Dispose();
         _compileCache = null!;
+        EditorShaderBridge.ActiveShaderCliArgsChanged -= OnActiveShaderCliArgsChanged;
     }
 }
 

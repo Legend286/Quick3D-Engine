@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 using Engine.Plugins;
-using Engine.Game;
+using Engine.Renderer;
 
 namespace Engine.Plugin.Renderer.Clustered;
 
@@ -33,6 +33,7 @@ public sealed class ClusteredRendererPlugin :
         RendererPluginContext context)
     {
         var result = new RendererPluginPlan();
+        var cliArgs = context.ShaderCliArgs;
         result.RasterSceneCache =
             new RasterSceneGpuCache(
                 context.Device,
@@ -82,7 +83,8 @@ public sealed class ClusteredRendererPlugin :
                     result.RasterSceneCache,
                     result.DirectionalShadowState,
                     result.PunctualShadowState,
-                    context.RenderSky));
+                    context.RenderSky,
+                    cliArgs));
         }
 
         foreach (PbrPass pass in pbrPasses)

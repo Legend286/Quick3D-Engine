@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Engine.CBindings;
 using Engine.Plugins;
+using Engine.Renderer.Shaders;
 
 namespace Engine.Editor.Services;
 
@@ -175,6 +176,16 @@ public sealed class PluginCatalogService :
             plugin => plugin.Id == pluginId)
             ?.IsEnabled == true;
 
+    /// <summary>Enumerates (manifest, IsEnabled) pairs for every discovered
+    /// plugin. Drives <c>RendererFeatureSet.BuildCliArgs</c> so the renderer
+    /// can derive the per-frame <c>-D NAME=1</c> argv set without coupling
+    /// to the catalog's UI-bound ObservableCollection.</summary>
+    public IEnumerable<(EnginePluginManifest Manifest, bool IsEnabled)>
+        GetAllManifests()
+        => Plugins
+            .Select(plugin =>
+                (plugin.Manifest, plugin.IsEnabled));
+
     /// <summary>Enables an optional plugin by identifier.</summary>
     public bool Enable(string pluginId)
     {
@@ -214,6 +225,13 @@ public sealed class PluginCatalogService :
 
         WriteConfiguration();
         AvailabilityChanged?.Invoke();
+        ShaderReloadRequested?.Invoke(plugin.Id);
+        Log.Info(
+            $"[Plugins] Shader reload requested for {plugin.Id}",
+            "Editor");
+        EditorShaderBridge.RaiseActiveShaderCliArgsChanged(
+            Engine.Renderer.RendererFeatureSet.BuildCliArgs(
+                GetAllManifests()));
     }
 
     /// <inheritdoc />
