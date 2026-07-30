@@ -63,6 +63,34 @@ public sealed class EnginePluginManifest
     /// <summary>Gets or sets shader files owned by the plugin.</summary>
     [JsonPropertyName("shader_files")]
     public List<string> ShaderFiles { get; set; } = new();
+
+    /// <summary>Gets or sets shader include directories owned by the plugin.</summary>
+    /// <remarks>
+    /// Paths are relative to the plugin's manifest directory. They are
+    /// resolved by <see cref="Engine.Renderer.ShaderIncludeResolver"/> in
+    /// manifest-discovery order, with the engine's
+    /// <c>ContentRoot/shaders</c> appended last as the lowest-priority
+    /// fallback. Plugins use these to ship <c>*.slang</c> include files that
+    /// compose with the engine's host shaders (e.g. <c>pbr.slang</c>) via
+    /// Slang <c>#include</c> directives without forking the host source.
+    /// </remarks>
+    [JsonPropertyName("shader_includes")]
+    public List<string> ShaderIncludes { get; set; } = new();
+
+    /// <summary>Gets or sets the Slang preprocessor feature flags owned by
+    /// the plugin.</summary>
+    /// <remarks>
+    /// Each entry is the name of a preprocessor macro that the plugin's
+    /// shader files rely on being defined (e.g. <c>DDGI_PLUGIN</c>). When
+    /// this plugin is enabled, <see cref="Engine.Renderer.ShaderCompileCache"/>
+    /// expands these into Slang <c>-D NAME=1</c> argv tokens threaded
+    /// through <see cref="Engine.RHI.RhiShader.FromSource"/>'s
+    /// <c>cliArgs</c> parameter, so host shaders can gate plugin-shader
+    /// overrides with <c>#ifdef NAME</c>. Duplicates across plugins are
+    /// collapsed deterministically (sorted Ordinal compare).
+    /// </remarks>
+    [JsonPropertyName("shader_features")]
+    public List<string> ShaderFeatures { get; set; } = new();
 }
 
 /// <summary>Provides stable host services to a managed engine plugin.</summary>
@@ -89,4 +117,24 @@ public interface IEnginePlugin : IDisposable
 
     /// <summary>Releases registrations before the load context unloads.</summary>
     void Shutdown();
+}
+
+/// <summary>Provides stable host services to an editor plugin.</summary>
+public interface IEditorPluginHost : IEnginePluginHost
+{
+    /// <summary>Registers a menu action in the Editor UI.</summary>
+    void RegisterMenuAction(string pluginId, string menuPath, string itemName, Action onExecute);
+
+    /// <summary>Registers an ImGui draw callback over the viewport.</summary>
+    void RegisterImGuiOverlay(string pluginId, Action onDraw);
+
+    /// <summary>Registers a tool panel (Avalonia control) in the Editor UI.</summary>
+    void RegisterToolPanel(string pluginId, string title, object avaloniaControl);
+}
+
+/// <summary>Defines a plugin specifically designed to extend the Editor.</summary>
+public interface IEditorPlugin : IEnginePlugin
+{
+    /// <summary>Initializes the editor plugin against editor host services.</summary>
+    void InitializeEditor(IEditorPluginHost host);
 }
