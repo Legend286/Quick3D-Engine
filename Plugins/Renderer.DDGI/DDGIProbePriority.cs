@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 
-namespace Engine.Renderer.DDGI;
+namespace Engine.DDGI;
 
 /// <summary>
 /// Scores DDGI probes by camera proximity + frustum containment + dirty

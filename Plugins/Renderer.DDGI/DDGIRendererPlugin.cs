@@ -2,7 +2,6 @@
 using Engine.CBindings;
 using Engine.Plugins;
 using Engine.Renderer;
-using Engine.Renderer.DDGI;
 using Engine.Scene;
 using System;
 using System.Collections.Generic;

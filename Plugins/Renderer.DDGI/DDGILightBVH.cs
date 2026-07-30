@@ -3,7 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 
-namespace Engine.Renderer.DDGI;
+namespace Engine.DDGI;
 
 /// <summary>
 /// CPU-side binary BVH over punctual light bounding spheres. Built once

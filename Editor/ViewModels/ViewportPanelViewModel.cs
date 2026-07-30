@@ -88,8 +88,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         "Emissive",
         "UV",
         "Tangent",
-        "Bitangent",
-        "DDGI Probes"
+        "Bitangent"
     ];
 
     /// <summary>Gets transform gizmo operations displayed in viewport chrome.</summary>
@@ -160,6 +159,21 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
 
     [ObservableProperty]
     private string _selectedDebugView = "Lit";
+
+    /// <summary>Boolean toggle for the DDGI probe marker overlay.
+    /// Lives outside the host <see cref="ViewportDebugView"/> enum so
+    /// the host enum stays plugin-feature-free. Bound to a separate
+    /// editor checkbox (AXAML wiring in a follow-up). Drive mirrors
+    /// into <see cref="Engine.DDGI.DDGIRendererPlugin.ShowProbes"/>
+    /// which the canonical clustered plan consults during
+    /// <c>BuildPlan</c> to decide whether to inject the debug pass.</summary>
+    [ObservableProperty]
+    private bool _showDDGIProbes;
+
+    partial void OnShowDDGIProbesChanged(bool value)
+    {
+        Engine.DDGI.DDGIVolumeRegistry.ShowProbes = value;
+    }
 
     partial void OnSelectedDebugViewChanged(string value)
     {
@@ -646,7 +660,6 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 "UV" => ViewportDebugView.Uv,
                 "Tangent" => ViewportDebugView.Tangent,
                 "Bitangent" => ViewportDebugView.Bitangent,
-                "DDGI Probes" => ViewportDebugView.DDGIProbes,
                 _ => ViewportDebugView.Lit
             };
         _gameLoop.CameraFieldOfViewDegrees =
@@ -683,7 +696,6 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
             ViewportDebugView.WorldPosition => "World Position",
             ViewportDebugView.Rma => "RMA",
             ViewportDebugView.Uv => "UV",
-            ViewportDebugView.DDGIProbes => "DDGI Probes",
             _ => mode.ToString()
         };
 

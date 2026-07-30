@@ -2,7 +2,6 @@
 using Engine.Plugins;
 using Engine.Renderer;
 using Engine.RHI;
-using Engine.Renderer.DDGI;
 
 namespace Engine.Plugin.Renderer.Clustered;
 
@@ -104,14 +103,14 @@ public sealed class ClusteredRendererPlugin :
 
         // Plugin-shared debug overlays run AFTER Pbr so probes are
         // overlay-drawn on the populated scene rather than wiped by
-        // Pbr's `BeginRenderPass(LoadOp.Clear)`. The DDGIVolumeRegistry
-        // is a process-wide singleton so a single secondary plugin
-        // (renderer.ddgi) can contribute a debug pass without a full
-        // IRendererPlanPlugin aggregation refactor.
-        DDGIProbeVolume? ddgiVolume =
+        // Pbr's `BeginRenderPass(LoadOp.Clear)`. The DDGI plugin owns
+        // the `ShowProbes` toggle on its static registry; the
+        // canonical clustered plan only consults it here so the host
+        // `ViewportDebugView` enum stays plugin-feature-free.
+        Engine.DDGI.DDGIProbeVolume? ddgiVolume =
             Engine.DDGI.DDGIVolumeRegistry.ActiveVolume;
         if (ddgiVolume != null &&
-            (context.Renderer.DebugView & ViewportDebugView.DDGIProbes) != 0)
+            Engine.DDGI.DDGIVolumeRegistry.ShowProbes)
         {
             result.Passes.Add(
                 new Engine.DDGI.DDGIDebugPass(

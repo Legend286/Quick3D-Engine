@@ -13,7 +13,7 @@ namespace Engine.DDGI;
 public sealed class DDGIDebugPass : RenderPass, IDisposable
 {
     private readonly RhiDevice _device;
-    private readonly Engine.Renderer.DDGI.DDGIProbeVolume _volume;
+    private readonly DDGIProbeVolume _volume;
     private readonly string _contentRoot;
     private readonly IReadOnlyList<string>? _cliArgs;
     private readonly IReadOnlyList<string>? _includeDirs;
@@ -46,7 +46,7 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
 
     public DDGIDebugPass(
         RhiDevice device,
-        Engine.Renderer.DDGI.DDGIProbeVolume volume,
+        DDGIProbeVolume volume,
         Engine.Renderer.Renderer renderer,
         string contentRoot,
         IReadOnlyList<string>? cliArgs,

@@ -2,7 +2,7 @@
 using System;
 using System.Numerics;
 
-namespace Engine.Renderer.DDGI;
+namespace Engine.DDGI;
 
 /// <summary>
 /// CPU-side description of a dense DDGI probe volume. The probe grid is

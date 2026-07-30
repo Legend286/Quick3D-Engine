@@ -64,13 +64,7 @@ public enum ViewportDebugView
     Tangent,
 
     /// <summary>Displays the surface bitangent direction.</summary>
-    Bitangent,
-
-    /// <summary>Overlays DDGI probe grid centers as world-space
-    /// markers. Implemented by the renderer.ddgi plugin; ignored
-    /// when the plugin is not enabled. See
-    /// <c>docs/renderer/ddgi.md</c> for the visualization details.</summary>
-    DDGIProbes
+    Bitangent
 }
 
 /// <summary>Identifies the active editor transform gizmo operation.</summary>
