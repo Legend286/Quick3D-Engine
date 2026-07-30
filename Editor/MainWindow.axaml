@@ -32,44 +32,82 @@
     <!-- Top menu bar -->
     <Menu Grid.Row="0" Grid.ColumnSpan="5" FontSize="13">
       <MenuItem Header="_File">
-        <MenuItem Header="_New Project…" Click="OnNewProjectClicked" />
-        <MenuItem Header="_Open Project…" Click="OnOpenProjectClicked" />
+        <MenuItem Header="_New Project…" Click="OnNewProjectClicked">
+          <MenuItem.Icon><TextBlock Text="&#xE2CC;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
+        <MenuItem Header="_Open Project…" Click="OnOpenProjectClicked">
+          <MenuItem.Icon><TextBlock Text="&#xE2C8;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
         <Separator />
-        <MenuItem Header="_New Scene" Click="OnNewSceneClicked" />
-        <MenuItem Header="_Open Scene…" Click="OnOpenSceneClicked" />
-        <MenuItem Header="_Save Scene" Click="OnSaveSceneClicked" />
-        <MenuItem Header="Save Scene _As…" Click="OnSaveSceneAsClicked" />
+        <MenuItem Header="_New Scene" Click="OnNewSceneClicked">
+          <MenuItem.Icon><TextBlock Text="&#xE145;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
+        <MenuItem Header="_Open Scene…" Click="OnOpenSceneClicked">
+          <MenuItem.Icon><TextBlock Text="&#xE2C7;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
+        <MenuItem Header="_Save Scene" Click="OnSaveSceneClicked">
+          <MenuItem.Icon><TextBlock Text="&#xE161;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
+        <MenuItem Header="Save Scene _As…" Click="OnSaveSceneAsClicked">
+          <MenuItem.Icon><TextBlock Text="&#xE161;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
         <Separator />
-        <MenuItem Header="_Import Asset…" Click="OnImportAssetClicked" />
-        <Separator />
-        <MenuItem Header="E_xit" Click="OnExitClicked" />
+        <MenuItem Header="E_xit" Click="OnExitClicked">
+          <MenuItem.Icon><TextBlock Text="&#xE879;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
       </MenuItem>
       <MenuItem Header="_Edit">
         <MenuItem Header="{Binding Commands.UndoLabel}"
                   IsEnabled="{Binding Commands.CanUndo}"
-                  Click="OnUndoClicked" />
+                  Click="OnUndoClicked">
+          <MenuItem.Icon><TextBlock Text="&#xE166;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
         <MenuItem Header="{Binding Commands.RedoLabel}"
                   IsEnabled="{Binding Commands.CanRedo}"
-                  Click="OnRedoClicked" />
+                  Click="OnRedoClicked">
+          <MenuItem.Icon><TextBlock Text="&#xE15A;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
         <Separator />
         <MenuItem Header="_Delete"
-                  Click="OnDeleteEntityClicked" />
+                  Click="OnDeleteEntityClicked">
+          <MenuItem.Icon><TextBlock Text="&#xE872;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
       </MenuItem>
       <MenuItem Header="_Window">
-        <MenuItem Header="_Reset Layout" />
+        <MenuItem Header="_Reset Layout">
+          <MenuItem.Icon><TextBlock Text="&#xE8D5;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
       </MenuItem>
       <MenuItem Header="_Tools">
-        <MenuItem Header="_Plugins…"
-                  Click="OnPluginsClicked" />
+        <MenuItem Header="_Plugins…" Click="OnPluginsClicked">
+          <MenuItem.Icon><TextBlock Text="&#xE87B;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
         <Separator />
-        <MenuItem Header="_Material Editor" />
-        <MenuItem Header="_Model Viewer" />
-        <MenuItem Header="_Particle Editor" />
-        <MenuItem Header="_Level Editor" />
+        <MenuItem Header="_Material Editor">
+          <MenuItem.Icon><TextBlock Text="&#xE3F4;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
+        <MenuItem Header="_Model Viewer">
+          <MenuItem.Icon><TextBlock Text="&#xE8B2;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
+        <MenuItem Header="_Particle Editor">
+          <MenuItem.Icon><TextBlock Text="&#xE3E3;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
+        <MenuItem Header="_Level Editor">
+          <MenuItem.Icon><TextBlock Text="&#xE8D5;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
+        <Separator />
+        <!-- Populated by MainWindow.RebuildDynamicToolsMenu from DynamicMenuService. -->
+        <MenuItem x:Name="ExtensionsToolsMenuItem"
+                  Header="_Extensions"
+                  IsVisible="False" />
       </MenuItem>
-      <MenuItem Header="_Hot Reload" Click="OnHotReloadClicked" FontWeight="Bold" Foreground="#32cd32" />
+      <MenuItem Header="_Hot Reload" Click="OnHotReloadClicked" FontWeight="Bold" Foreground="#32cd32">
+        <MenuItem.Icon><TextBlock Text="&#xE5D5;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" Foreground="#32cd32" /></MenuItem.Icon>
+      </MenuItem>
       <MenuItem Header="_Help">
-        <MenuItem Header="_About" />
+        <MenuItem Header="_About">
+          <MenuItem.Icon><TextBlock Text="&#xE887;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+        </MenuItem>
       </MenuItem>
     </Menu>
 
@@ -88,17 +126,28 @@
                 <Button.Flyout>
                   <MenuFlyout>
                     <MenuItem Header="Empty Entity"
-                              Click="OnCreateEmptyEntityClicked" />
+                              Click="OnCreateEmptyEntityClicked">
+                      <MenuItem.Icon><TextBlock Text="&#xE8CC;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+                    </MenuItem>
                     <MenuItem Header="Camera"
-                              Click="OnCreateCameraClicked" />
+                              Click="OnCreateCameraClicked">
+                      <MenuItem.Icon><TextBlock Text="&#xE412;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+                    </MenuItem>
                     <Separator />
                     <MenuItem Header="Light">
+                      <MenuItem.Icon><TextBlock Text="&#xE42A;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
                       <MenuItem Header="Directional Light"
-                                Click="OnAddDirectionalLightClicked" />
+                                Click="OnAddDirectionalLightClicked">
+                        <MenuItem.Icon><TextBlock Text="&#xE518;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+                      </MenuItem>
                       <MenuItem Header="Point Light"
-                                Click="OnAddPointLightClicked" />
+                                Click="OnAddPointLightClicked">
+                        <MenuItem.Icon><TextBlock Text="&#xE42A;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+                      </MenuItem>
                       <MenuItem Header="Spot Light"
-                                Click="OnAddSpotLightClicked" />
+                                Click="OnAddSpotLightClicked">
+                        <MenuItem.Icon><TextBlock Text="&#xE872;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" /></MenuItem.Icon>
+                      </MenuItem>
                     </MenuItem>
                   </MenuFlyout>
                 </Button.Flyout>

@@ -36,13 +36,50 @@ Manifest in `Plugins/Renderer.PathTracing/plugin.json`.
 
 ### core.diagnostics.surface-auditor — `Engine.Plugin.SurfaceAuditor`
 
-Editor-only diagnostic plugin. Registers **Tools > Run Surface Audit** via
-`IEditorPluginHost.RegisterMenuAction`. Triggering it invokes
+Editor-only diagnostic plugin. Registers **Tools > Extensions > Run Surface Audit**
+via `IEditorPluginHost.RegisterMenuAction`. Triggering it invokes
 `DriftProbe.Run(_host.EngineRoot)` which scans the four hardcoded engine
 assembly allow-lists and emits per-name `Warn` log lines for any known
 `Engine.*` name absent from one or more sources. Manifest in
 `Plugins/SurfaceAuditor/plugin.json`; see `Plugins/SurfaceAuditor/DriftProbe.cs`
 for the audited source list.
+
+## Menu integration
+
+The editor plugin contract surfaces into three UI backends through the shared
+`Editor.Services.DynamicMenuService`, which `Editor.Services.PluginCatalogService`
+writes to as the host.
+
+| Plugin call | Editor surface | Status |
+| --- | --- | --- |
+| `RegisterMenuAction(id, path, name, onExecute)` | Avalonia `Tools > Extensions` submenu | wired |
+| `RegisterImGuiOverlay(id, onDraw)` | viewport ImGui overlay | registered, render-pipeline wiring deferred |
+| `RegisterToolPanel(id, title, control)` | dockable panel | registered, dock wiring deferred |
+
+### Menu actions (v1 contract)
+
+`MainWindow` (`Editor/MainWindow.axaml.cs`) subscribes to
+`DynamicMenuService.Shared.OnMenusChanged` once in its constructor — before
+`Opened` fires — and calls `RebuildDynamicToolsMenu()` immediately so plugin
+actions registered during `PluginCatalogService.Discover()` (which runs in
+the catalog constructor, before MainWindow is even constructed) still
+appear on the first paint.
+
+The rebuild targets the `MenuItem` declared in `Editor/MainWindow.axaml` as
+`<MenuItem x:Name="ExtensionsToolsMenuItem" Header="_Extensions" IsVisible="False" />`,
+placed immediately under `_Tools`. The submenu is hidden when no plugin has
+registered an action.
+
+**v1 contract**: only `menuPath == "Tools"` is honoured — every registered
+action appears as a flat entry under `Tools > Extensions`. Nested paths
+(e.g. `"Tools > Lighting"`) are reserved for a future iteration. The
+plugin's `ItemName` becomes the MenuItem header; clicking it invokes the
+`onExecute` delegate inside a try/catch that routes any exception through
+`EngineLog`.
+
+`MainWindow.OnClosed` removes its `OnMenusChanged` subscription before
+disposing `PluginCatalogService`, so a late `Unregister` cannot crash into
+a disposed control tree.
 
 ## Adding a new plugin
 

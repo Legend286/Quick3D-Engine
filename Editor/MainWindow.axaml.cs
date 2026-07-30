@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using Avalonia.Controls;
@@ -8,18 +9,90 @@ using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
 using Engine.CBindings;
+using Engine.Editor.Services;
 using Engine.Editor.ViewModels;
 
 namespace Engine.Editor;
 
 public partial class MainWindow : Window
 {
+    private readonly List<MenuItem> _dynamicToolsItems = new();
+    private bool _isClosing;
+
     public MainWindow()
     {
         InitializeComponent();
         DataContext = new MainWindowViewModel();
+        // Subscribe here so plugin menu actions registered before the first
+        // paint (i.e. during PluginCatalogService.Discover()) are picked up
+        // by the immediate RebuildDynamicToolsMenu() call below.
+        DynamicMenuService.Shared.OnMenusChanged += RebuildDynamicToolsMenu;
+        RebuildDynamicToolsMenu();
         Opened += OnOpened;
         KeyDown += OnWindowKeyDown;
+    }
+
+    /// <summary>
+    /// Rebuilds the Tools > Extensions submenu from every menu action an
+    /// editor-kind plugin has registered through DynamicMenuService. Marshals
+    /// to the UI thread because OnMenusChanged can fire from non-UI paths
+    /// (FileSystemWatcher -&gt; Debounce -&gt; BuildPluginAsync -&gt;
+    /// UnloadPlugin -&gt; UnregisterPlugin), and Avalonia's control tree
+    /// mutations must stay on the UI thread.
+    /// </summary>
+    private void RebuildDynamicToolsMenu()
+    {
+        Avalonia.Threading.Dispatcher.UIThread.Post(
+            () => RebuildDynamicToolsMenuOnUi(),
+            Avalonia.Threading.DispatcherPriority.Background);
+    }
+
+    private void RebuildDynamicToolsMenuOnUi()
+    {
+        // A Post enqueued before MainWindow.OnClosed may still be in the
+        // dispatcher queue when OnClosed completes. Bail instead of mutating
+        // a teardown-stage MenuItem tree.
+        if (_isClosing) return;
+
+        var extensionsItem =
+            this.FindControl<MenuItem>("ExtensionsToolsMenuItem");
+        if (extensionsItem is null) return;
+
+        foreach (var item in _dynamicToolsItems)
+            extensionsItem.Items.Remove(item);
+        _dynamicToolsItems.Clear();
+
+        foreach (var registration
+                 in DynamicMenuService.Shared.EnumerateMenuActions())
+        {
+            // v1 contract: only menuPath == "Tools" surfaces inside the
+            // Extensions submenu. Future versions may honour additional
+            // paths; see docs/editor/extensions.md.
+            if (!string.Equals(
+                    registration.MenuPath, "Tools",
+                    StringComparison.Ordinal))
+                continue;
+
+            var action = registration.OnExecute;
+            var menuItem = new MenuItem
+            {
+                Header = registration.ItemName,
+            };
+            menuItem.Click += (_, _) =>
+            {
+                try { action(); }
+                catch (Exception ex)
+                {
+                    Log.Error(
+                        $"[Tools] Menu action '{registration.ItemName}' threw {ex.GetType().Name}: {ex.Message}",
+                        "Editor");
+                }
+            };
+            extensionsItem.Items.Add(menuItem);
+            _dynamicToolsItems.Add(menuItem);
+        }
+
+        extensionsItem.IsVisible = _dynamicToolsItems.Count > 0;
     }
 
     private void InitializeComponent() => AvaloniaXamlLoader.Load(this);
@@ -309,16 +382,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        string scenesDirectory = Path.GetFullPath(
-            Path.Combine(App.ProjectRoot, "Content", "scenes"));
+        string contentDirectory = Path.GetFullPath(
+            Path.Combine(App.ProjectRoot, "Content"));
         string fullPath = Path.GetFullPath(scenePath);
         string relativePath = Path.GetRelativePath(
-            scenesDirectory,
+            contentDirectory,
             fullPath);
         string sceneName =
             relativePath.StartsWith("..", StringComparison.Ordinal)
-                ? Path.GetFileName(fullPath)
+                ? fullPath
                 : relativePath;
+        
         if (sceneName.EndsWith(
                 ".scene.json",
                 StringComparison.OrdinalIgnoreCase))
@@ -336,23 +410,15 @@ public partial class MainWindow : Window
     private static async System.Threading.Tasks.Task<IStorageFolder?>
         GetScenesFolderAsync(TopLevel topLevel)
     {
-        string scenesDirectory =
-            Path.Combine(App.ProjectRoot, "Content", "scenes");
-        if (!Directory.Exists(scenesDirectory))
-            Directory.CreateDirectory(scenesDirectory);
+        string contentDirectory =
+            Path.Combine(App.ProjectRoot, "Content");
+        if (!Directory.Exists(contentDirectory))
+            Directory.CreateDirectory(contentDirectory);
         return await topLevel.StorageProvider
-            .TryGetFolderFromPathAsync(scenesDirectory);
+            .TryGetFolderFromPathAsync(contentDirectory);
     }
 
-    private async void OnImportAssetClicked(object? sender, RoutedEventArgs e)
-    {
-        var vm = new ViewModels.AssetImportViewModel();
-        var importWindow = new Views.AssetImportWindow
-        {
-            DataContext = vm
-        };
-        await importWindow.ShowDialog(this);
-    }
+
 
     private void OnNewProjectClicked(object? sender, RoutedEventArgs e)
     {
@@ -417,6 +483,14 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(System.EventArgs e)
     {
+        // Set the close-guard flag FIRST so any Post already enqueued by
+        // a late OnMenusChanged fire bails out of RebuildDynamicToolsMenuOnUi
+        // instead of mutating a teardown-stage MenuItem tree.
+        _isClosing = true;
+        // Drop the dynamic-menu subscription before tearing down
+        // PluginCatalogService, otherwise the next OnMenusChanged fire
+        // would touch a disposed control tree.
+        DynamicMenuService.Shared.OnMenusChanged -= RebuildDynamicToolsMenu;
         // Release the Metal swapchain + device before tearing down the logger.
         if (DataContext is MainWindowViewModel vm)
         {
