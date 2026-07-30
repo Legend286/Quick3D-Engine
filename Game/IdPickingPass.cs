@@ -132,6 +132,9 @@ public class IdPickingPass : RenderPass, IDisposable
                         {
                             AabbMin = new Vector4(0f, 0f, 0f, 1f),
                             AabbMax = new Vector4(0f, 0f, 0f, 1f),
+                            LocalOffset = new Vector4(
+                                p.LocalOffset,
+                                0.0f),
                             Vertices = mesh.VertexBuffer.DeviceAddress,
                             Indices = mesh.IndexBuffer.DeviceAddress,
                             IndexCount = mesh.IndexCount,
@@ -221,14 +224,16 @@ public class IdPickingPass : RenderPass, IDisposable
         if (entity == 0 || !_world.TryGet<Engine.Scene.Components.Camera>(entity, out var cam))
             return false;
 
-        var transform = _world.TryGet<Transform>(entity, out var t) ? t : Transform.Default;
-        var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
-        Matrix4x4 proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, aspect, cam.NearClip, cam.FarClip);
-        camData.ViewProj = view * proj;
-        Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
-        camData.InvViewProj = invVP;
-        camData.CameraPosition = new Vector4(transform.Position, 1.0f);
-        camData.CameraForward = new Vector4(Vector3.Transform(Vector3.UnitZ, transform.Rotation), 0.0f);
+        var transform = _world.TryGet<Transform>(
+            entity,
+            out var t)
+                ? t
+                : Transform.Default;
+        camData = _renderer.BuildCameraData(
+            cam,
+            transform,
+            aspect,
+            Vector3.UnitZ);
         return true;
     }
 

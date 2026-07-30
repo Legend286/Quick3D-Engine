@@ -40,3 +40,22 @@ For Ray Tracing (Path Tracing), this includes Acceleration Structures (AS) and t
 - **Binding**: Calling `sink.UseAccelStruct(_tlas)` emits a single `[encoder useResources:]` batch call to Metal, natively making the entire AS hierarchy and all referenced geometry buffers resident for the frame.
 
 This allows the C# Path Tracer to only manage the high-level TLAS without maintaining per-mesh loops.
+
+## GPU Timestamp Sampling
+
+Render-graph pass timings use the timestamp counter set exposed by Metal.
+Apple silicon normally supports `MTLCounterSamplingPointAtStageBoundary`, so
+render and compute pass descriptors attach the counter sample buffer and write
+the logical pass's first and last stage-boundary samples. GPUs that expose draw
+or dispatch boundaries instead use encoder sampling commands with the same
+sample buffer attached to the pass descriptor.
+
+One logical render-graph pass may open multiple Metal encoders. The first
+encoder writes the start sample and every encoder writes the shared end slot;
+the final encoder therefore leaves the complete logical-pass interval in that
+slot. The backend samples correlated CPU and GPU clocks before submission and
+again after completion, then converts each GPU timestamp delta using the
+resulting clock-span ratio. Command-buffer duration is only a sanity ceiling,
+not a scale factor for the sampled interval. Samples resolve asynchronously
+through rotating pools. Command-buffer `GPUStartTime` and `GPUEndTime` provide
+total frame duration, but are not presented as per-pass measurements.

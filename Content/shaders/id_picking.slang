@@ -22,7 +22,9 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     uint index = part.indices[vid];
     Vertex v = part.vertices[index];
     
-    float3 vPos = float3(v.px, v.py, v.pz);
+    float3 vPos =
+        float3(v.px, v.py, v.pz) +
+        part.localOffset.xyz;
     
     float4 worldPos = mul(inst.modelMatrix, float4(vPos, 1.0));
     output.position = mul(push.camera->viewProj, worldPos);
@@ -43,4 +45,3 @@ float4 fragmentMain(VertexOutput input) : SV_Target
     float a = float((partIdx >> 8) & 0xFF) / 255.0;
     return float4(r, g, b, a);
 }
-

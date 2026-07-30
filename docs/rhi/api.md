@@ -10,6 +10,16 @@
 - All public symbols accept/return POD or opaque `Rhi*` handles. Struct
   descriptors start with a `uint32_t abi` field for forward growth.
 
+The managed `IGameLoop.RenderThumbnail` and `IGameLoop.LoadModelPreview`
+methods accept an optional model part index. `-1` renders the complete model;
+a non-negative value renders the matching stable `.mdl` part.
+
+`IGameLoop.RendererMode` selects clustered Forward+ raster rendering or path
+tracing. `RendererModeChanged` keeps editor chrome synchronized with changes
+from keyboard shortcuts. Renderer implementations cache one compiled graph
+and its pass-owned state per mode, so activating a previously used mode does
+not recompile graph topology.
+
 ## Opacity and handle lifetime
 
 - `RhiDevice`, `RhiSwapchain`, `RhiBuffer`, `RhiTexture`, `RhiShader`,
@@ -171,8 +181,10 @@ int32_t rhi_timestamp_query_pool_read_frame_duration(
 Duration `i` is formed from samples `2*i` and `2*i+1`. Reads are non-blocking:
 `1` means ready, `0` means still in flight, and `-1` means unsupported or
 invalid. Metal records timestamp counters at draw and dispatch encoder
-boundaries, resolves them to shared memory, and converts the completed command
-buffer's timestamp domain to nanoseconds. The frame-duration read uses Metal's
+boundaries and resolves them to shared memory. Metal correlates CPU and GPU
+clocks before submission and after completion, then converts each GPU delta
+using the measured clock-span ratio. A duration larger than the completed
+command buffer is rejected as invalid. The frame-duration read uses Metal's
 completed command-buffer GPU start and end times, so total GPU timing remains
 available independently of per-pass counter sampling. Vulkan can map the same
 API to query pools and `timestampPeriod`.
@@ -209,6 +221,21 @@ The Avalonia viewport panel calls:
    back-buffer acquired in (4).
 6. `swap.Present()` -> `rhi_present` (commits the command buffer
    and CoreAnimation flips the drawable at the next vsync).
+
+### Editor viewport state
+
+`IGameLoop` exposes renderer, projection, debug-view, field-of-view, and
+orthographic-size state to the editor shell. These settings remain above the C
+ABI because they select existing render plans and camera constants rather than
+creating backend resources. `ViewportProjectionMode` supports Perspective and
+Orthographic; `ViewportDebugView` selects Lit, Wireframe, Depth, normal,
+material-channel, lighting, position, emissive, UV, tangent, and bitangent
+visualizations.
+
+Projection changes animate through a shared camera projection blend. The blend
+is carried in camera frame data and used by raster shaders, path-traced primary
+rays, picking, outlines, and overlays, so no render-graph recompilation or
+backend-specific projection path is required.
 
 ### Advanced Pipeline Features (Phase 3+)
 

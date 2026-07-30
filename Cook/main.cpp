@@ -196,7 +196,7 @@ std::string ExecuteBasisu(const std::string& input_img, const std::string& out_d
     tex_meta.close();
 
     // Return the relative filename for serialization in materials (only on success)
-    return "../../textures/" + base_name + ".ktx2";
+    return "../../../textures/" + base_name + ".ktx2";
 }
 
 int main(int argc, char** argv) {
@@ -243,13 +243,12 @@ int main(int argc, char** argv) {
     }
     std::cout << "Using basisu: " << g_basisu_path << "\n";
     
-    fs::create_directories(fs::path(out_dir) / "models");
-    fs::create_directories(fs::path(out_dir) / "models" / "materials");
-    fs::create_directories(fs::path(out_dir) / "textures");
-
     std::string base_name = in_path.stem().string();
-    std::string output_msh = (fs::path(out_dir) / (base_name + ".msh")).string();
-    std::string output_mdl = (fs::path(out_dir) / (base_name + ".mdl")).string();
+    fs::path model_output_dir =
+        fs::path(out_dir) / "models" / base_name;
+    fs::create_directories(model_output_dir);
+    fs::create_directories(model_output_dir / "materials");
+    fs::create_directories(fs::path(out_dir) / "textures");
 
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
@@ -330,8 +329,9 @@ int main(int argc, char** argv) {
     std::mutex tex_log_mutex;
     std::atomic<int> texture_failure_count{0};
 
-    unsigned int num_threads = std::thread::hardware_concurrency();
-    if (num_threads == 0) num_threads = 4;
+    unsigned int hardware_threads = std::thread::hardware_concurrency();
+    unsigned int num_threads =
+        hardware_threads > 2 ? hardware_threads - 2 : 1;
 
     std::mutex tex_job_mutex;
     size_t current_tex = 0;
@@ -425,7 +425,9 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < model.materials.size(); ++i) {
         auto& mat = model.materials[i];
         std::string mat_name = mat.name.empty() ? (base_name + "_mat_" + std::to_string(i)) : mat.name;
-        std::string output_mat = (fs::path(out_dir) / "models" / "materials" / (mat_name + ".mat")).string();
+        std::string output_mat =
+            (model_output_dir / "materials" /
+             (mat_name + ".mat")).string();
         cooked_materials.push_back("materials/" + mat_name + ".mat");
 
         std::ofstream mat_file(output_mat);
@@ -564,6 +566,7 @@ int main(int argc, char** argv) {
             std::vector<Vertex> v;
             std::vector<uint32_t> i;
             float min_x, min_y, min_z, max_x, max_y, max_z;
+            float local_offset_x, local_offset_y, local_offset_z;
             int material_idx;
         };
         std::vector<ExtractedPrimitive> extracted;
@@ -710,6 +713,15 @@ int main(int argc, char** argv) {
         float pivot_y = total_min_y;
         float pivot_z = (total_min_z + total_max_z) * 0.5f;
 
+        for (auto& p : extracted) {
+            float part_center_x = (p.min_x + p.max_x) * 0.5f;
+            float part_center_y = (p.min_y + p.max_y) * 0.5f;
+            float part_center_z = (p.min_z + p.max_z) * 0.5f;
+            p.local_offset_x = part_center_x - pivot_x;
+            p.local_offset_y = part_center_y - pivot_y;
+            p.local_offset_z = part_center_z - pivot_z;
+        }
+
         std::atomic<size_t> total_indices{0};
         
         std::mutex mesh_job_mutex;
@@ -728,14 +740,24 @@ int main(int argc, char** argv) {
                         i = current_part++;
                     }
                     auto& p = extracted[i];
+                    float part_center_x =
+                        p.local_offset_x + pivot_x;
+                    float part_center_y =
+                        p.local_offset_y + pivot_y;
+                    float part_center_z =
+                        p.local_offset_z + pivot_z;
                     
                     for (auto& v : p.v) {
-                        v.px -= pivot_x;
-                        v.py -= pivot_y;
-                        v.pz -= pivot_z;
+                        v.px -= part_center_x;
+                        v.py -= part_center_y;
+                        v.pz -= part_center_z;
                     }
-                    p.min_x -= pivot_x; p.min_y -= pivot_y; p.min_z -= pivot_z;
-                    p.max_x -= pivot_x; p.max_y -= pivot_y; p.max_z -= pivot_z;
+                    p.min_x -= part_center_x;
+                    p.min_y -= part_center_y;
+                    p.min_z -= part_center_z;
+                    p.max_x -= part_center_x;
+                    p.max_y -= part_center_y;
+                    p.max_z -= part_center_z;
 
                     std::string hash_suffix = "";
                     {
@@ -756,7 +778,8 @@ int main(int argc, char** argv) {
                     }
 
                     std::string msh_name = obj_name + "_" + hash_suffix + "_part_" + std::to_string(i) + ".msh";
-                    std::string msh_path = (fs::path(out_dir) / "models" / msh_name).string();
+                    std::string msh_path =
+                        (model_output_dir / msh_name).string();
                     
                     std::ofstream out_file(msh_path, std::ios::binary);
                     if (out_file) {
@@ -787,9 +810,10 @@ int main(int argc, char** argv) {
             fut.get();
         }
 
-        std::string output_mdl = (fs::path(out_dir) / "models" / (obj_name + ".mdl")).string();
+        std::string output_mdl =
+            (model_output_dir / (obj_name + ".mdl")).string();
         std::ofstream mdl_file(output_mdl);
-        mdl_file << "{\n  \"version\": 2,\n  \"parts\": [\n";
+        mdl_file << "{\n  \"version\": 3,\n  \"parts\": [\n";
 
         for (size_t i = 0; i < extracted.size(); ++i) {
             auto& p = extracted[i];
@@ -815,6 +839,10 @@ int main(int argc, char** argv) {
             if (p.material_idx >= 0 && p.material_idx < cooked_materials.size()) {
                 mdl_file << ", \"material\": \"" << cooked_materials[p.material_idx] << "\"";
             }
+            mdl_file << ", \"local_offset\": ["
+                     << p.local_offset_x << ", "
+                     << p.local_offset_y << ", "
+                     << p.local_offset_z << "]";
             mdl_file << ", \"bounds\": {\"min\": [" << p.min_x << ", " << p.min_y << ", " << p.min_z << "], \"max\": [" << p.max_x << ", " << p.max_y << ", " << p.max_z << "]}";
             mdl_file << " }" << (i == extracted.size() - 1 ? "" : ",") << "\n";
         }
@@ -828,7 +856,9 @@ int main(int argc, char** argv) {
         first_entity = false;
         scene_file << "    {\n";
         scene_file << "      \"name\": \"" << obj_name << "\",\n";
-        scene_file << "      \"source\": \"" << "models/" << obj_name + ".mdl" << "\",\n";
+        scene_file << "      \"source\": \""
+                   << "models/" << base_name << "/"
+                   << obj_name + ".mdl" << "\",\n";
         scene_file << "      \"position\": [" << pivot_x << ", " << pivot_y << ", " << pivot_z << "],\n";
         scene_file << "      \"rotation\": [0, 0, 0, 1],\n";
         scene_file << "      \"scale\": [1, 1, 1]\n";

@@ -13,6 +13,11 @@ namespace Engine.Game;
 
 internal sealed class PunctualShadowState : IDisposable
 {
+    private readonly record struct RetiredTileSet(
+        long ReleaseFrame,
+        ShadowAtlasAllocation[] StaticTiles,
+        ShadowAtlasAllocation[] DynamicTiles);
+
     internal sealed class LightEntry
     {
         public required ulong EntityId;
@@ -33,6 +38,13 @@ internal sealed class PunctualShadowState : IDisposable
         public long[] LastUpdatedFrames { get; } =
             { -1, -1, -1, -1, -1, -1 };
         public int CandidateLightSignature;
+        public Vector4 CandidateLightPosition;
+        public Vector4 CommittedLightPosition;
+        public int UpdateIntervalFrames = 1;
+        public float VisualPriority;
+        public int ResolutionSubdivision = 32;
+        public int ResolutionTargetSubdivision = 32;
+        public int ResolutionTargetFrames;
         public long ReadyFrame;
     }
 
@@ -42,9 +54,11 @@ internal sealed class PunctualShadowState : IDisposable
     private readonly RhiBindlessHeap _bindlessHeap;
     private readonly Dictionary<int, uint> _pageSlots = new();
     private readonly Dictionary<ulong, LightEntry> _entries = new();
+    private readonly List<RetiredTileSet> _retiredTileSets = new();
     private readonly object _entryLock = new();
     private readonly PunctualShadowFaceData[] _faceData =
         new PunctualShadowFaceData[MaximumLights * FacesPerLight];
+    private long _frameNumber;
 
     public RhiBuffer FaceBuffer { get; }
 
@@ -72,6 +86,14 @@ internal sealed class PunctualShadowState : IDisposable
                             entry.CandidateLightSignature,
                         entry.StaticValid[faceIndex],
                         entry.DynamicValid[faceIndex],
+                        entry.UpdateIntervalFrames,
+                        entry.LastUpdatedFrames[faceIndex] < 0
+                            ? int.MaxValue
+                            : (int)Math.Min(
+                                _frameNumber -
+                                    entry.LastUpdatedFrames[faceIndex],
+                                int.MaxValue),
+                        entry.VisualPriority,
                         staticTile.PageIndex,
                         staticTile.SlotIndex,
                         dynamicTile.PageIndex,
@@ -140,6 +162,7 @@ internal sealed class PunctualShadowState : IDisposable
         ulong entityId,
         int lightIndex,
         int faceCount,
+        int preferredSubdivision,
         long frameNumber)
     {
         lock (_entryLock)
@@ -147,6 +170,7 @@ internal sealed class PunctualShadowState : IDisposable
                 entityId,
                 lightIndex,
                 faceCount,
+                preferredSubdivision,
                 frameNumber);
     }
 
@@ -154,6 +178,7 @@ internal sealed class PunctualShadowState : IDisposable
         ulong entityId,
         int lightIndex,
         int faceCount,
+        int preferredSubdivision,
         long frameNumber)
     {
         if (_entries.TryGetValue(entityId, out LightEntry? existing))
@@ -164,12 +189,14 @@ internal sealed class PunctualShadowState : IDisposable
         if (lightIndex >= MaximumLights ||
             !_atlas.TryAllocateTileSet(
                 faceCount,
+                preferredSubdivision,
                 out ShadowAtlasAllocation[] staticTiles))
         {
             return null;
         }
         if (!_atlas.TryAllocateTileSet(
                 faceCount,
+                preferredSubdivision,
                 out ShadowAtlasAllocation[] dynamicTiles))
         {
             foreach (ShadowAtlasAllocation tile in staticTiles)
@@ -184,12 +211,92 @@ internal sealed class PunctualShadowState : IDisposable
             FaceCount = faceCount,
             StaticTiles = staticTiles,
             DynamicTiles = dynamicTiles,
+            ResolutionSubdivision = GetSubdivision(
+                staticTiles,
+                dynamicTiles),
+            ResolutionTargetSubdivision = preferredSubdivision,
             ReadyFrame = frameNumber + 1,
         };
         _entries.Add(entityId, entry);
         RegisterPages(staticTiles);
         RegisterPages(dynamicTiles);
         return entry;
+    }
+
+    public bool IsResolutionChangeReady(
+        LightEntry entry,
+        int preferredSubdivision)
+    {
+        if (entry.ResolutionTargetSubdivision != preferredSubdivision)
+        {
+            entry.ResolutionTargetSubdivision = preferredSubdivision;
+            entry.ResolutionTargetFrames = 1;
+            return false;
+        }
+
+        if (entry.ResolutionSubdivision == preferredSubdivision)
+        {
+            entry.ResolutionTargetFrames = 0;
+            return false;
+        }
+
+        entry.ResolutionTargetFrames++;
+        int stableFrameRequirement =
+            preferredSubdivision < entry.ResolutionSubdivision
+                ? 12
+                : 90;
+        return entry.ResolutionTargetFrames >= stableFrameRequirement;
+    }
+
+    public bool TryApplyResolutionChange(LightEntry entry)
+    {
+        int preferredSubdivision =
+            entry.ResolutionTargetSubdivision;
+        if (!_atlas.TryAllocateTileSet(
+                entry.FaceCount,
+                preferredSubdivision,
+                out ShadowAtlasAllocation[] staticTiles))
+        {
+            entry.ResolutionTargetFrames = 0;
+            return false;
+        }
+        if (!_atlas.TryAllocateTileSet(
+                entry.FaceCount,
+                preferredSubdivision,
+                out ShadowAtlasAllocation[] dynamicTiles))
+        {
+            foreach (ShadowAtlasAllocation tile in staticTiles)
+                _atlas.Release(tile);
+            entry.ResolutionTargetFrames = 0;
+            return false;
+        }
+
+        int subdivision = GetSubdivision(
+            staticTiles,
+            dynamicTiles);
+        if (subdivision == entry.ResolutionSubdivision)
+        {
+            foreach (ShadowAtlasAllocation tile in staticTiles)
+                _atlas.Release(tile);
+            foreach (ShadowAtlasAllocation tile in dynamicTiles)
+                _atlas.Release(tile);
+            entry.ResolutionTargetFrames = 0;
+            return false;
+        }
+
+        _retiredTileSets.Add(new RetiredTileSet(
+            _frameNumber + 3,
+            entry.StaticTiles,
+            entry.DynamicTiles));
+        entry.StaticTiles = staticTiles;
+        entry.DynamicTiles = dynamicTiles;
+        entry.ResolutionSubdivision = subdivision;
+        entry.ResolutionTargetFrames = 0;
+        RegisterPages(staticTiles);
+        RegisterPages(dynamicTiles);
+        Array.Clear(entry.StaticValid);
+        Array.Clear(entry.DynamicValid);
+        return true;
     }
 
     public void UpdateFace(
@@ -211,11 +318,26 @@ internal sealed class PunctualShadowState : IDisposable
                 GetPageSlot(dynamicTile.PageIndex),
                 entry.StaticValid[faceIndex] ? 1.0f : 0.0f,
                 entry.DynamicValid[faceIndex] ? 1.0f : 0.0f),
+            CommittedLightPosition = entry.CommittedLightPosition,
         };
     }
 
-    public void BeginFrame()
+    public void BeginFrame(long frameNumber)
     {
+        _frameNumber = frameNumber;
+        for (int index = _retiredTileSets.Count - 1;
+             index >= 0;
+             --index)
+        {
+            RetiredTileSet retired = _retiredTileSets[index];
+            if (retired.ReleaseFrame > frameNumber)
+                continue;
+            foreach (ShadowAtlasAllocation tile in retired.StaticTiles)
+                _atlas.Release(tile);
+            foreach (ShadowAtlasAllocation tile in retired.DynamicTiles)
+                _atlas.Release(tile);
+            _retiredTileSets.RemoveAt(index);
+        }
         Array.Clear(_faceData);
     }
 
@@ -239,6 +361,18 @@ internal sealed class PunctualShadowState : IDisposable
     }
 
     private uint GetPageSlot(int pageIndex) => _pageSlots[pageIndex];
+
+    private static int GetSubdivision(
+        ReadOnlySpan<ShadowAtlasAllocation> staticTiles,
+        ReadOnlySpan<ShadowAtlasAllocation> dynamicTiles)
+    {
+        uint smallestTile = ShadowAtlas.PageSize;
+        foreach (ShadowAtlasAllocation tile in staticTiles)
+            smallestTile = Math.Min(smallestTile, tile.Size);
+        foreach (ShadowAtlasAllocation tile in dynamicTiles)
+            smallestTile = Math.Min(smallestTile, tile.Size);
+        return (int)(ShadowAtlas.PageSize / smallestTile);
+    }
 
     private static Vector4 GetUvScaleBias(
         ShadowAtlasAllocation tile)
@@ -265,7 +399,15 @@ internal sealed class PunctualShadowState : IDisposable
                 foreach (ShadowAtlasAllocation tile in entry.DynamicTiles)
                     _atlas.Release(tile);
             }
+            foreach (RetiredTileSet retired in _retiredTileSets)
+            {
+                foreach (ShadowAtlasAllocation tile in retired.StaticTiles)
+                    _atlas.Release(tile);
+                foreach (ShadowAtlasAllocation tile in retired.DynamicTiles)
+                    _atlas.Release(tile);
+            }
             _entries.Clear();
+            _retiredTileSets.Clear();
             _pageSlots.Clear();
         }
     }
@@ -273,6 +415,8 @@ internal sealed class PunctualShadowState : IDisposable
 
 internal sealed class PunctualShadowPass : RenderPass, IDisposable
 {
+    internal const int MaximumFacesPerBatch = 24;
+
     private const ulong DrawCommandSize = 16;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -310,8 +454,14 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
     private readonly RhiPipeline _depthPipeline;
     private readonly RhiPipeline _cullPipeline;
     private readonly RhiPipeline _clearPipeline;
-    private RhiBuffer _drawCommands;
-    private RhiBuffer _cullJobs;
+    private readonly RhiBuffer[] _pointDrawCommands =
+        new RhiBuffer[2];
+    private readonly RhiBuffer[] _pointCullJobs =
+        new RhiBuffer[2];
+    private readonly RhiBuffer[] _spotDrawCommands =
+        new RhiBuffer[2];
+    private readonly RhiBuffer[] _spotCullJobs =
+        new RhiBuffer[2];
     private readonly long[] _renderedFrames = new long[16];
     private readonly int[] _renderedUnitCounts = new int[16];
 
@@ -374,15 +524,27 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             device,
             _clearVertexShader,
             _clearFragmentShader);
-        _drawCommands = RhiBuffer.Create(
-            device,
-            4096 * DrawCommandSize,
-            RhiNative.BufferUsage.Storage |
-                RhiNative.BufferUsage.Indirect);
-        _cullJobs = RhiBuffer.Create(
-            device,
-            32 * (ulong)sizeof(PunctualShadowCullJobData),
-            RhiNative.BufferUsage.Storage);
+        for (int batchIndex = 0; batchIndex < 2; ++batchIndex)
+        {
+            _pointDrawCommands[batchIndex] = RhiBuffer.Create(
+                device,
+                4096 * DrawCommandSize,
+                RhiNative.BufferUsage.Storage |
+                    RhiNative.BufferUsage.Indirect);
+            _pointCullJobs[batchIndex] = RhiBuffer.Create(
+                device,
+                32 * (ulong)sizeof(PunctualShadowCullJobData),
+                RhiNative.BufferUsage.Storage);
+            _spotDrawCommands[batchIndex] = RhiBuffer.Create(
+                device,
+                4096 * DrawCommandSize,
+                RhiNative.BufferUsage.Storage |
+                    RhiNative.BufferUsage.Indirect);
+            _spotCullJobs[batchIndex] = RhiBuffer.Create(
+                device,
+                32 * (ulong)sizeof(PunctualShadowCullJobData),
+                RhiNative.BufferUsage.Storage);
+        }
     }
 
     public override void Setup(RenderGraphBuilder builder)
@@ -417,9 +579,9 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         int dynamicSignature = ComputeSceneSignature(
             frameData,
             staticCasters: false);
-        _state.BeginFrame();
+        _state.BeginFrame(context.FrameNumber);
         var candidates = BuildCandidates(frameData);
-        var faceWork = new List<FaceWork>();
+        var lightWork = new List<LightWork>();
         var tileJobs = new List<TileRenderJob>();
         int renderedUnitCount = 0;
         foreach (Candidate candidate in candidates)
@@ -429,14 +591,28 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                     candidate.EntityId,
                     candidate.LightIndex,
                     candidate.FaceCount,
+                    candidate.PreferredSubdivision,
                     context.FrameNumber);
             if (entry == null ||
                 context.FrameNumber < entry.ReadyFrame)
                 continue;
 
             entry.CandidateLightSignature = candidate.LightSignature;
+            entry.CandidateLightPosition = candidate.Light.Position;
+            entry.UpdateIntervalFrames =
+                candidate.UpdateIntervalFrames;
+            entry.VisualPriority = candidate.VisualPriority;
+            bool resolutionDirty =
+                _state.IsResolutionChangeReady(
+                    entry,
+                    candidate.PreferredSubdivision);
             BuildFaceMatrices(candidate.Light, entry);
 
+            bool cameraRelevant = false;
+            bool lightDirty = false;
+            bool staticDirty = false;
+            bool dynamicDirty = false;
+            long oldestUpdatedFrame = long.MaxValue;
             for (int faceIndex = 0;
                  faceIndex < entry.FaceCount;
                  ++faceIndex)
@@ -449,109 +625,185 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                         candidateViewProjection,
                         frameData.Camera);
                 entry.CameraRelevant[faceIndex] = faceCanAffectCamera;
-                bool lightDirty =
+                cameraRelevant |= faceCanAffectCamera;
+                lightDirty |=
                     !entry.StaticValid[faceIndex] ||
                     !entry.DynamicValid[faceIndex] ||
                     entry.LightSignatures[faceIndex] !=
                         candidate.LightSignature;
-                bool staticDirty =
+                staticDirty |=
                     entry.StaticSceneSignatures[faceIndex] !=
                         staticSignature;
-                bool dynamicDirty =
+                dynamicDirty |=
                     entry.DynamicSceneSignatures[faceIndex] !=
                         dynamicSignature;
+                oldestUpdatedFrame = Math.Min(
+                    oldestUpdatedFrame,
+                    entry.LastUpdatedFrames[faceIndex]);
                 _state.UpdateFace(entry, faceIndex);
-                if (faceCanAffectCamera &&
-                    (lightDirty || staticDirty || dynamicDirty))
-                {
-                    faceWork.Add(new FaceWork(
-                        entry,
-                        faceIndex,
-                        candidate.LightSignature,
-                        candidate.Priority,
-                        lightDirty,
-                        staticDirty,
-                        dynamicDirty));
-                }
+            }
+            bool invalid = HasInvalidFace(entry);
+            long framesSinceUpdate = oldestUpdatedFrame < 0
+                ? long.MaxValue
+                : context.FrameNumber - oldestUpdatedFrame;
+            bool updateDue =
+                invalid ||
+                resolutionDirty ||
+                framesSinceUpdate >= candidate.UpdateIntervalFrames;
+            if (cameraRelevant &&
+                updateDue &&
+                (lightDirty ||
+                    staticDirty ||
+                    dynamicDirty ||
+                    resolutionDirty))
+            {
+                float urgency = invalid
+                    ? float.MaxValue
+                    : framesSinceUpdate /
+                        (float)candidate.UpdateIntervalFrames +
+                        MathF.Min(
+                            (float)framesSinceUpdate,
+                            60.0f) * 0.02f;
+                lightWork.Add(new LightWork(
+                    entry,
+                    candidate.LightSignature,
+                    candidate.Priority,
+                    urgency,
+                    lightDirty,
+                    staticDirty,
+                    dynamicDirty,
+                    resolutionDirty));
             }
         }
 
-        faceWork.Sort(CompareFaceWork);
-        foreach (FaceWork work in faceWork)
+        lightWork.Sort(CompareLightWork);
+        int minimumAtomicFaces = 1;
+        foreach (LightWork work in lightWork)
         {
-            PunctualShadowState.LightEntry entry = work.Entry;
-            int faceIndex = work.FaceIndex;
-            if (work.LightDirty &&
-                _scheduler.TryAdmit(
-                    GpuWorkDomain.PunctualShadows,
-                    2))
+            if (work.Entry.FaceCount == 6)
             {
-                Matrix4x4 candidateViewProjection =
-                    entry.CandidateViewProjections[faceIndex];
-                tileJobs.Add(new TileRenderJob(
-                    entry.StaticTiles[faceIndex],
-                    candidateViewProjection,
-                    1,
-                    0));
-                tileJobs.Add(new TileRenderJob(
-                    entry.DynamicTiles[faceIndex],
-                    candidateViewProjection,
-                    0,
-                    1));
-                entry.ViewProjections[faceIndex] =
-                    candidateViewProjection;
-                entry.StaticValid[faceIndex] = true;
-                entry.DynamicValid[faceIndex] = true;
-                entry.LightSignatures[faceIndex] =
-                    work.LightSignature;
-                entry.StaticSceneSignatures[faceIndex] =
-                    staticSignature;
-                entry.DynamicSceneSignatures[faceIndex] =
-                    dynamicSignature;
-                entry.LastUpdatedFrames[faceIndex] =
-                    context.FrameNumber;
-                renderedUnitCount += 2;
+                minimumAtomicFaces = 6;
+                break;
             }
-            else if (!work.LightDirty)
-            {
-                bool updated = false;
-                if (work.StaticDirty &&
-                    _scheduler.TryAdmit(
-                        GpuWorkDomain.PunctualShadows))
-                {
-                    tileJobs.Add(new TileRenderJob(
-                        entry.StaticTiles[faceIndex],
-                        entry.ViewProjections[faceIndex],
-                        1,
-                        0));
-                    entry.StaticSceneSignatures[faceIndex] =
-                        staticSignature;
-                    renderedUnitCount++;
-                    updated = true;
-                }
-                if (work.DynamicDirty &&
-                    _scheduler.TryAdmit(
-                        GpuWorkDomain.PunctualShadows))
-                {
-                    tileJobs.Add(new TileRenderJob(
-                        entry.DynamicTiles[faceIndex],
-                        entry.ViewProjections[faceIndex],
-                        0,
-                        1));
-                    entry.DynamicSceneSignatures[faceIndex] =
-                        dynamicSignature;
-                    renderedUnitCount++;
-                    updated = true;
-                }
-                if (updated)
-                {
-                    entry.LastUpdatedFrames[faceIndex] =
-                        context.FrameNumber;
-                }
-            }
-            _state.UpdateFace(entry, faceIndex);
         }
-        RenderTiles(sink, frameData, tileJobs);
+        int frameFaceLimit = _scheduler.GetUnitAllowance(
+            GpuWorkDomain.PunctualShadows,
+            minimumAtomicFaces);
+        List<List<LightWork>> batches =
+            BuildHomogeneousBatches(
+                lightWork,
+                frameFaceLimit);
+        int batchFaceCount = 0;
+        int dirtyFaceCount = 0;
+        foreach (LightWork work in lightWork)
+            dirtyFaceCount += work.Entry.FaceCount;
+        foreach (List<LightWork> batch in batches)
+        {
+            foreach (LightWork work in batch)
+                batchFaceCount += work.Entry.FaceCount;
+        }
+
+        bool batchAdmitted =
+            batchFaceCount > 0 &&
+            _scheduler.TryAdmit(
+                GpuWorkDomain.PunctualShadows,
+                batchFaceCount);
+        _scheduler.Defer(
+            GpuWorkDomain.PunctualShadows,
+            dirtyFaceCount - batchFaceCount);
+
+        if (batchAdmitted)
+        {
+            int pointBatchIndex = 0;
+            int spotBatchIndex = 0;
+            foreach (List<LightWork> batch in batches)
+            {
+                tileJobs.Clear();
+                foreach (LightWork work in batch)
+                {
+                    PunctualShadowState.LightEntry entry = work.Entry;
+                    bool resolutionChanged =
+                        work.ResolutionDirty &&
+                        _state.TryApplyResolutionChange(entry);
+                    bool updateStatic =
+                        resolutionChanged ||
+                        work.LightDirty ||
+                        work.StaticDirty;
+                    bool updateDynamic =
+                        resolutionChanged ||
+                        work.LightDirty ||
+                        work.DynamicDirty;
+                    for (int faceIndex = 0;
+                         faceIndex < entry.FaceCount;
+                         ++faceIndex)
+                    {
+                        Matrix4x4 viewProjection = work.LightDirty
+                            ? entry.CandidateViewProjections[faceIndex]
+                            : entry.ViewProjections[faceIndex];
+                        if (updateStatic)
+                        {
+                            tileJobs.Add(new TileRenderJob(
+                                entry.StaticTiles[faceIndex],
+                                viewProjection,
+                                1,
+                                0));
+                        }
+                        if (updateDynamic)
+                        {
+                            tileJobs.Add(new TileRenderJob(
+                                entry.DynamicTiles[faceIndex],
+                                viewProjection,
+                                0,
+                                1));
+                        }
+                    }
+
+                    if (work.LightDirty)
+                    {
+                        entry.CommittedLightPosition =
+                            entry.CandidateLightPosition;
+                    }
+                    for (int faceIndex = 0;
+                         faceIndex < entry.FaceCount;
+                         ++faceIndex)
+                    {
+                        if (work.LightDirty)
+                        {
+                            entry.ViewProjections[faceIndex] =
+                                entry.CandidateViewProjections[faceIndex];
+                            entry.LightSignatures[faceIndex] =
+                                work.LightSignature;
+                        }
+                        if (updateStatic)
+                        {
+                            entry.StaticValid[faceIndex] = true;
+                            entry.StaticSceneSignatures[faceIndex] =
+                                staticSignature;
+                        }
+                        if (updateDynamic)
+                        {
+                            entry.DynamicValid[faceIndex] = true;
+                            entry.DynamicSceneSignatures[faceIndex] =
+                                dynamicSignature;
+                        }
+                        entry.LastUpdatedFrames[faceIndex] =
+                            context.FrameNumber;
+                        _state.UpdateFace(entry, faceIndex);
+                    }
+                    renderedUnitCount += entry.FaceCount;
+                }
+                bool pointLights =
+                    batch[0].Entry.FaceCount == 6;
+                RenderTiles(
+                    sink,
+                    frameData,
+                    tileJobs,
+                    pointLights,
+                    pointLights
+                        ? pointBatchIndex++
+                        : spotBatchIndex++);
+            }
+        }
         _state.Upload();
         int historyIndex = (int)(context.FrameNumber & 15);
         _renderedFrames[historyIndex] = context.FrameNumber;
@@ -570,7 +822,9 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
     private unsafe void RenderTiles(
         ICommandSink sink,
         SceneFrameData frameData,
-        List<TileRenderJob> jobs)
+        List<TileRenderJob> jobs,
+        bool pointLights,
+        int batchIndex)
     {
         if (jobs.Count == 0)
             return;
@@ -583,7 +837,17 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                 ? pageOrder
                 : left.Tile.SlotIndex.CompareTo(right.Tile.SlotIndex);
         });
-        EnsureBatchBuffers(frameData.Parts.Count, jobs.Count);
+        EnsureBatchBuffers(
+            frameData.Parts.Count,
+            jobs.Count,
+            pointLights,
+            batchIndex);
+        RhiBuffer drawCommands = pointLights
+            ? _pointDrawCommands[batchIndex]
+            : _spotDrawCommands[batchIndex];
+        RhiBuffer cullJobsBuffer = pointLights
+            ? _pointCullJobs[batchIndex]
+            : _spotCullJobs[batchIndex];
         var cullJobs = new PunctualShadowCullJobData[jobs.Count];
         for (int jobIndex = 0; jobIndex < jobs.Count; ++jobIndex)
         {
@@ -595,14 +859,14 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                 RejectedInstanceFlags = job.RejectedFlags,
             };
         }
-        _cullJobs.Upload(cullJobs);
+        cullJobsBuffer.Upload(cullJobs);
 
         var cullPush = new PunctualShadowCullPushData
         {
             Instances = _sceneCache.InstanceBuffer.DeviceAddress,
             Parts = _sceneCache.PartBuffer.DeviceAddress,
-            DrawCommands = _drawCommands.DeviceAddress,
-            Jobs = _cullJobs.DeviceAddress,
+            DrawCommands = drawCommands.DeviceAddress,
+            Jobs = cullJobsBuffer.DeviceAddress,
             PartCount = (uint)frameData.Parts.Count,
             JobCount = (uint)jobs.Count,
         };
@@ -610,8 +874,8 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         sink.BindPipeline(_cullPipeline);
         sink.UseBuffer(_sceneCache.InstanceBuffer, 1);
         sink.UseBuffer(_sceneCache.PartBuffer, 1);
-        sink.UseBuffer(_drawCommands, 2);
-        sink.UseBuffer(_cullJobs, 1);
+        sink.UseBuffer(drawCommands, 2);
+        sink.UseBuffer(cullJobsBuffer, 1);
         sink.PushConstants(
             0,
             (uint)sizeof(PunctualShadowCullPushData),
@@ -658,7 +922,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             sink.BindPipeline(_depthPipeline);
             sink.UseBuffer(_sceneCache.InstanceBuffer, 1);
             sink.UseBuffer(_sceneCache.PartBuffer, 1);
-            sink.UseBuffer(_drawCommands, 1);
+            sink.UseBuffer(drawCommands, 1);
             foreach (var mesh in frameData.UniqueMeshes)
             {
                 sink.UseBuffer(mesh.VertexBuffer, 1);
@@ -688,7 +952,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                     (uint)sizeof(ScenePushData),
                     (IntPtr)(&push));
                 sink.DrawIndirect(
-                    _drawCommands,
+                    drawCommands,
                     GetDrawCommandOffset(
                         jobIndex,
                         frameData.Parts.Count),
@@ -714,16 +978,20 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         int FaceCount,
         LightData Light,
         int LightSignature,
-        float Priority);
+        float Priority,
+        float VisualPriority,
+        int UpdateIntervalFrames,
+        int PreferredSubdivision);
 
-    private readonly record struct FaceWork(
+    private readonly record struct LightWork(
         PunctualShadowState.LightEntry Entry,
-        int FaceIndex,
         int LightSignature,
         float Priority,
+        float Urgency,
         bool LightDirty,
         bool StaticDirty,
-        bool DynamicDirty);
+        bool DynamicDirty,
+        bool ResolutionDirty);
 
     private readonly record struct TileRenderJob(
         ShadowAtlasAllocation Tile,
@@ -731,27 +999,104 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         uint RequiredFlags,
         uint RejectedFlags);
 
-    private static int CompareFaceWork(
-        FaceWork left,
-        FaceWork right)
+    private static int CompareLightWork(
+        LightWork left,
+        LightWork right)
     {
-        bool leftInvalid =
-            !left.Entry.StaticValid[left.FaceIndex] ||
-            !left.Entry.DynamicValid[left.FaceIndex];
-        bool rightInvalid =
-            !right.Entry.StaticValid[right.FaceIndex] ||
-            !right.Entry.DynamicValid[right.FaceIndex];
+        bool leftInvalid = HasInvalidFace(left.Entry);
+        bool rightInvalid = HasInvalidFace(right.Entry);
         int validityOrder = rightInvalid.CompareTo(leftInvalid);
         if (validityOrder != 0)
             return validityOrder;
 
-        int ageOrder =
-            left.Entry.LastUpdatedFrames[left.FaceIndex].CompareTo(
-                right.Entry.LastUpdatedFrames[right.FaceIndex]);
-        if (ageOrder != 0)
-            return ageOrder;
+        int transformOrder =
+            right.LightDirty.CompareTo(left.LightDirty);
+        if (transformOrder != 0)
+            return transformOrder;
 
-        return right.Priority.CompareTo(left.Priority);
+        float leftScore =
+            GetSchedulingScore(
+                left.Priority,
+                left.Urgency);
+        float rightScore =
+            GetSchedulingScore(
+                right.Priority,
+                right.Urgency);
+        return rightScore.CompareTo(leftScore);
+    }
+
+    internal static float GetSchedulingScore(
+        float priority,
+        float urgency)
+    {
+        return urgency + priority * 2.0f;
+    }
+
+    private static bool HasInvalidFace(
+        PunctualShadowState.LightEntry entry)
+    {
+        for (int faceIndex = 0;
+             faceIndex < entry.FaceCount;
+             ++faceIndex)
+        {
+            if (!entry.StaticValid[faceIndex] ||
+                !entry.DynamicValid[faceIndex])
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<List<LightWork>> BuildHomogeneousBatches(
+        List<LightWork> work,
+        int frameFaceLimit)
+    {
+        var batches = new List<List<LightWork>>(2);
+        int admittedFaces = 0;
+        foreach (LightWork candidate in work)
+        {
+            int facesPerLight = candidate.Entry.FaceCount;
+            if (admittedFaces + facesPerLight > frameFaceLimit)
+            {
+                continue;
+            }
+            List<LightWork>? batch = null;
+            foreach (List<LightWork> existingBatch in batches)
+            {
+                if (existingBatch[0].Entry.FaceCount ==
+                        facesPerLight &&
+                    GetBatchFaceCount(existingBatch) +
+                        facesPerLight <= MaximumFacesPerBatch)
+                {
+                    batch = existingBatch;
+                    break;
+                }
+            }
+            if (batch == null)
+            {
+                batch = new List<LightWork>();
+                batches.Add(batch);
+            }
+            batch.Add(candidate);
+            admittedFaces += facesPerLight;
+        }
+        return batches;
+    }
+
+    private static int GetBatchFaceCount(List<LightWork> batch)
+    {
+        int faceCount = 0;
+        foreach (LightWork work in batch)
+            faceCount += work.Entry.FaceCount;
+        return faceCount;
+    }
+
+    internal static int GetMaximumLightsPerBatch(int facesPerLight)
+    {
+        if (facesPerLight <= 0)
+            throw new ArgumentOutOfRangeException(nameof(facesPerLight));
+        return MaximumFacesPerBatch / facesPerLight;
     }
 
     private static List<Candidate> BuildCandidates(
@@ -777,15 +1122,45 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             {
                 continue;
             }
-            Vector3 position = new(
-                light.Position.X,
-                light.Position.Y,
-                light.Position.Z);
-            float distance = Vector3.Distance(cameraPosition, position);
+            Vector3 influenceCenter = GetInfluenceCenter(light);
+            float influenceRadius = GetInfluenceRadius(light);
+            float distanceToLight =
+                Vector3.Distance(cameraPosition, influenceCenter);
+            Vector3 cameraForward = new(
+                frameData.Camera.CameraForward.X,
+                frameData.Camera.CameraForward.Y,
+                frameData.Camera.CameraForward.Z);
+            cameraForward = cameraForward.LengthSquared() > 1e-6f
+                ? Vector3.Normalize(cameraForward)
+                : Vector3.UnitZ;
+            float viewDepth = MathF.Max(
+                Vector3.Dot(
+                    influenceCenter - cameraPosition,
+                    cameraForward),
+                0.1f);
+            float projectionScale = MathF.Max(
+                MathF.Abs(frameData.Camera.ViewProj.M11),
+                MathF.Abs(frameData.Camera.ViewProj.M22));
+            float projectedScreenRadius =
+                influenceRadius * projectionScale / viewDepth;
+            float visualPriority = GetVisualPriority(
+                projectedScreenRadius,
+                distanceToLight);
+            int updateIntervalFrames = GetUpdateIntervalFrames(
+                projectedScreenRadius,
+                distanceToLight);
+            int preferredSubdivision =
+                GetPreferredSubdivision(
+                    type == 1 ? 6 : 1,
+                    visualPriority);
+            float intensityPriority =
+                Math.Clamp(
+                    MathF.Log2(1.0f + MathF.Max(light.Color.W, 0.0f)) /
+                        16.0f,
+                    0.0f,
+                    0.2f);
             float priority =
-                light.Color.W *
-                light.Position.W /
-                MathF.Max(distance, 0.25f);
+                visualPriority + intensityPriority;
             candidates.Add(new Candidate(
                 frameData.LightEntityIds[lightIndex],
                 lightIndex,
@@ -795,12 +1170,79 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                     light.Position,
                     light.Direction,
                     light.ShapeParams),
-                priority));
+                priority,
+                visualPriority,
+                updateIntervalFrames,
+                preferredSubdivision));
         }
         candidates.Sort(
             (left, right) =>
                 right.Priority.CompareTo(left.Priority));
         return candidates;
+    }
+
+    internal static int GetUpdateIntervalFrames(
+        float projectedScreenRadius,
+        float distanceToLight)
+    {
+        int distanceInterval =
+            distanceToLight <= 6.0f ? 1 :
+            distanceToLight <= 18.0f ? 2 :
+            distanceToLight <= 35.0f ? 3 :
+            distanceToLight <= 60.0f ? 5 :
+            distanceToLight <= 100.0f ? 8 :
+            10;
+        int screenInterval =
+            projectedScreenRadius >= 0.35f ? 3 :
+            projectedScreenRadius >= 0.15f ? 5 :
+            projectedScreenRadius >= 0.05f ? 8 :
+            10;
+        return Math.Min(
+            distanceInterval,
+            screenInterval);
+    }
+
+    private static float GetVisualPriority(
+        float projectedScreenRadius,
+        float distanceToLight)
+    {
+        float screenPriority = Math.Clamp(
+            projectedScreenRadius / 0.35f,
+            0.0f,
+            1.0f);
+        float distancePriority =
+            1.0f /
+            (1.0f + MathF.Max(distanceToLight, 0.0f) / 20.0f);
+        float combinedPriority =
+            screenPriority * 0.65f +
+            distancePriority * 0.35f;
+        return MathF.Max(
+            distancePriority,
+            combinedPriority);
+    }
+
+    internal static int GetPreferredSubdivision(
+        int faceCount,
+        float visualPriority)
+    {
+        if (faceCount == 6)
+        {
+            if (visualPriority >= 0.8f)
+                return 4;
+            if (visualPriority >= 0.5f)
+                return 8;
+            if (visualPriority >= 0.2f)
+                return 16;
+            return 32;
+        }
+
+        if (visualPriority >= 0.8f)
+            return 2;
+        if (visualPriority >= 0.5f)
+            return 4;
+        if (visualPriority >= 0.2f)
+            return 8;
+        return 16;
     }
 
     private static void BuildFaceMatrices(
@@ -1023,19 +1465,45 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
 
     private unsafe void EnsureBatchBuffers(
         int partCount,
+        int jobCount,
+        bool pointLights,
+        int batchIndex)
+    {
+        if (pointLights)
+        {
+            EnsureBatchBuffers(
+                ref _pointDrawCommands[batchIndex],
+                ref _pointCullJobs[batchIndex],
+                partCount,
+                jobCount);
+        }
+        else
+        {
+            EnsureBatchBuffers(
+                ref _spotDrawCommands[batchIndex],
+                ref _spotCullJobs[batchIndex],
+                partCount,
+                jobCount);
+        }
+    }
+
+    private unsafe void EnsureBatchBuffers(
+        ref RhiBuffer drawCommands,
+        ref RhiBuffer cullJobs,
+        int partCount,
         int jobCount)
     {
         ulong requiredDrawBytes = checked(
             (ulong)partCount *
             (ulong)jobCount *
             DrawCommandSize);
-        if (_drawCommands.Size < requiredDrawBytes)
+        if (drawCommands.Size < requiredDrawBytes)
         {
-            ulong size = _drawCommands.Size;
+            ulong size = drawCommands.Size;
             while (size < requiredDrawBytes)
                 size *= 2;
-            _drawCommands.Dispose();
-            _drawCommands = RhiBuffer.Create(
+            drawCommands.Dispose();
+            drawCommands = RhiBuffer.Create(
                 _device,
                 size,
                 RhiNative.BufferUsage.Storage |
@@ -1045,13 +1513,13 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         ulong requiredJobBytes = checked(
             (ulong)jobCount *
             (ulong)sizeof(PunctualShadowCullJobData));
-        if (_cullJobs.Size >= requiredJobBytes)
+        if (cullJobs.Size >= requiredJobBytes)
             return;
-        ulong jobBufferSize = _cullJobs.Size;
+        ulong jobBufferSize = cullJobs.Size;
         while (jobBufferSize < requiredJobBytes)
             jobBufferSize *= 2;
-        _cullJobs.Dispose();
-        _cullJobs = RhiBuffer.Create(
+        cullJobs.Dispose();
+        cullJobs = RhiBuffer.Create(
             _device,
             jobBufferSize,
             RhiNative.BufferUsage.Storage);
@@ -1059,8 +1527,13 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
 
     public void Dispose()
     {
-        _cullJobs.Dispose();
-        _drawCommands.Dispose();
+        for (int batchIndex = 0; batchIndex < 2; ++batchIndex)
+        {
+            _spotCullJobs[batchIndex].Dispose();
+            _spotDrawCommands[batchIndex].Dispose();
+            _pointCullJobs[batchIndex].Dispose();
+            _pointDrawCommands[batchIndex].Dispose();
+        }
         _clearPipeline.Dispose();
         _cullPipeline.Dispose();
         _depthPipeline.Dispose();

@@ -152,6 +152,85 @@ solve entry and exit analytically before stepping.
 3. Allocate transient cluster, shadow, and volumetric buffers through graph
    resources so memory can alias across non-overlapping passes.
 
+## Phase 7: Editor Asset Granularity
+
+1. Derive per-part spheres from mesh vertices and merge them for whole models.
+   Whole-model and individual-part previews use the same centre, radius, and
+   FOV contract with separate model/material padding policies.
+2. Represent imported models as expandable content-browser assets. Expanded
+   children retain the parent model path and a stable part index from the
+   source `.mdl`.
+3. Use typed editor drag payloads carrying model path plus optional part index.
+   Dropping a parent creates the complete model; dropping a child creates a
+   model containing only that source part.
+4. Preserve source model and source part identity on scene components so save,
+   reload, material overrides, picking, and recooking remain deterministic.
+5. Add whole-model and part selection modes. Part mode stores an entity plus
+   part index, while entity mode resolves any picked part to its owning entity.
+
+## Phase 8: Viewport Modes And Plan Caching
+
+1. Replace the static viewport renderer label with a raster/path-tracing
+   selector. Implemented through `IGameLoop.RendererMode`; editor mode state is
+   reapplied after scene loads and hot reloads, and the `P` shortcut reports
+   changes back to the chrome.
+2. Cache one compiled render plan and renderer-owned pass state per mode.
+   Switching modes activates an existing plan; scene topology, viewport
+   resources, or shader changes invalidate only affected cache entries.
+   Implemented with raster and path-tracing plan-state bundles. Each bundle
+   owns its pass instances, scene cache, and shadow state; switching an
+   already-compiled mode does not run `RenderGraphCompiler`.
+3. Add a viewport selection-mode selector for whole-model and individual-part
+   picking.
+4. Add a debug-view selector with mode-specific channel controls. Debug state
+   is frame data or pipeline specialization state and must not force graph
+   recompilation when resource topology is unchanged. The shared raster/path
+   tracing selector and core debug state are implemented; RMA channel controls
+   remain pending.
+5. Add perspective and orthographic editor cameras without changing graph
+   topology. Implemented with a shared camera-data builder and an animated
+   projection morph consumed by raster, path tracing, picking, outlines, and
+   overlays.
+6. Add a low-power viewport mode. Implemented by retaining the last presented
+   image while idle and rendering bursts for camera input, scene invalidation,
+   resize, and viewport-mode transitions.
+
+## Phase 9: Core Debug Views
+
+1. Depth uses a perceptual false-colour gradient with configurable near/far
+   normalization.
+2. Vertex Normal shows interpolated geometric normals. Pixel Normal shows the
+   final normal after normal mapping.
+3. Diffuse Albedo bypasses lighting and tonemapping changes that obscure source
+   values.
+4. RMA exposes independent roughness, metallic, and ambient-occlusion channel
+   toggles. A single selected channel uses its canonical red, green, or blue
+   output; multi-channel combinations preserve canonical channel placement.
+   The combined canonical RGB view is implemented; channel toggles remain
+   pending.
+5. Lighting Only removes albedo while retaining direct, indirect, emissive,
+   visibility, and path-traced lighting consistently across both renderers.
+6. Add world position, emissive, material ID, entity/part ID, UV, tangent, and
+   bitangent views where the required data already exists. World position,
+   emissive, UV, tangent, and bitangent are implemented. Stable material and
+   entity/part identifiers remain pending.
+7. Wireframe is implemented in both renderers from triangle barycentrics and
+   uses the same viewport debug-state path as the filled visualizations.
+
+## Phase 10: Advanced Debug Views
+
+1. Overdraw accumulates covered fragments into a logarithmic heat map.
+2. Cascade Index renders lighting and shadows normally, then tints by the
+   selected directional cascade and blend region.
+3. Cluster occupancy visualizes cluster dimensions, light-list count,
+   overflow, and selected-cluster light volumes.
+4. Light Priority draws influence volumes with a screen-size/distance priority
+   gradient.
+5. Shadow Priority shows admitted, deferred, stale, and invalid faces plus
+   resolution tiers as stable colours.
+6. All advanced modes expose legends in viewport chrome and publish their
+   backing resources to the Render Graph Explorer.
+
 ## Usage Example
 
 ```csharp

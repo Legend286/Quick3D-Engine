@@ -26,6 +26,13 @@ public sealed class ImGuiRenderer : IDisposable
     private int _vertexBufferSize;
     private int _indexBufferSize;
 
+    /// <summary>Gets or sets the viewport overlay emitted after each new frame.</summary>
+    public Action<InputState, uint, uint>? DrawViewportOverlay
+    {
+        get;
+        set;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     struct PushConstants
     {
@@ -66,7 +73,7 @@ public sealed class ImGuiRenderer : IDisposable
 
             ImGui.NewFrame();
             frameStarted = true;
-            ImGui.ShowDemoWindow();
+            DrawViewportOverlay?.Invoke(input, width, height);
         }
     }
 

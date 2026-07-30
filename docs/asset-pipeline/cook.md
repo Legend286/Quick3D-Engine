@@ -5,11 +5,15 @@
 ## Core features
 - **tinygltf** — parses `.gltf`/`.glb`, extracts positions / normals / UVs / tangents, computes node transforms.
 - **Basis Universal via `basisu`** — encodes every texture into `-ktx2 -uastc` form (vkFormat 157 / ASTC_4x4 + Zstd scheme=3), directly loadable by `Ktx2Loader`. Earlier `-ktx2` defaults to ETC1S+BasisLZ (scheme=1) which the runtime cannot decode; this cook forces the UASTC path.
-- **Output layout** — `<out>/models/` (`.mdl` + named `_part_N.msh`), `<out>/models/materials/` (`.mat` JSON), `<out>/textures/` (`.ktx2` + `.tex` sidecar), `<out>/scenes/` (`.scene.json`).
+- **Output layout** — `<out>/models/<source-name>/` (`.mdl` + named `_part_N.msh`), `<out>/models/<source-name>/materials/` (`.mat` JSON), `<out>/textures/` (`.ktx2` + `.tex` sidecar), `<out>/scenes/` (`.scene.json`).
 
 ## Concurrency & Temp Files
 
-To prevent unbounded thread spawning and OOM crashes on models with hundreds of textures or mesh parts, the cooker uses bounded thread pools (limited by `std::thread::hardware_concurrency()`) for both texture compression and mesh part extraction. 
+To prevent unbounded thread spawning and OOM crashes on models with hundreds
+of textures or mesh parts, the cooker uses the same bounded worker count for
+texture compression and mesh-part extraction. It starts
+`max(1, hardware_concurrency - 2)` workers, reserving two logical cores for the
+editor, OS, and render thread while import runs in the background.
 
 Temporary raw images extracted for `basisu` compression are generated in the OS-provided temp directory (`std::filesystem::temp_directory_path()`) rather than the target content directory. This guarantees that imported `/content/models/` directories remain free of raw PNGs even if a crash occurs mid-cook.
 
@@ -61,12 +65,17 @@ Every early-exit path in `main()` (status 1 GLTF load, status 2 basisu unresolva
 
 ## Integration
 
-Cook is invoked by the editor's `AssetImportWindow`, which:
+Cook is invoked by the editor's background `AssetImportService`, which:
 
 1. Walks up from `AppDomain.BaseDirectory` looking for `engine_cook` (with or without an `out/` parent) until it finds the binary, **then** derives `basisuPath = Path.GetDirectoryName(cookExe) + "/basisu"`.
 2. Passes `--basisu-path "<absolute-derived-path>"` to Cook when that sibling exists. With this flag, Cook's resolution ladder returns at step 1 without further work. (If the sibling is absent in some custom deployment, Cook falls back to the ancestor walk + env var.)
 
 This is the canonical resolution path for the published `.app` bundle (per `scripts/build-mac-app.sh` stage 3, which copies both `engine_cook` and `basisu` into `Contents/MacOS/`). Cook's own resolution ladder remains authoritative so a developer running `engine_cook` directly from the editor source tree still gets a working import without the editor's help.
+
+The editor queues cooking after the import form closes and reports progress in
+the main window's bottom-right status chrome. Successful imports refresh
+through the content browser's filesystem observation only; import completion
+does not load the generated `.scene.json` or add any model to the active scene.
 
 ## Future
 

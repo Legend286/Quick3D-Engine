@@ -45,6 +45,28 @@ float2 SampleDisk(float2 u)
     return float2(cos(phi), sin(phi)) * r;
 }
 
+void BuildPrimaryRay(
+    float2 ndc,
+    out float3 rayOrigin,
+    out float3 rayDirection)
+{
+    float4 nearTarget = mul(
+        push.camera->invViewProj,
+        float4(ndc.x, ndc.y, 0.0, 1.0));
+    float4 farTarget = mul(
+        push.camera->invViewProj,
+        float4(ndc.x, ndc.y, 1.0, 1.0));
+    float3 nearPosition =
+        nearTarget.xyz / nearTarget.w;
+    float3 farPosition =
+        farTarget.xyz / farTarget.w;
+    rayOrigin = lerp(
+        push.camera->cameraPosition.xyz,
+        nearPosition,
+        saturate(push.camera->cameraForward.w));
+    rayDirection = normalize(farPosition - rayOrigin);
+}
+
 // =====================================================================
 // Geometry helpers
 // =====================================================================
@@ -179,8 +201,10 @@ void SampleLocalLight(LightData light, float3 shadingPos, inout uint seed, out f
 
 DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics, uint primId, 
                            float3 worldPos, inout uint seed,
-                           out float3 hitNormal, out float3 hitTangent, out float3 hitBitangent, 
-                           out float3 albedo,
+                           out float3 hitNormal, out float3 vertexNormal,
+                           out float3 hitTangent, out float3 hitBitangent,
+                           out float2 surfaceUv, out float3 albedo,
+                           out float ambientOcclusion,
                            out float subsurface, out float3 subsurfaceRadius, out float3 subsurfaceColor) {
     
     uint i0, i1, i2;
@@ -216,8 +240,10 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics
     float2 uv1 = float2(v1.u, v1.v);
     float2 uv2 = float2(v2.u, v2.v);
     float2 uv = uv0 * barycentrics.x + uv1 * barycentrics.y + uv2 * barycentrics.z;
+    surfaceUv = uv;
     
     hitNormal   = normalize(mul((float3x3)inst.modelMatrix, localNormal));
+    vertexNormal = hitNormal;
     hitTangent  = normalize(mul((float3x3)inst.modelMatrix, localTangent));
     if (!(dot(hitTangent, hitTangent) > 0.001)) {
         float3 up = abs(hitNormal.y) < 0.999 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
@@ -237,8 +263,10 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics
     }
     float metallic  = mat.metallic;
     float roughness = mat.roughness;
+    ambientOcclusion = 1.0;
     if (mat.rmaTexIndex != 0xFFFFFFFF) {
         float3 rma = bindless.textures[mat.rmaTexIndex].SampleLevel(tex_sampler, uv, 0).rgb;
+        ambientOcclusion = rma.r;
         roughness *= rma.g;
         metallic  *= rma.b;
     }
@@ -567,30 +595,144 @@ float3 RandomWalkSSS(float3 entryPos, float3 entryDir, float3 N,
 void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     if (dispatchThreadID.x >= uint(push.resolution.x) || dispatchThreadID.y >= uint(push.resolution.y)) return;
 
-    // ---- Debug mode ----
-    if ((push.debugFlags & 1u) != 0u) {
+    uint debugView = push.debugFlags & 0xFFu;
+    if (debugView != 0u && debugView != 7u) {
         float2 inUV = (float2(dispatchThreadID.xy) + 0.5) * push.resolution.zw;
         float2 ndc = inUV * 2.0 - 1.0;
         ndc.y = -ndc.y;
-        float3 rayOrigin = push.camera->cameraPosition.xyz;
-        float4 target = mul(push.camera->invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
-        float3 worldPos = target.xyz / target.w;
-        float3 rayDir = normalize(worldPos - rayOrigin);
+        float3 rayOrigin;
+        float3 rayDir;
+        BuildPrimaryRay(ndc, rayOrigin, rayDir);
         RayDesc dbgRay;
         dbgRay.Origin = rayOrigin; dbgRay.TMin = 0.001;
         dbgRay.Direction = rayDir; dbgRay.TMax = 10000.0;
         RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> dbgQ;
         if (push.hasGeometry != 0u) { dbgQ.TraceRayInline(tlas, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, dbgRay); dbgQ.Proceed(); }
-        float3 dbgColor;
+        float3 dbgColor = float3(0.0);
         if (push.hasGeometry != 0u && dbgQ.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+            uint partIdx = dbgQ.CommittedInstanceID();
+            uint primitiveId = dbgQ.CommittedPrimitiveIndex();
+            float2 committedBarycentrics =
+                dbgQ.CommittedTriangleBarycentrics();
+            float3 barycentrics = float3(
+                1.0 -
+                    committedBarycentrics.x -
+                    committedBarycentrics.y,
+                committedBarycentrics.x,
+                committedBarycentrics.y);
             float t = dbgQ.CommittedRayT();
-            float depth = saturate(t / 20.0);
-            dbgColor = float3(1.0 - depth);
-            uint instId = dbgQ.CommittedInstanceID();
-            if ((instId & 1u) != 0u) dbgColor.rb *= 0.8;
-            if ((instId & 2u) != 0u) dbgColor.gb *= 0.8;
+            float3 hitPosition = rayOrigin + rayDir * t;
+            PartData part = push.parts[partIdx];
+            InstanceData instance =
+                push.instances[part.instanceIdx];
+            uint debugSeed =
+                dispatchThreadID.y *
+                    uint(push.resolution.x) +
+                dispatchThreadID.x;
+            float3 normal;
+            float3 vertexNormal;
+            float3 tangent;
+            float3 bitangent;
+            float2 surfaceUv;
+            float3 albedo;
+            float ambientOcclusion;
+            float subsurface;
+            float3 subsurfaceRadius;
+            float3 subsurfaceColor;
+            DisneyMaterial material = GetMaterial(
+                part,
+                instance,
+                barycentrics,
+                primitiveId,
+                hitPosition,
+                debugSeed,
+                normal,
+                vertexNormal,
+                tangent,
+                bitangent,
+                surfaceUv,
+                albedo,
+                ambientOcclusion,
+                subsurface,
+                subsurfaceRadius,
+                subsurfaceColor);
+            MaterialData materialData =
+                push.materials[part.materialIdx];
+
+            if (debugView == 1u) {
+                float edgeDistance = min(
+                    barycentrics.x,
+                    min(
+                        barycentrics.y,
+                        barycentrics.z));
+                dbgColor = edgeDistance < 0.02
+                    ? float3(1.0)
+                    : float3(0.0);
+            } else if (debugView == 2u) {
+                float4 clipPosition = mul(
+                    push.camera->viewProj,
+                    float4(hitPosition, 1.0));
+                float depth = saturate(
+                    clipPosition.z / clipPosition.w);
+                float3 nearColor =
+                    float3(0.02, 0.08, 0.24);
+                float3 midColor =
+                    float3(0.05, 0.85, 0.72);
+                float3 farColor =
+                    float3(1.0, 0.35, 0.08);
+                dbgColor = depth < 0.5
+                    ? lerp(
+                        nearColor,
+                        midColor,
+                        depth * 2.0)
+                    : lerp(
+                        midColor,
+                        farColor,
+                        depth * 2.0 - 1.0);
+            } else if (debugView == 3u) {
+                dbgColor =
+                    vertexNormal * 0.5 + 0.5;
+            } else if (debugView == 4u) {
+                dbgColor = normal * 0.5 + 0.5;
+            } else if (debugView == 5u) {
+                dbgColor = albedo;
+            } else if (debugView == 6u) {
+                dbgColor = float3(
+                    ambientOcclusion,
+                    material.roughness,
+                    material.metallic);
+            } else if (debugView == 8u) {
+                dbgColor = frac(
+                    abs(hitPosition) * 0.1);
+            } else if (debugView == 9u) {
+                dbgColor = materialData.emissiveColor.rgb;
+                if (materialData.emissiveTexIndex !=
+                    0xFFFFFFFF) {
+                    dbgColor *= bindless.textures[
+                        materialData.emissiveTexIndex]
+                        .SampleLevel(
+                            tex_sampler,
+                            surfaceUv,
+                            0)
+                        .rgb;
+                }
+            } else if (debugView == 10u) {
+                dbgColor = float3(
+                    frac(surfaceUv),
+                    0.0);
+            } else if (debugView == 11u) {
+                dbgColor = tangent * 0.5 + 0.5;
+            } else if (debugView == 12u) {
+                dbgColor =
+                    bitangent * 0.5 + 0.5;
+            }
         } else {
-            dbgColor = GetSkyRadiance(rayDir, push.sky.sunDirAndRadius.xyz, push.sky);
+            dbgColor = debugView == 1u
+                ? float3(0.0)
+                : GetSkyRadiance(
+                    rayDir,
+                    push.sky.sunDirAndRadius.xyz,
+                    push.sky);
         }
         outputBuffer[dispatchThreadID.xy] = float4(dbgColor, 1.0);
         return;
@@ -603,13 +745,13 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     float2 ndc  = inUV * 2.0 - 1.0;
     ndc.y = -ndc.y;
     
-    float3 rayOrigin = push.camera->cameraPosition.xyz;
-    float4 target  = mul(push.camera->invViewProj, float4(ndc.x, ndc.y, 1.0, 1.0));
-    float3 worldPos = target.xyz / target.w;
-    float3 rayDir   = normalize(worldPos - rayOrigin);
+    float3 rayOrigin;
+    float3 rayDir;
+    BuildPrimaryRay(ndc, rayOrigin, rayDir);
     
     float3 throughput = float3(1.0);
     float3 radiance   = float3(0.0);
+    float3 primaryAlbedo = float3(1.0);
     
     RayDesc ray;
     ray.Origin    = rayOrigin;
@@ -643,16 +785,20 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
             float  t     = q.CommittedRayT();
             
             float3 hitPos = ray.Origin + ray.Direction * t;
-            float3 N, T, B, albedo;
+            float3 N, vertexNormal, T, B, albedo;
+            float2 surfaceUv;
+            float ambientOcclusion;
             float  surfSubsurface;
             float3 subsurfaceRadius, subsurfaceColor;
             
             PartData    part = push.parts[partIdx];
             InstanceData inst = push.instances[part.instanceIdx];
-            DisneyMaterial mat = GetMaterial(part, inst, bary, primId, hitPos, seed, N, T, B, albedo,
+            DisneyMaterial mat = GetMaterial(part, inst, bary, primId, hitPos, seed, N, vertexNormal, T, B, surfaceUv, albedo, ambientOcclusion,
                                              surfSubsurface, subsurfaceRadius, subsurfaceColor);
             float3 V = -ray.Direction;
             bounce++;
+            if (bounce == 1)
+                primaryAlbedo = albedo;
             
             // Emissive (first hit only)
             if (bounce == 1) {
@@ -801,6 +947,11 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     }
     
     if (any(isnan(radiance)) || any(isinf(radiance))) radiance = float3(0.0);
+    if (debugView == 7u) {
+        radiance /= max(
+            primaryAlbedo,
+            float3(0.04));
+    }
     
     float3 oldColor = push.frameCount == 0 ? float3(0.0) : accumulationBuffer[dispatchThreadID.xy].rgb;
     float3 newColor = lerp(oldColor, radiance, 1.0 / float(push.frameCount + 1));

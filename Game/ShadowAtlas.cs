@@ -125,12 +125,28 @@ internal sealed class ShadowAtlas : IDisposable
         int tileCount,
         out ShadowAtlasAllocation[] allocations)
     {
-        allocations = Array.Empty<ShadowAtlasAllocation>();
-        int subdivision = FindMinimumSubdivision(tileCount);
-        if (subdivision == 0)
-            return false;
+        return TryAllocateTileSet(
+            tileCount,
+            FindMinimumSubdivision(tileCount),
+            out allocations);
+    }
 
-        for (;
+    public bool TryAllocateTileSet(
+        int tileCount,
+        int preferredSubdivision,
+        out ShadowAtlasAllocation[] allocations)
+    {
+        allocations = Array.Empty<ShadowAtlasAllocation>();
+        int minimumSubdivision = FindMinimumSubdivision(tileCount);
+        if (minimumSubdivision == 0 ||
+            preferredSubdivision < minimumSubdivision ||
+            preferredSubdivision > 32 ||
+            (preferredSubdivision & (preferredSubdivision - 1)) != 0)
+        {
+            return false;
+        }
+
+        for (int subdivision = preferredSubdivision;
              subdivision <= 32;
              subdivision *= 2)
         {

@@ -89,23 +89,23 @@ public sealed class OutlineMaskPass : RenderPass, IDisposable
         if (_world.TryGet<Engine.Scene.Components.Camera>(activeCam, out var cam))
         {
             var transform = _world.TryGet<Transform>(activeCam, out var t) ? t : Transform.Default;
-            var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
-            var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, aspect, cam.NearClip, cam.FarClip);
-            camData.ViewProj = view * proj;
-            Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
-            camData.InvViewProj = invVP;
-            camData.CameraPosition = new Vector4(transform.Position, 1.0f);
+            camData = _renderer.BuildCameraData(
+                cam,
+                transform,
+                aspect,
+                Vector3.UnitZ);
         }
 
         if (camData.ViewProj == Matrix4x4.Identity)
         {
-            // Use the same fallback camera as PbrPass
-            camData.CameraPosition = new Vector4(0, 0, -5, 1.0f);
-            var view = Matrix4x4.CreateLookAt(new Vector3(0, 0, -5), Vector3.Zero, Vector3.UnitY);
-            var proj = Matrix4x4.CreatePerspectiveFieldOfView(60.0f * (MathF.PI / 180.0f), aspect, 0.1f, 100.0f);
-            camData.ViewProj = view * proj;
-            Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP2);
-            camData.InvViewProj = invVP2;
+            camData = _renderer.BuildCameraData(
+                Engine.Scene.Components.Camera.Default,
+                Transform.Default with
+                {
+                    Position = new Vector3(0, 0, -5)
+                },
+                aspect,
+                Vector3.UnitZ);
         }
 
         _cameraBuffer.Upload(new ReadOnlySpan<CameraData>(ref camData));
@@ -164,6 +164,9 @@ public sealed class OutlineMaskPass : RenderPass, IDisposable
 
                     _parts.Add(new PartData
                     {
+                        LocalOffset = new Vector4(
+                            p.LocalOffset,
+                            0.0f),
                         Vertices = mesh.VertexBuffer.DeviceAddress,
                         Indices = mesh.IndexBuffer.DeviceAddress,
                         IndexCount = mesh.IndexCount,

@@ -8,6 +8,7 @@ using Engine.RenderGraph;
 using Engine.Scene;
 using Engine.Scene.Components;
 using Engine.CBindings;
+using Camera = Engine.Scene.Components.Camera;
 
 namespace Engine.Game;
 
@@ -16,7 +17,7 @@ public sealed class GridPass : RenderPass, IDisposable
     private readonly RhiDevice _device;
     private readonly IEntityStore _world;
     private readonly string _contentRoot;
-    private readonly Renderer? _renderer;
+    private readonly Renderer _renderer;
 
     private RhiShader _vs;
     private RhiShader _fs;
@@ -39,7 +40,7 @@ public sealed class GridPass : RenderPass, IDisposable
         public Vector3 Position;
     }
 
-    public GridPass(RhiDevice device, IEntityStore world, string contentRoot, Renderer? renderer = null, bool clearScreen = false)
+    public GridPass(RhiDevice device, IEntityStore world, string contentRoot, Renderer renderer, bool clearScreen = false)
     {
         _device = device;
         _world = world;
@@ -102,40 +103,41 @@ public sealed class GridPass : RenderPass, IDisposable
         uint h = context.Height > 0 ? context.Height : 720;
         float aspect = (float)w / h;
 
-        Matrix4x4 view = Matrix4x4.Identity;
-        Matrix4x4 proj = Matrix4x4.Identity;
-        Vector3 camPos = Vector3.Zero;
-
-        bool foundCam = TryBuildCamera(_renderer?.ActiveCameraEntity ?? 0, aspect, out view, out proj, out camPos);
+        bool foundCam = TryBuildCamera(
+            _renderer.ActiveCameraEntity,
+            aspect,
+            out CameraData cameraData);
         for (ulong id = 1; !foundCam && id < 1024; ++id)
         {
-            foundCam = TryBuildCamera(id, aspect, out view, out proj, out camPos);
+            foundCam = TryBuildCamera(
+                id,
+                aspect,
+                out cameraData);
         }
 
         if (!foundCam)
         {
-            camPos = new Vector3(0, 0, -5);
-            view = Matrix4x4.CreateLookAt(camPos, Vector3.Zero, Vector3.UnitY);
-            proj = Matrix4x4.CreatePerspectiveFieldOfView(60.0f * (MathF.PI / 180.0f), aspect, 0.1f, 100.0f);
+            cameraData = _renderer.BuildCameraData(
+                Camera.Default,
+                Transform.Default with
+                {
+                    Position = new Vector3(0, 0, -5)
+                },
+                aspect,
+                Vector3.UnitZ);
         }
-
-        Matrix4x4 viewProj = view * proj;
-        Matrix4x4.Invert(viewProj, out Matrix4x4 invViewProj);
 
         GridPushData pushData = new GridPushData
         {
-            ViewProj = viewProj,
-            InvViewProj = invViewProj,
-            CameraPos = new Vector4(camPos, 1.0f)
+            ViewProj = cameraData.ViewProj,
+            InvViewProj = cameraData.InvViewProj,
+            CameraPos = cameraData.CameraPosition
         };
 
         var loadOp = _clearScreen ? RhiNative.LoadOp.Clear : RhiNative.LoadOp.Load;
         context.TryGetTexture(Renderer.DepthBufferHandle, out RhiTexture depthTarget);
         if (_pipeline != null && _vertexBuffer != null)
         {
-            // Preserve the depth that PbrPass wrote so the grid lines
-            // depth-test against the geometry. Only discard when the grid
-            // is the first pass (clearScreen=true).
             var depthLoad = _clearScreen ? RhiNative.LoadOp.Clear : RhiNative.LoadOp.Load;
             sink.BeginRenderPass(colorTarget, loadOp, RhiNative.StoreOp.Store,
                                   depthTarget, depthLoad, RhiNative.StoreOp.Store);
@@ -148,19 +150,22 @@ public sealed class GridPass : RenderPass, IDisposable
         }
     }
 
-    private bool TryBuildCamera(ulong entity, float aspect, out Matrix4x4 view, out Matrix4x4 proj, out Vector3 camPos)
+    private bool TryBuildCamera(
+        ulong entity,
+        float aspect,
+        out CameraData cameraData)
     {
-        view = Matrix4x4.Identity;
-        proj = Matrix4x4.Identity;
-        camPos = Vector3.Zero;
+        cameraData = default;
 
         if (entity == 0 || !_world.TryGet<Engine.Scene.Components.Camera>(entity, out var cam))
             return false;
 
         var transform = _world.TryGet<Transform>(entity, out var t) ? t : Transform.Default;
-        view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + Vector3.Transform(Vector3.UnitZ, transform.Rotation), Vector3.UnitY);
-        proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, aspect, cam.NearClip, cam.FarClip);
-        camPos = transform.Position;
+        cameraData = _renderer.BuildCameraData(
+            cam,
+            transform,
+            aspect,
+            Vector3.UnitZ);
         return true;
     }
 

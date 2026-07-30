@@ -39,12 +39,24 @@ remain renderer-scoped. The executor captures CPU command-recording duration
 for each pass.
 
 GPU timing uses three reusable timestamp-query pools per active queue. Metal
-records pass samples at draw and dispatch encoder boundaries and obtains the
-total graph duration from the completed graphics command buffer's GPU start
-and end times. The frame resolves each pool once, and a later frame polls it
-without waiting. If all pools are still in flight, the executor skips that
-frame's GPU capture rather than blocking rendering. Backends without timestamp
-support leave the nullable GPU fields empty.
+records pass samples at draw and dispatch encoder boundaries. The displayed
+graphics workload is the sum of serial graphics pass-marker durations, which
+excludes swapchain fences and presentation pacing encoded outside render
+work. The frame resolves each pool once, and a later frame polls it without
+waiting. If all pools are still in flight, the executor skips that frame's GPU
+capture rather than blocking rendering. Backends without timestamp support
+leave the nullable GPU fields empty.
+
+Each completed capture replaces the prior per-pass values, including missing
+samples. Invalid or unsupported samples therefore return to an unavailable
+state instead of leaving a stale timing visible indefinitely.
+
+The displayed frame duration and adaptive work controller use the lower
+median of the latest 15 active graphics workloads. This rejects isolated
+marker spikes without hiding sustained GPU pressure. The completed command
+buffer's GPU start-to-end span remains internal and validates pass samples,
+but never controls scheduling because it can include fullscreen display
+synchronization.
 
 Skipped passes do not invalidate timing results for passes that recorded valid
 encoder-boundary samples. Their duration remains unavailable while valid pass

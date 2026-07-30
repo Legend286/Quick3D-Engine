@@ -18,6 +18,7 @@ struct Vertex {
 struct PartData {
     float4 aabbMin;
     float4 aabbMax;
+    float4 localOffset;
     Vertex* vertices;
     uint* indices;
     uint indexCount;
@@ -104,6 +105,7 @@ struct PunctualShadowFaceData {
     float4 staticUvScaleBias;
     float4 dynamicUvScaleBias;
     float4 textureIndicesAndFlags;
+    float4 committedLightPosition;
 };
 
 struct ScenePushData {

@@ -20,6 +20,10 @@ public class ModelPartBounds
 
 public class ModelPartDefinition
 {
+    /// <summary>Gets or sets the imported part name.</summary>
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
     [JsonPropertyName("mesh")]
     public string Mesh { get; set; } = "";
 
@@ -28,6 +32,11 @@ public class ModelPartDefinition
 
     [JsonPropertyName("bounds")]
     public ModelPartBounds? Bounds { get; set; }
+
+    /// <summary>Gets or sets the part centre relative to the model origin.</summary>
+    [JsonPropertyName("local_offset")]
+    public float[] LocalOffset { get; set; } =
+        new float[3];
 }
 
 public class ModelDefinition
@@ -51,25 +60,125 @@ public struct ModelPart
     public Material Material;
     public Vector3 BoundsMin;
     public Vector3 BoundsMax;
+    public Vector3 BoundsSphereCenter;
+    public float BoundsSphereRadius;
+    public Vector3 LocalOffset;
 }
 
 public class Model
 {
     public string SourcePath { get; set; } = string.Empty;
+    /// <summary>
+    /// Gets or sets the original `.mdl` part represented by this model, or -1.
+    /// </summary>
+    public int SourcePartIndex { get; set; } = -1;
     public ModelPart[] Parts { get; set; } = Array.Empty<ModelPart>();
 }
 
 public static class ModelLoader
 {
-    public static Model LoadMdl(RhiDevice device, string path)
+    /// <summary>
+    /// Reads model metadata without creating GPU resources.
+    /// </summary>
+    public static ModelDefinition ReadDefinition(string path)
     {
         if (!File.Exists(path))
-            throw new FileNotFoundException($"Model file not found: {path}");
+            throw new FileNotFoundException(
+                $"Model file not found: {path}");
 
         string json = File.ReadAllText(path);
-        var def = JsonSerializer.Deserialize<ModelDefinition>(json);
-        if (def == null)
-            throw new InvalidDataException("Failed to parse .mdl");
+        return JsonSerializer.Deserialize<ModelDefinition>(json)
+            ?? throw new InvalidDataException("Failed to parse .mdl");
+    }
+
+    /// <summary>
+    /// Calculates a conservative sphere from whole-model or part bounds.
+    /// </summary>
+    public static (Vector3 Center, float Radius) GetBoundingSphere(
+        Model model,
+        int partIndex = -1)
+    {
+        if (model.Parts.Length == 0)
+            return (Vector3.Zero, 0.5f);
+        if (partIndex >= model.Parts.Length)
+            throw new ArgumentOutOfRangeException(nameof(partIndex));
+
+        if (partIndex >= 0)
+            return GetPartBoundingSphere(
+                model.Parts[partIndex]);
+
+        (Vector3 center, float radius) =
+            GetPartBoundingSphere(model.Parts[0]);
+        for (int index = 1; index < model.Parts.Length; ++index)
+        {
+            (Vector3 partCenter, float partRadius) =
+                GetPartBoundingSphere(model.Parts[index]);
+            Vector3 offset = partCenter - center;
+            float distance = offset.Length();
+            if (distance + partRadius <= radius)
+                continue;
+            if (distance + radius <= partRadius)
+            {
+                center = partCenter;
+                radius = partRadius;
+                continue;
+            }
+            if (distance <= 0.0f)
+            {
+                radius = MathF.Max(radius, partRadius);
+                continue;
+            }
+
+            float mergedRadius =
+                (distance + radius + partRadius) * 0.5f;
+            center += offset *
+                ((mergedRadius - radius) / distance);
+            radius = mergedRadius;
+        }
+
+        return (center, radius);
+    }
+
+    private static (Vector3 Center, float Radius)
+        GetPartBoundingSphere(ModelPart part)
+    {
+        if (part.BoundsSphereRadius > 0.0f)
+        {
+            return (
+                part.BoundsSphereCenter +
+                    part.LocalOffset,
+                part.BoundsSphereRadius);
+        }
+
+        Vector3 center =
+            (part.BoundsMin + part.BoundsMax) * 0.5f;
+        return (
+            center + part.LocalOffset,
+            MathF.Max(
+                Vector3.Distance(center, part.BoundsMax),
+                0.001f));
+    }
+
+    /// <summary>
+    /// Creates a model view containing one stable source part.
+    /// </summary>
+    public static Model SelectPart(Model source, int partIndex)
+    {
+        if ((uint)partIndex >= (uint)source.Parts.Length)
+            throw new ArgumentOutOfRangeException(nameof(partIndex));
+        ModelPart part = source.Parts[partIndex];
+        part.LocalOffset = Vector3.Zero;
+        return new Model
+        {
+            SourcePath = source.SourcePath,
+            SourcePartIndex = partIndex,
+            Parts = [part]
+        };
+    }
+
+    public static Model LoadMdl(RhiDevice device, string path)
+    {
+        ModelDefinition def = ReadDefinition(path);
 
         var model = new Model
         {
@@ -81,6 +190,13 @@ public static class ModelLoader
         {
             var partDef = def.Parts[i];
             var part = new ModelPart();
+            if (partDef.LocalOffset.Length >= 3)
+            {
+                part.LocalOffset = new Vector3(
+                    partDef.LocalOffset[0],
+                    partDef.LocalOffset[1],
+                    partDef.LocalOffset[2]);
+            }
             
             if (!string.IsNullOrEmpty(partDef.Mesh))
             {
@@ -128,6 +244,13 @@ public static class ModelLoader
             {
                 part.BoundsMin = new Vector3(-1, -1, -1);
                 part.BoundsMax = new Vector3(1, 1, 1);
+            }
+            if (part.Mesh != null)
+            {
+                part.BoundsSphereCenter =
+                    part.Mesh.BoundsSphereCenter;
+                part.BoundsSphereRadius =
+                    part.Mesh.BoundsSphereRadius;
             }
 
             model.Parts[i] = part;

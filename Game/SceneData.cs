@@ -9,6 +9,7 @@ public struct PartData
 {
     public Vector4 AabbMin;
     public Vector4 AabbMax;
+    public Vector4 LocalOffset;
     public ulong Vertices;
     public ulong Indices;
     public uint IndexCount;
@@ -128,6 +129,7 @@ public struct PunctualShadowFaceData
     public Vector4 StaticUvScaleBias;
     public Vector4 DynamicUvScaleBias;
     public Vector4 TextureIndicesAndFlags;
+    public Vector4 CommittedLightPosition;
 }
 
 [StructLayout(LayoutKind.Sequential)]

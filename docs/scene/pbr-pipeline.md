@@ -65,22 +65,48 @@ Uses `PbrPushData` to send buffer addresses (materials, instances, models) globa
 
 ## Punctual Shadows
 - Point and spot lights share an independent 6 ms GPU work budget. Completed
-  pass timings update the scheduler's learned per-tile cost.
-- Each face keeps its committed sampling matrix paired with its cached static
-  and movable tiles. A light transform admits both tile updates atomically and
-  publishes the new matrix only after both renders complete.
+  pass timings update the scheduler's learned per-face cost. The baseline
+  admits 24 faces. Four consecutive completed frames at or below 10.5 ms add
+  six faces and 0.75 ms, up to 48 faces and 9 ms. Eight filtered frames at or
+  above 14 ms remove one step. Frames between those thresholds hold the
+  current setting. The frame input is a rolling 15-sample median, so delayed
+  profiler results do not abruptly starve shadow refreshes.
+- Each GPU job contains at most 24 complete light faces. Adaptive admission can
+  issue two jobs per frame when headroom permits, for up to eight point-light
+  cubemaps or 48 spots. Point and spot work never share a culling or raster
+  job, while unused face capacity can be filled by a job of the other type.
+- Each light keeps its committed sampling matrices and shadow origin paired
+  with its cached static and movable tiles. Transform changes admit every face
+  of that light atomically and publish the new state only after all required
+  tile renders have been encoded. Deferred point lights select cached cubemap
+  faces from the committed origin rather than the newer shading position, so
+  they cannot expose mixed-frame seams while waiting.
 - Atlas allocations remain stable for the lifetime of a light entity. Every
   allocated face republishes the same bindless page and tile indices each
   frame, including faces omitted from the current update schedule.
-- Visible lights are prioritized by projected influence, intensity, range, and
-  camera distance. Light influence volumes are tested against the camera
-  frustum. Spotlights then use a camera-frustum versus shadow-frustum test.
-  Visible point lights conservatively retain all six faces because corner-only
-  frustum overlap tests can reject crossing cubemap-face volumes.
-- Dirty punctual faces are scheduled globally. Invalid faces warm first, then
-  the oldest committed face wins, with light priority breaking ties. A
-  continuously moving light therefore cannot consume every frame's budget
-  with its first cubemap faces and starve the remaining faces or other lights.
+- Visible lights are prioritized by projected influence size, distance from
+  the camera to the light emitter, and a capped intensity contribution.
+  Emitter distance selects cadence tiers of 1, 2, 3, 5, 8, or 10 frames.
+  Projected radius can promote a visually large distant light, but cannot
+  promote it beyond a three-frame cadence. Emitters within six metres update
+  every frame while small lights beyond 100 metres update every ten.
+- The same visual score selects stable atlas resolution tiers. Point-light
+  faces use 1024, 512, 256, or 128 pixel tiles; spot lights use 2048, 1024,
+  512, or 256 pixel tiles. Promotions require 12 stable frames and demotions
+  require 90, preventing camera jitter from bouncing atlas allocations. A
+  migration renders the complete light into its new tile set atomically and
+  quarantines the old set for three frames before reuse.
+- Light influence volumes are tested against the camera frustum. Spotlights
+  then use a camera-frustum versus shadow-frustum test. Visible point lights
+  conservatively retain all six faces because corner-only frustum overlap
+  tests can reject crossing cubemap-face volumes.
+- Dirty punctual lights are scheduled globally. Lights with any invalid face
+  warm immediately. Valid lights become eligible only when their cadence
+  deadline arrives. Transform changes precede scene-cache refreshes, then an
+  overdue ratio and absolute-age bonus combine with weighted visual priority.
+  Nearby lights retain the fast lane under normal load, while sufficiently
+  overdue distant lights still overtake them instead of starving. Batch
+  construction never splits a point-light cubemap across frames.
 - Spot lights request one tile set. Point lights atomically request all six
   faces from the first tier that can contain the complete set; six faces
   therefore begin at the 4x4 tier rather than partially occupying 2x2.
@@ -93,6 +119,9 @@ Uses `PbrPushData` to send buffer addresses (materials, instances, models) globa
 - Admitted punctual tiles are uploaded as one GPU job array. A two-dimensional
   culling dispatch evaluates scene parts across every tile concurrently and
   writes disjoint indirect-command regions.
+- Each per-type job slot owns persistent cull-job and indirect-command buffers.
+  Filling a second homogeneous job cannot overwrite data still referenced by
+  the first job's encoded GPU commands.
 - Raster work is grouped by atlas page. Each touched page opens one depth
   encoder, clears all admitted tile rectangles, then renders all corresponding
   indirect-command regions while viewport/scissor clipping prevents tile

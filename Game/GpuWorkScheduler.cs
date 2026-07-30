@@ -4,7 +4,7 @@ using System;
 
 namespace Engine.Game;
 
-internal enum GpuWorkDomain
+public enum GpuWorkDomain
 {
     Shadows,
     PunctualShadows,
@@ -12,17 +12,29 @@ internal enum GpuWorkDomain
     Count,
 }
 
-internal readonly record struct GpuWorkBudgetSnapshot(
+public readonly record struct GpuWorkBudgetSnapshot(
     string Name,
     double BudgetMilliseconds,
     double EstimatedUnitMilliseconds,
+    int MaximumUnits,
     int AdmittedUnits,
     int DeferredUnits,
     long TotalAdmittedUnits,
     long TotalDeferredUnits);
 
-internal sealed class GpuWorkScheduler
+public sealed class GpuWorkScheduler
 {
+    private const double PunctualMinimumBudgetMilliseconds = 6.0;
+    private const double PunctualMaximumBudgetMilliseconds = 9.0;
+    private const int PunctualMinimumUnits = 24;
+    private const int PunctualMaximumUnits = 48;
+    private const int PunctualUnitStep = 6;
+    private const double PunctualBudgetStepMilliseconds = 0.75;
+    private const double FrameHeadroomThresholdMilliseconds = 10.5;
+    private const double FramePressureThresholdMilliseconds = 14.0;
+    private const int FrameHeadroomSampleCount = 4;
+    private const int FramePressureSampleCount = 8;
+
     private sealed class DomainState
     {
         public required string Name;
@@ -49,8 +61,8 @@ internal sealed class GpuWorkScheduler
         {
             Name = "Punctual Shadows",
             BudgetMilliseconds = 6.0,
-            EstimatedUnitMilliseconds = 0.3,
-            MaximumUnits = 20,
+            EstimatedUnitMilliseconds = 0.25,
+            MaximumUnits = 24,
         },
         new()
         {
@@ -62,6 +74,8 @@ internal sealed class GpuWorkScheduler
     };
 
     private long _frameNumber = -1;
+    private int _punctualHeadroomSamples;
+    private int _punctualPressureSamples;
 
     public void BeginFrame(long frameNumber)
     {
@@ -110,6 +124,65 @@ internal sealed class GpuWorkScheduler
         return true;
     }
 
+    public int GetUnitAllowance(
+        GpuWorkDomain domain,
+        int minimumAtomicUnits = 1)
+    {
+        DomainState state = _domains[(int)domain];
+        int timeLimitedUnits = (int)Math.Floor(
+            state.BudgetMilliseconds /
+            Math.Max(state.EstimatedUnitMilliseconds, 0.001));
+        return Math.Clamp(
+            Math.Max(timeLimitedUnits, minimumAtomicUnits),
+            minimumAtomicUnits,
+            state.MaximumUnits);
+    }
+
+    public void RecordFrameGpuTime(double milliseconds)
+    {
+        if (!double.IsFinite(milliseconds) || milliseconds <= 0.0)
+            return;
+
+        DomainState state =
+            _domains[(int)GpuWorkDomain.PunctualShadows];
+        if (milliseconds <= FrameHeadroomThresholdMilliseconds)
+        {
+            _punctualHeadroomSamples++;
+            _punctualPressureSamples = 0;
+            if (_punctualHeadroomSamples < FrameHeadroomSampleCount)
+                return;
+            state.MaximumUnits = Math.Min(
+                state.MaximumUnits + PunctualUnitStep,
+                PunctualMaximumUnits);
+            state.BudgetMilliseconds = Math.Min(
+                state.BudgetMilliseconds +
+                    PunctualBudgetStepMilliseconds,
+                PunctualMaximumBudgetMilliseconds);
+            _punctualHeadroomSamples = 0;
+            return;
+        }
+
+        if (milliseconds >= FramePressureThresholdMilliseconds)
+        {
+            _punctualPressureSamples++;
+            _punctualHeadroomSamples = 0;
+            if (_punctualPressureSamples < FramePressureSampleCount)
+                return;
+            state.MaximumUnits = Math.Max(
+                state.MaximumUnits - PunctualUnitStep,
+                PunctualMinimumUnits);
+            state.BudgetMilliseconds = Math.Max(
+                state.BudgetMilliseconds -
+                    PunctualBudgetStepMilliseconds,
+                PunctualMinimumBudgetMilliseconds);
+            _punctualPressureSamples = 0;
+            return;
+        }
+
+        _punctualHeadroomSamples = 0;
+        _punctualPressureSamples = 0;
+    }
+
     public void Defer(GpuWorkDomain domain, int unitCount)
     {
         if (unitCount <= 0)
@@ -148,6 +221,7 @@ internal sealed class GpuWorkScheduler
                 state.Name,
                 state.BudgetMilliseconds,
                 state.EstimatedUnitMilliseconds,
+                state.MaximumUnits,
                 state.AdmittedUnits,
                 state.DeferredUnits,
                 state.TotalAdmittedUnits,

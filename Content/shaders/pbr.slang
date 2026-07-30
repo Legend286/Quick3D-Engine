@@ -32,7 +32,9 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     
     Vertex v = part.vertices[index];
     
-    float3 vPos = float3(v.px, v.py, v.pz);
+    float3 vPos =
+        float3(v.px, v.py, v.pz) +
+        part.localOffset.xyz;
     float3 vNorm = float3(v.nx, v.ny, v.nz);
     float4 vTang = float4(v.tx, v.ty, v.tz, v.tw);
     
@@ -290,10 +292,16 @@ float EvaluatePunctualShadow(
     float3 normal,
     float3 lightDirection)
 {
+    uint firstRecordIndex = lightIndex * 6;
+    if (firstRecordIndex >= push.punctualShadowFaceCount)
+        return 1.0;
+    PunctualShadowFaceData firstFace =
+        push.punctualShadowFaces[firstRecordIndex];
     uint faceIndex = light.direction.w == 1.0
-        ? GetPointShadowFace(worldPos - light.position.xyz)
+        ? GetPointShadowFace(
+            worldPos - firstFace.committedLightPosition.xyz)
         : 0;
-    uint recordIndex = lightIndex * 6 + faceIndex;
+    uint recordIndex = firstRecordIndex + faceIndex;
     if (recordIndex >= push.punctualShadowFaceCount)
         return 1.0;
     PunctualShadowFaceData face =
@@ -375,7 +383,9 @@ float3 EvaluateLightContribution(uint lightIndex, LightData light, float3 worldP
 }
 
 [shader("fragment")]
-float4 fragmentMain(VertexOutput input) : SV_Target 
+float4 fragmentMain(
+    VertexOutput input,
+    float3 barycentrics : SV_Barycentrics) : SV_Target
 {
     MaterialData mat = push.materials[input.materialIdx];
     
@@ -464,6 +474,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target
 
 
     float3 N = normalize(input.normal);
+    float3 vertexNormal = N;
 
     
     // Build guarded tangent frame — runs before normal mapping so TBN is always valid
@@ -493,7 +504,61 @@ float4 fragmentMain(VertexOutput input) : SV_Target
         T = normalize(cross(B, N));
     }
     
-    float3 V = normalize(push.camera->cameraPosition.xyz - input.worldPos);
+    float3 emissive = mat.emissiveColor.rgb;
+    if (mat.emissiveTexIndex != 0xFFFFFFFF) {
+        float3 emTex = bindless.textures[mat.emissiveTexIndex].Sample(tex_sampler, input.uv).rgb;
+        emissive *= emTex;
+    }
+
+    uint debugView = push.debugFlags & 0xFFu;
+    if (debugView == 1u) {
+        float edgeDistance = min(
+            barycentrics.x,
+            min(barycentrics.y, barycentrics.z));
+        float edgeWidth = max(fwidth(edgeDistance), 0.0001);
+        float edge = 1.0 - smoothstep(
+            edgeWidth,
+            edgeWidth * 1.75,
+            edgeDistance);
+        return float4(edge.xxx, 1.0);
+    }
+    if (debugView == 2u) {
+        float depth = saturate(input.position.z);
+        float3 nearColor = float3(0.02, 0.08, 0.24);
+        float3 midColor = float3(0.05, 0.85, 0.72);
+        float3 farColor = float3(1.0, 0.35, 0.08);
+        float3 depthColor = depth < 0.5
+            ? lerp(nearColor, midColor, depth * 2.0)
+            : lerp(midColor, farColor, depth * 2.0 - 1.0);
+        return float4(depthColor, 1.0);
+    }
+    if (debugView == 3u)
+        return float4(vertexNormal * 0.5 + 0.5, 1.0);
+    if (debugView == 4u)
+        return float4(N * 0.5 + 0.5, 1.0);
+    if (debugView == 5u)
+        return float4(albedo, 1.0);
+    if (debugView == 6u)
+        return float4(ao, roughness, metallic, 1.0);
+    if (debugView == 8u)
+        return float4(frac(abs(input.worldPos) * 0.1), 1.0);
+    if (debugView == 9u)
+        return float4(emissive, 1.0);
+    if (debugView == 10u)
+        return float4(frac(input.uv), 0.0, 1.0);
+    if (debugView == 11u)
+        return float4(T * 0.5 + 0.5, 1.0);
+    if (debugView == 12u)
+        return float4(B * 0.5 + 0.5, 1.0);
+
+    float3 perspectiveV = normalize(
+        push.camera->cameraPosition.xyz - input.worldPos);
+    float3 orthographicV = normalize(
+        -push.camera->cameraForward.xyz);
+    float3 V = normalize(lerp(
+        perspectiveV,
+        orthographicV,
+        saturate(push.camera->cameraForward.w)));
     
     // Construct DisneyMaterial
     DisneyMaterial dmat;
@@ -535,13 +600,13 @@ float4 fragmentMain(VertexOutput input) : SV_Target
     
     float3 ambient = float3(0.03, 0.03, 0.03) * albedo * ao;
     
-    float3 emissive = mat.emissiveColor.rgb;
-    if (mat.emissiveTexIndex != 0xFFFFFFFF) {
-        float3 emTex = bindless.textures[mat.emissiveTexIndex].Sample(tex_sampler, input.uv).rgb;
-        emissive *= emTex;
-    }
-    
     float3 color = ambient + Lo + emissive;
+    if (debugView == 7u) {
+        color =
+            Lo / max(albedo, float3(0.04)) +
+            float3(0.03) * ao +
+            emissive;
+    }
     
     // Apply exposure
     color *= push.camera->cameraPosition.w;

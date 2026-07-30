@@ -19,7 +19,9 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     uint index = part.indices[vid];
     Vertex v = part.vertices[index];
     
-    float3 vPos = float3(v.px, v.py, v.pz);
+    float3 vPos =
+        float3(v.px, v.py, v.pz) +
+        part.localOffset.xyz;
     
     float4 worldPos = mul(inst.modelMatrix, float4(vPos, 1.0));
     output.position = mul(push.camera->viewProj, worldPos);

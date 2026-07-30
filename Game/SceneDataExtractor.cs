@@ -42,6 +42,8 @@ internal static class SceneDataExtractor
         Vector3 localCameraForward,
         uint frameCount,
         uint debugFlags,
+        float projectionBlend,
+        float orthographicSize,
         uint width,
         uint height,
         out SceneFrameData frameData,
@@ -55,26 +57,28 @@ internal static class SceneDataExtractor
         if (world.TryGet<Engine.Scene.Components.Camera>(activeCameraId, out var cam))
         {
             var transform = world.TryGet<Transform>(activeCameraId, out var t) ? t : Transform.Default;
-            var forward = Vector3.Transform(localCameraForward, transform.Rotation);
-            var view = Matrix4x4.CreateLookAt(transform.Position, transform.Position + forward, Vector3.UnitY);
-            var proj = Matrix4x4.CreatePerspectiveFieldOfView(cam.FieldOfView, aspect, cam.NearClip, cam.FarClip);
-            camData.ViewProj = view * proj;
-            Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
-            camData.InvViewProj = invVP;
-            camData.CameraPosition = new Vector4(transform.Position, 1.0f);
-            camData.CameraForward = new Vector4(forward, 0.0f);
+            camData = ViewportCameraProjection.Build(
+                cam,
+                transform,
+                localCameraForward,
+                aspect,
+                projectionBlend,
+                orthographicSize);
         }
 
         if (camData.ViewProj == Matrix4x4.Identity)
         {
             camData.CameraPosition = new Vector4(0, 0, -5, 1.0f);
-            var fallbackForward = Vector3.UnitZ;
-            camData.CameraForward = new Vector4(fallbackForward, 0.0f);
-            var view = Matrix4x4.CreateLookAt(new Vector3(0, 0, -5), new Vector3(0, 0, -5) + fallbackForward, Vector3.UnitY);
-            var proj = Matrix4x4.CreatePerspectiveFieldOfView(60.0f * (MathF.PI / 180.0f), aspect, 0.1f, 100.0f);
-            camData.ViewProj = view * proj;
-            Matrix4x4.Invert(camData.ViewProj, out Matrix4x4 invVP);
-            camData.InvViewProj = invVP;
+            camData = ViewportCameraProjection.Build(
+                Engine.Scene.Components.Camera.Default,
+                Transform.Default with
+                {
+                    Position = new Vector3(0, 0, -5)
+                },
+                Vector3.UnitZ,
+                aspect,
+                projectionBlend,
+                orthographicSize);
         }
 
         EnsureBuffer(device, ref cameraBuffer, (ulong)sizeof(CameraData), RhiNative.BufferUsage.Storage);
@@ -253,8 +257,12 @@ internal static class SceneDataExtractor
                         var aabbMin = p.BoundsMin;
                         var aabbMax = p.BoundsMax;
 
-                        instAabbMin = Vector3.Min(instAabbMin, aabbMin);
-                        instAabbMax = Vector3.Max(instAabbMax, aabbMax);
+                        instAabbMin = Vector3.Min(
+                            instAabbMin,
+                            aabbMin + p.LocalOffset);
+                        instAabbMax = Vector3.Max(
+                            instAabbMax,
+                            aabbMax + p.LocalOffset);
 
                         uint matIdx = (uint)materials.Count;
                         if (material != null)
@@ -301,6 +309,9 @@ internal static class SceneDataExtractor
                         {
                             AabbMin = new Vector4(aabbMin, 1.0f),
                             AabbMax = new Vector4(aabbMax, 1.0f),
+                            LocalOffset = new Vector4(
+                                p.LocalOffset,
+                                0.0f),
                             Vertices = mesh.VertexBuffer.DeviceAddress,
                             Indices = mesh.IndexBuffer.DeviceAddress,
                             IndexCount = mesh.IndexCount,

@@ -25,8 +25,12 @@ ConstantBuffer<ShadowCullPushData> push;
 
 bool IntersectsCascade(PartData part, InstanceData instance)
 {
-    float3 localMin = part.aabbMin.xyz;
-    float3 localMax = part.aabbMax.xyz;
+    float3 localMin =
+        part.aabbMin.xyz +
+        part.localOffset.xyz;
+    float3 localMax =
+        part.aabbMax.xyz +
+        part.localOffset.xyz;
     float3 corners[8] = {
         float3(localMin.x, localMin.y, localMin.z),
         float3(localMax.x, localMin.y, localMin.z),
