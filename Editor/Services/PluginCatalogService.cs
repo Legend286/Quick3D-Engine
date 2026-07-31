@@ -752,13 +752,25 @@ public sealed class PluginCatalogService :
             if (instance is IEditorPlugin editorExtension)
                 editorExtension.InitializeEditor(this);
             else
-                instance.Initialize(this);
-            if (instance is
-                    Engine.RenderGraph.IRendererPlanPlugin
-                        extension)
+                instance.Initialize(this);            if (instance is
+                Engine.RenderGraph.IRendererPlanPlugin
+                    extension)
             {
-                Engine.Renderer.Renderer.ActiveInstance?
-                    .AddExtensionPlugin(extension);
+                Avalonia.Threading.Dispatcher.UIThread.Post(
+                    () =>
+                    {
+                        if (Engine.Renderer.Renderer.ActiveInstance
+                            is null)
+                        {
+                            Engine.CBindings.Log.Warn(
+                                $"[Plugins] {plugin.Id} deferred to next dispatcher tick but Renderer hasn't been constructed yet; load a scene or open the viewport to activate this extension plugin.",
+                                "Editor");
+                            return;
+                        }
+                        Engine.Renderer.Renderer.ActiveInstance
+                            .AddExtensionPlugin(extension);
+                    },
+                    Avalonia.Threading.DispatcherPriority.Default);
             }
             _runtime[plugin.Id] =
                 new RuntimePlugin

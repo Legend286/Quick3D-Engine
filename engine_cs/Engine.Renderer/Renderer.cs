@@ -12,11 +12,11 @@ using System.Numerics;
 using System.IO;
 using Engine.RHI;
 using Engine.RenderGraph;
+using Engine.RenderGraph.Shaders;
 using Engine.Scene;
 using Engine.Scene.Components;
 using Engine.Assets;
 using Engine.Plugins;
-using Engine.Renderer.Shaders;
 using static Engine.CBindings.Log;
 
 namespace Engine.Renderer;
@@ -39,6 +39,18 @@ public sealed class Renderer : IDisposable
         }
     }
 
+    private static Renderer? s_active;
+
+    /// <summary>Gets the most-recently-constructed active
+    /// <see cref="Renderer"/> instance. Backs the
+    /// <c>RendererPluginRuntime.LocateRenderer</c> bridge so
+    /// snapshot helpers can find a renderer without taking a hard
+    /// dependency on its owning host. Editor multi-renderer
+    /// scenarios (viewport + thumbnail workers) should migrate
+    /// callers to thread the active renderer explicitly rather
+    /// than rely on this static.</summary>
+    public static Renderer? ActiveInstance => s_active;
+
     private readonly RhiDevice _device;
     private readonly RhiSwapchain _swap;
     private readonly IEntityStore _world;
@@ -55,12 +67,16 @@ public sealed class Renderer : IDisposable
     private CachedRenderPlan? _rasterPlan;
     private CachedRenderPlan? _pathTracingPlan;
 
-    /// <summary>Sentinel handle on which the executor binds the swapchain
-    /// back-buffer before each frame. Console-friendly constant so callers
-    /// can reference the same handle.</summary>
-    public static readonly ResourceHandle BackBufferHandle = new(0x80000000);
-    public static readonly ResourceHandle DepthBufferHandle = new(0x80000001);
-    public static readonly ResourceHandle OutlineMaskHandle = new(0x80000002);
+    /// <summary>Back-buffer sentinel. Lives on <see cref="Engine.RenderGraph.RenderGraphResources"/>
+    /// now so plugins can reference the same handle without depending
+    /// on this assembly. The constants are kept here as delegating
+    /// shims for the host internals that still touch them.</summary>
+    public static readonly ResourceHandle BackBufferHandle =
+        Engine.RenderGraph.RenderGraphResources.BackBufferHandle;
+    public static readonly ResourceHandle DepthBufferHandle =
+        Engine.RenderGraph.RenderGraphResources.DepthBufferHandle;
+    public static readonly ResourceHandle OutlineMaskHandle =
+        Engine.RenderGraph.RenderGraphResources.OutlineMaskHandle;
     private const uint DirectionalShadowMapHandleBase = 0x80000003;
 
     /// <summary>The well-known identifier of the canonical Forward+
@@ -76,10 +92,10 @@ public sealed class Renderer : IDisposable
     public const string PathTracingPluginId = "core.renderer.path-tracing";
 
     public static ResourceHandle GetDirectionalShadowMapHandle(int cascadeIndex)
-        => GetShadowPageHandle(cascadeIndex);
+        => Engine.RenderGraph.RenderGraphResources.GetShadowPageHandle(cascadeIndex);
 
     public static ResourceHandle GetShadowPageHandle(int pageIndex)
-        => new(DirectionalShadowMapHandleBase + (uint)pageIndex);
+        => Engine.RenderGraph.RenderGraphResources.GetShadowPageHandle(pageIndex);
 
     private string _lastSceneName = "";
     private bool _usePathTracer;
@@ -113,6 +129,7 @@ public sealed class Renderer : IDisposable
     private ViewportDebugView _debugView;
     private IRendererPlanPlugin? _clusteredPlugin;
     private IRendererPlanPlugin? _pathTracingPlugin;
+    private readonly List<IRendererPlanPlugin> _extensionPlugins = new();
 
     private RhiTexture? _depthTexture;
     private RhiTexture? _outlineMaskTexture;
@@ -239,6 +256,7 @@ public sealed class Renderer : IDisposable
         IRendererPlanPlugin? clusteredPlugin = null,
         IRendererPlanPlugin? pathTracingPlugin = null)
     {
+        s_active = this;
         _device = device;
         _swap = swap;
         _world = world;
@@ -290,6 +308,55 @@ public sealed class Renderer : IDisposable
                     _contentRoot);
             }
         }
+    }
+
+    /// <summary>Adds a renderer-extension plugin whose
+    /// <see cref="IRendererPlanPlugin.BuildPlan"/> contribution is
+    /// composed into the active render graph each frame alongside
+    /// the primary clustered or path-tracing plan. Toggling off
+    /// restores the canonical plan; extension plugins are expected
+    /// to drop their slot registrations (atlas slots, bindless
+    /// resources, etc.) inside <c>Shutdown</c> so the host's
+    /// shader-side <c>#ifdef NAME</c> limbs gracefully fall back
+    /// to no-extension sampling.</summary>
+    public void AddExtensionPlugin(
+        IRendererPlanPlugin extension)
+    {
+        if (extension == null) return;
+        if (_extensionPlugins.Contains(extension)) return;
+        _extensionPlugins.Add(extension);
+        InvalidateRenderPlan();
+    }
+
+    /// <summary>Removes a renderer-extension plugin and rebuilds
+    /// the canonical render graph; companion to
+    /// <see cref="AddExtensionPlugin"/>.</summary>
+    public void RemoveExtensionPlugin(
+        IRendererPlanPlugin extension)
+    {
+        if (extension == null) return;
+        if (!_extensionPlugins.Remove(extension)) return;
+        InvalidateRenderPlan();
+    }
+
+    private void InvalidateRenderPlan()
+    {
+        bool wasActive =
+            _plan == _rasterPlan?.Plan ||
+            _plan == _pathTracingPlan?.Plan;
+        _rasterPlan?.Dispose();
+        _pathTracingPlan?.Dispose();
+        _plan = null;
+        _rasterSceneCache = null;
+        _directionalShadowState = null;
+        _directionalShadowPass = null;
+        _punctualShadowState = null;
+        _punctualShadowPass = null;
+        if (wasActive && _currentScene != null)
+            ActivateOrCompileRenderPlan(
+                _currentScene,
+                _contentRoot);
+        _renderPlanVersion++;
     }
 
     public void SetClusteredPlugin(
@@ -703,11 +770,24 @@ public sealed class Renderer : IDisposable
                 RenderShadows = _renderShadows,
                 RenderSky = _renderSky,
                 ShaderCliArgs = _activeShaderCliArgs,
-                ShaderIncludeDirs = _activeShaderIncludeDirs
+                ShaderIncludeDirs = _activeShaderIncludeDirs,
+                SharedShaderCache = _compileCache
             };
         RendererPluginPlan pluginPlan =
             plugin.BuildPlan(pluginContext);
         passes.AddRange(pluginPlan.Passes);
+
+        // Renderer-extension plugins compose into the same active
+        // plan. RenderGraphCompiler orders passes from resource
+        // read/write declarations, so the extension passes
+        // self-flow where they need to run (DDGI's probe-update
+        // compute pass runs before the PBR pass reads the atlas).
+        foreach (var ext in _extensionPlugins)
+        {
+            RendererPluginPlan extPlan =
+                ext.BuildPlan(pluginContext);
+            passes.AddRange(extPlan.Passes);
+        }
 
         if (!usePathTracer &&
             pluginPlan.RasterSceneCache == null)
@@ -735,15 +815,15 @@ public sealed class Renderer : IDisposable
         {
             Plan = newPlan,
             RasterSceneCache =
-                pluginPlan.RasterSceneCache,
+                (Engine.Renderer.RasterSceneGpuCache?)pluginPlan.RasterSceneCache,
             DirectionalShadowState =
-                pluginPlan.DirectionalShadowState,
+                (Engine.Renderer.DirectionalShadowState?)pluginPlan.DirectionalShadowState,
             DirectionalShadowPass =
-                pluginPlan.DirectionalShadowPass,
+                (Engine.Renderer.DirectionalShadowPass?)pluginPlan.DirectionalShadowPass,
             PunctualShadowState =
-                pluginPlan.PunctualShadowState,
+                (Engine.Renderer.PunctualShadowState?)pluginPlan.PunctualShadowState,
             PunctualShadowPass =
-                pluginPlan.PunctualShadowPass
+                (Engine.Renderer.PunctualShadowPass?)pluginPlan.PunctualShadowPass
         };
     }
 
@@ -835,9 +915,18 @@ public sealed class Renderer : IDisposable
                 _graphExecutor.UnbindTexture(GetShadowPageHandle(pageIndex));
         }
 
-        _graphExecutor.Execute(_plan, syncFence, waitValue, syncFence, signalValue);
-        ConsumeGpuWorkTimings();
-        _renderedFrameCount++;
+        try
+        {
+            _graphExecutor.Execute(_plan, syncFence, waitValue, syncFence, signalValue);
+            ConsumeGpuWorkTimings();
+            _renderedFrameCount++;
+        }
+        catch (System.Exception ex)
+        {
+            Error(
+                "[Renderer] Render frame aborted: " + ex.Message + "\n" + ex.StackTrace,
+                "Renderer");
+        }
     }
 
     private void ConsumeGpuWorkTimings()
@@ -1186,6 +1275,8 @@ public sealed class Renderer : IDisposable
         _compileCache?.Dispose();
         _compileCache = null!;
         EditorShaderBridge.ActiveShaderContextChanged -= OnActiveShaderContextChanged;
+        if (s_active == this)
+            s_active = null;
     }
 }
 
