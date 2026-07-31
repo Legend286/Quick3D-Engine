@@ -145,6 +145,8 @@ public sealed class DDGIRendererPlugin :
         DDGIProbePriority.LightInfluence[] influences =
             BuildLightInfluences(context.Scene);
 
+        UploadLightsSnapshot(context.Scene);
+
         RefreshProbeSnapshots();
 
         DDGIProbePriority.CameraSnapshot camera = BuildCameraSnapshot();
@@ -384,6 +386,56 @@ public sealed class DDGIRendererPlugin :
         if (source is null || source.Length < 3)
             return fallback;
         return new Vector3(source[0], source[1], source[2]);
+    }
+
+    private void UploadLightsSnapshot(SceneGraph scene)
+    {
+        if (_atlas == null) return;
+        int capacity = _atlas.LightSlotCount;
+        if (capacity <= 0) return;
+
+        var snapshot = new DDGILightSnapshot[capacity];
+        if (scene?.Lights != null)
+        {
+            int count = Math.Min(scene.Lights.Count, capacity);
+            for (int i = 0; i < count; ++i)
+            {
+                LightNode node = scene.Lights[i];
+                Vector3 position = ReadFloat3(node.Position, Vector3.Zero);
+                Vector3 color = ReadFloat3(node.Color, Vector3.One);
+                float range = node.Range > 0f ? node.Range : 1.0e6f;
+                float intensity = node.Intensity > 0f ? node.Intensity : 0f;
+
+                float type = string.Equals(node.Type, "point",
+                    StringComparison.OrdinalIgnoreCase) ? 1f
+                    : string.Equals(node.Type, "spot",
+                        StringComparison.OrdinalIgnoreCase) ? 2f
+                    : 0f;
+
+                Vector3 axis = type != 0f
+                    ? Vector3.Normalize(Vector3.Zero - position)
+                    : -ReadFloat3(node.Direction, new Vector3(0, -1, 0));
+
+                float innerAngle = 0.0f;
+                float outerAngle = 0.0f;
+                if (node.InnerCone is float inner) innerAngle = inner;
+                if (node.OuterCone is float outer) outerAngle = outer;
+
+                snapshot[i] = new DDGILightSnapshot
+                {
+                    Position = new Vector4(
+                        position.X, position.Y, position.Z, range),
+                    Direction = new Vector4(
+                        axis.X, axis.Y, axis.Z, type),
+                    Color = new Vector4(
+                        color.X, color.Y, color.Z, intensity),
+                    ShapeParams = new Vector4(
+                        innerAngle, outerAngle, 0f, 0f),
+                };
+            }
+        }
+
+        _atlas.UploadLights(snapshot);
     }
 
     private void EnsureAtlas(RendererPluginContext context)

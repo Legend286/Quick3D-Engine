@@ -182,6 +182,8 @@ public sealed class DDGIProbeUpdatePass : RenderPass
         sink.BindPipeline(_pipeline);
         sink.UseBuffer(_atlas.ProbePositions, 5);
         sink.UseBuffer(_atlas.Lights, 1);
+        sink.BindTexture(0, _atlas.Irradiance);
+        sink.BindTexture(4, _atlas.Visibility);
 
         if (_atlas.SharedHeap != null && _atlas.SharedHeap.IsInitialized)
         {

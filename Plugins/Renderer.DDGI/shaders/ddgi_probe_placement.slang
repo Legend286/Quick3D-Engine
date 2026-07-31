@@ -141,8 +141,13 @@ void computeMain(uint3 cell : SV_DispatchThreadID)
         return;
     }
 
-    // Per-thread fixed stack of node descriptors.
-    const int kStackCap = 16;
+    // Per-thread fixed stack of node descriptors. Sized for
+    // MaxOctreeDepth up to 4 (worst-case frontier ≈ 15 nodes when
+    // root expands to depth 2 and a single branch goes one level
+    // deeper); bumping depth to 5 would push the DFS frontier to
+    // 31 nodes, so any further growth must also bump this cap and
+    // the overflow guard below.
+    const int kStackCap = 32;
     float3 stkMin[kStackCap];
     float3 stkMax[kStackCap];
     uint   stkDepth[kStackCap];

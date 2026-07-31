@@ -203,6 +203,17 @@ public sealed class DDGIAtlasResources : IDisposable
         ProbeCounter?.Dispose();
         Lights?.Dispose();
     }
+
+    /// <summary>Bulk upload of the light snapshot consumed by the
+    /// probe-update kernel's <c>EvaluateLights</c>. The snapshot's
+    /// 64-byte packed layout (Position/Direction/Color/ShapeParams)
+    /// matches the host's canonical LightData, so the kernel reads
+    /// the same fields without plugin-side indirection.</summary>
+    public void UploadLights(ReadOnlySpan<DDGILightSnapshot> snapshot)
+    {
+        if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
+        Lights.Upload(snapshot);
+    }
 }
 
 public sealed record Vector3I(int X, int Y, int Z)

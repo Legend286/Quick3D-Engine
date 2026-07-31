@@ -34,10 +34,12 @@ struct UpdatePushData
 [push_constant]
 ConstantBuffer<UpdatePushData> push;
 
-// Probe index queue lives at push-constant slot 1.
-static const int kProbeIndexSlot = 1;
+// Probe index queue lives inline in the push struct (slot 0) so
+// Slang/HLSL does not treat it as a thread-local constant-initialised
+// to zero. Reads here go directly through the matched C# struct
+// fields; bump kMax if MaxProbesPerFrame ever grows past eight.
+
 static const int kMaxProbesPerFrame = 8;
-static int kProbeIndices[kMaxProbesPerFrame];
 
 StructuredBuffer<float3> probePositions : register(t5);
 StructuredBuffer<LightData> lights : register(t1);
@@ -120,7 +122,19 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     if (probeOrdinal >= push.probeCount)
         return;
 
-    uint sparseIdx = (uint)kProbeIndices[probeOrdinal];
+    uint sparseIdx;
+    switch (probeOrdinal)
+    {
+        case 0u: sparseIdx = push.probeIndex0; break;
+        case 1u: sparseIdx = push.probeIndex1; break;
+        case 2u: sparseIdx = push.probeIndex2; break;
+        case 3u: sparseIdx = push.probeIndex3; break;
+        case 4u: sparseIdx = push.probeIndex4; break;
+        case 5u: sparseIdx = push.probeIndex5; break;
+        case 6u: sparseIdx = push.probeIndex6; break;
+        case 7u: sparseIdx = push.probeIndex7; break;
+        default: sparseIdx = uint(-1); break;
+    }
     if (sparseIdx == uint(-1))
         return;
 
