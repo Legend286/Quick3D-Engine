@@ -46,6 +46,7 @@ public sealed class DDGIRendererPlugin :
     private bool _lightsSeeded;
     private long _tickCounter;
     private long _lastPlacementTick = -1;
+    private long _sceneFingerprint;
 
     public DDGIRendererPlugin()
     {
@@ -100,6 +101,21 @@ public sealed class DDGIRendererPlugin :
     public RendererPluginPlan BuildPlan(RendererPluginContext context)
     {
         EnsureAtlas(context);
+
+        long fingerprint = ComputeSceneFingerprint(context);
+        if (fingerprint != _sceneFingerprint)
+        {
+            _sceneFingerprint = fingerprint;
+            _lastPlacementTick = -1;
+            if (_atlas != null) _atlas.ResetSparseLayoutForSceneReload();
+            if (_tickCounter % MaxLogSampleEvery == 0)
+            {
+                Log.Info(
+                    $"[DDGI] scene fingerprint changed; re-running GPU probe placement next tick",
+                    "DDGI");
+            }
+        }
+
         _tickCounter++;
         _priority.AdvanceFrame(_tickCounter);
 
@@ -266,15 +282,23 @@ public sealed class DDGIRendererPlugin :
 
     private void RefreshProbeSnapshots()
     {
-        int probeCount = _volume.ProbeCount;
-        if (_probeSnapshots.Length != probeCount)
+        // ScheduleMax constant-bounded probe count without consulting
+        // the CPU volume: the probe-update kernel reads positions
+        // straight from _atlas.ProbePositions / GridToProbeIndex,
+        // so per-tick CPU positioning is unnecessary. Capping at
+        // MaxProbesPerFrame gives the scheduler a fixed input shape
+        // regardless of whether the GPU placement kernel has finished
+        // populating the sparse layout — unallocated cells just
+        // return gridToProbeIndex == -1 in the shader.
+        int cap = DDGIProbeUpdatePass.MaxProbesPerFrame;
+        if (_probeSnapshots.Length != cap)
             _probeSnapshots =
-                new DDGIProbePriority.ProbeSnapshot[probeCount];
-        for (int i = 0; i < probeCount; ++i)
+                new DDGIProbePriority.ProbeSnapshot[cap];
+        for (int i = 0; i < cap; ++i)
         {
             _probeSnapshots[i] = new DDGIProbePriority.ProbeSnapshot(
                 Index: i,
-                Position: _volume.PositionAt(i),
+                Position: Vector3.Zero,
                 LastUpdateFrame: _tickCounter - 1);
         }
     }
@@ -284,6 +308,26 @@ public sealed class DDGIRendererPlugin :
         if (_atlas == null) return false;
         if (_lastPlacementTick > 0) return false;
         return true;
+    }
+
+    private long ComputeSceneFingerprint(RendererPluginContext context)
+    {
+        int lights = context.Scene?.Lights?.Count ?? 0;
+        int entities = 0;
+        if (context.World != null)
+        {
+            foreach (int _ in context.World.Entities) entities++;
+        }
+        int contentHash = context.ContentRoot == null
+            ? 0
+            : context.ContentRoot.GetHashCode();
+        long combined = (long)(uint)lights;
+        unchecked
+        {
+            combined ^= (long)entities << 16;
+            combined ^= (long)contentHash << 32;
+        }
+        return combined;
     }
 
     private DDGIProbePriority.LightInfluence[] BuildLightInfluences(

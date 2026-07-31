@@ -195,6 +195,19 @@ public sealed class DDGIAtlasResources : IDisposable
         ProbeCounter.Upload(new ReadOnlySpan<uint>(ref zero));
     }
 
+    /// <summary>Marks the sparse-layout cache stale when the host
+    /// scene changes. Sets <see cref="SparseLayoutReady"/> back to
+    /// false so consumers (ClusteredRendererPlugin debug overlay,
+    /// is-debug-views decision) refresh from the next placement
+    /// pass instead of reading stale slot indices. The actual
+    /// SSBOs the GPU placement kernel writes are unchanged; we
+    /// only flip the host-side hint.</summary>
+    public void ResetSparseLayoutForSceneReload()
+    {
+        SparseLayoutReady = false;
+        UploadedProbeCount = 0;
+    }
+
     private static unsafe void UploadInts(RhiBuffer buffer, ReadOnlySpan<int> data)
     {
         fixed (int* p = data)
