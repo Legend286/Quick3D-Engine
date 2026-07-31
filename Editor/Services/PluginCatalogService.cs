@@ -14,7 +14,8 @@ using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Engine.CBindings;
 using Engine.Plugins;
-using Engine.Renderer.Shaders;
+using Engine.Renderer;
+using Engine.RenderGraph.Shaders;
 
 namespace Engine.Editor.Services;
 
@@ -140,6 +141,13 @@ public sealed class PluginCatalogService :
     private bool _writingConfiguration;
     private bool _disposed;
 
+    private static readonly HashSet<string> PrimaryRendererPluginIds =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "core.renderer.clustered",
+            "core.renderer.path-tracing",
+        };
+
     /// <summary>Gets the process-wide plugin catalog.</summary>
     public static PluginCatalogService Shared { get; } =
         new(App.ProjectRoot);
@@ -186,6 +194,19 @@ public sealed class PluginCatalogService :
             .Select(plugin =>
                 (plugin.Manifest, plugin.IsEnabled));
 
+    /// <summary>Enumerates (manifest, manifestPath) pairs for every
+    /// enabled plugin. Drives <c>ShaderIncludeResolver.Resolve</c> so the
+    /// renderer can derive the per-frame Slang <c>-I</c> include-path
+    /// list without coupling to the catalog's UI-bound
+    /// ObservableCollection.</summary>
+    public IEnumerable<(EnginePluginManifest Manifest, string ManifestPath)>
+        GetEnabledManifestsWithPaths()
+        => Plugins
+            .Where(plugin => plugin.IsEnabled)
+            .Select(plugin => (
+                plugin.Manifest,
+                Path.Combine(plugin.DirectoryPath, "plugin.json")));
+
     /// <summary>Enables an optional plugin by identifier.</summary>
     public bool Enable(string pluginId)
     {
@@ -229,9 +250,12 @@ public sealed class PluginCatalogService :
         Log.Info(
             $"[Plugins] Shader reload requested for {plugin.Id}",
             "Editor");
-        EditorShaderBridge.RaiseActiveShaderCliArgsChanged(
-            Engine.Renderer.RendererFeatureSet.BuildCliArgs(
-                GetAllManifests()));
+        // TODO(editor): reintroduce Engine.Renderer.RendererFeatureSet (or an Engine.RenderGraph equivalent) once the plugin-manifest-driven CLI-arg aggregation surface lands in the cycle-broke project graph. Empty argv for now so the editor still raises the context-change event.
+        EditorShaderBridge.RaiseActiveShaderContextChanged(
+            System.Array.Empty<string>(),
+            ShaderIncludeResolver.Resolve(
+                Path.Combine(ProjectRoot, "Content"),
+                GetEnabledManifestsWithPaths()));
     }
 
     /// <inheritdoc />
@@ -281,8 +305,18 @@ public sealed class PluginCatalogService :
             }
             catch (Exception exception)
             {
+                string exceptionTypeName = exception.GetType().Name;
+                bool isNullReference =
+                    exceptionTypeName == "NullReferenceException";
+                string verb =
+                    isNullReference
+                        ? "check the manifest deserialized cleanly and that every non-nullable field (\"version\", \"id\", \"name\", \"kind\") is non-null in the JSON; if the trace shows PluginCatalogService.LoadPlugin or SetEnabled, also verify all static fields above `Shared` initialize before it."
+                        : "see stack trace below.";
                 Log.Error(
-                    $"[Plugins] Failed to read '{manifestPath}': {exception.Message}",
+                    $"[Plugins] Failed to read '{manifestPath}': {exceptionTypeName} {verb}",
+                    "Editor");
+                Log.Error(
+                    exception.ToString(),
                     "Editor");
             }
         }
@@ -403,8 +437,10 @@ public sealed class PluginCatalogService :
                 Path.GetFullPath(
                     plugin.DirectoryPath)
             };
-        foreach (string shaderFile in
-                 plugin.Manifest.ShaderFiles)
+        List<string> shaderFiles =
+            plugin.Manifest.ShaderFiles
+                ?? new List<string>();
+        foreach (string shaderFile in shaderFiles)
         {
             string fullPath = Path.GetFullPath(
                 Path.Combine(
@@ -456,7 +492,10 @@ public sealed class PluginCatalogService :
             ".glsl" or
             ".metal")
         {
-            if (!plugin.Manifest.ShaderFiles.Any(
+            List<string> shaderFiles =
+                plugin.Manifest.ShaderFiles
+                    ?? new List<string>();
+            if (!shaderFiles.Any(
                     shader =>
                         string.Equals(
                             Path.GetFullPath(
@@ -616,6 +655,11 @@ public sealed class PluginCatalogService :
         if (plugin.Manifest.Kind ==
             EnginePluginKind.Renderer)
         {
+            if (PrimaryRendererPluginIds.Contains(plugin.Id))
+            {
+                return;
+            }
+            LoadRendererExtensionPlugin(plugin);
             return;
         }
         if (_runtime.ContainsKey(plugin.Id) ||
@@ -670,6 +714,66 @@ public sealed class PluginCatalogService :
         }
     }
 
+    private void LoadRendererExtensionPlugin(
+        PluginEntryViewModel plugin)
+    {
+        if (_runtime.ContainsKey(plugin.Id) ||
+            string.IsNullOrWhiteSpace(
+                plugin.Manifest.Assembly) ||
+            string.IsNullOrWhiteSpace(
+                plugin.Manifest.EntryPoint))
+        {
+            return;
+        }
+
+        string? assemblyPath = ResolveAssemblyPath(plugin);
+        if (assemblyPath == null) return;
+
+        try
+        {
+            var context = new PluginLoadContext();
+            byte[] assemblyBytes =
+                File.ReadAllBytes(assemblyPath);
+            using var stream =
+                new MemoryStream(assemblyBytes);
+            Assembly assembly =
+                context.LoadFromStream(stream);
+            Type? type = assembly.GetType(
+                plugin.Manifest.EntryPoint,
+                throwOnError: false);
+            if (type == null ||
+                Activator.CreateInstance(type) is not
+                    IEnginePlugin instance)
+            {
+                context.Unload();
+                return;
+            }
+            if (instance is IEditorPlugin editorExtension)
+                editorExtension.InitializeEditor(this);
+            else
+                instance.Initialize(this);
+            if (instance is
+                    Engine.RenderGraph.IRendererPlanPlugin
+                        extension)
+            {
+                Engine.Renderer.Renderer.ActiveInstance?
+                    .AddExtensionPlugin(extension);
+            }
+            _runtime[plugin.Id] =
+                new RuntimePlugin
+                {
+                    Context = context,
+                    Instance = instance
+                };
+        }
+        catch (Exception exception)
+        {
+            Log.Error(
+                $"[Plugins] Failed to load {plugin.Name}: {exception.Message}",
+                "Editor");
+        }
+    }
+
     private string? ResolveAssemblyPath(
         PluginEntryViewModel plugin)
     {
@@ -705,6 +809,13 @@ public sealed class PluginCatalogService :
             return;
         }
 
+        if (runtime.Instance is
+                Engine.RenderGraph.IRendererPlanPlugin
+                    extensionRenderer)
+        {
+            Engine.Renderer.Renderer.ActiveInstance?
+                .RemoveExtensionPlugin(extensionRenderer);
+        }
         runtime.Instance.Shutdown();
         runtime.Instance.Dispose();
         runtime.Context.Unload();
@@ -780,6 +891,42 @@ public sealed class PluginCatalogService :
             }
             _debounce.Clear();
         }
+    }
+
+    /// <inheritdoc />
+    public bool TryGetActiveCameraData(
+        uint width, uint height,
+        out System.Numerics.Vector3 cameraPosition,
+        out System.Numerics.Matrix4x4 viewProjection,
+        out System.Numerics.Matrix4x4 inverseViewProjection)
+    {
+        cameraPosition = System.Numerics.Vector3.Zero;
+        viewProjection = System.Numerics.Matrix4x4.Identity;
+        inverseViewProjection = System.Numerics.Matrix4x4.Identity;
+        // Bridge through the process-wide active-renderer service
+        // locator so editor plugin passes (DDGI overlay, future
+        // authoring tools) obtain camera state without coupling to
+        // a specific host-renderer instance. Returns false when no
+        // renderer is constructed yet so plugin callers fall back
+        // to identity matrices + a one-time diagnostic. The host
+        // Renderer's TryGetActiveCameraData returns the raw camera
+        // components; this adapter flattens them to the interface's
+        // (position, viewProj, invViewProj) tuple so plugin callers
+        // don't need a hard ref to Engine.Scene.Components.
+        Engine.Renderer.Renderer? renderer =
+            Engine.Renderer.Renderer.ActiveInstance;
+        if (renderer == null)
+            return false;
+        if (!renderer.TryGetActiveCameraData(
+                width, height,
+                out Engine.Scene.Components.Camera _,
+                out Engine.Scene.Components.Transform transform,
+                out CameraData cameraData))
+            return false;
+        cameraPosition = transform.Position;
+        viewProjection = cameraData.ViewProj;
+        inverseViewProjection = cameraData.InvViewProj;
+        return true;
     }
 
     public void RegisterMenuAction(string pluginId, string menuPath, string itemName, Action onExecute)
