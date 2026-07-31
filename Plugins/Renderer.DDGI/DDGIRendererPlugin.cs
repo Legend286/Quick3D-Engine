@@ -133,18 +133,6 @@ public sealed class DDGIRendererPlugin :
             }
         }
 
-        if (!_volume.IsInitialized)
-        {
-            if (_tickCounter % LogSampleEvery == 0)
-            {
-                Log.Info(
-                    $"[DDGI] tick={_tickCounter} sparse layout pending " +
-                    $"placement pass; deferring Gi admission",
-                    "DDGI");
-            }
-            return plan;
-        }
-
         DDGIProbePriority.LightInfluence[] influences =
             BuildLightInfluences(context.Scene);
 
@@ -294,7 +282,6 @@ public sealed class DDGIRendererPlugin :
     private bool ShouldKickPlacement()
     {
         if (_atlas == null) return false;
-        if (_volume.IsInitialized) return false;
         if (_lastPlacementTick > 0) return false;
         return true;
     }
