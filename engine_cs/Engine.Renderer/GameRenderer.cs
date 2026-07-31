@@ -154,6 +154,9 @@ public sealed class GameRenderer : IDisposable
         set => _renderer.OrthographicSize = Math.Clamp(value, 0.1f, 1000.0f);
     }
 
+    /// <summary>Forwards <see cref="Renderer.CurrentScene"/> for callers in <c>Engine.Game</c> that need scene-level metadata without a host-internals dependency.</summary>
+    public SceneGraph? CurrentScene => _renderer.CurrentScene;
+
     public GameRenderer(RhiDevice device, RhiSwapchain swap, IEntityStore world, bool enableImGui)
     {
         _device = device;
@@ -699,6 +702,8 @@ public sealed class GameRenderer : IDisposable
             }
         }
     }
+
+    public void InvalidateRenderPlan() => _renderer.InvalidateRenderPlan();
 
     public void ReloadPluginShaders(string pluginId) => _renderer.ReloadPluginShaders(pluginId);
 

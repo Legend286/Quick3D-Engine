@@ -13,6 +13,7 @@
 
 using System.Numerics;
 using Engine.Plugins;
+using Engine.RHI;
 
 namespace Engine.RenderGraph;
 
@@ -67,6 +68,28 @@ public static class CameraPose
 /// atlas + SSBO bindings into the PBR pass without naming
 /// Engine.DDGI types. Implementations return null / false / zero
 /// when the plugin is not loaded.</summary>
+public readonly record struct DDGIAtlasResourceHandles(
+    ResourceHandle ProbePositions,
+    ResourceHandle GridToProbeIndex,
+    ResourceHandle ProbeCounter,
+    ResourceHandle ProbeDrawArgs,
+    ResourceHandle Lights,
+    ResourceHandle LightTreeNodes,
+    ResourceHandle Irradiance,
+    ResourceHandle Visibility);
+
+/// <summary>Persistent RHI objects owned by the DDGI plugin and imported
+/// into the host render graph for barrier tracking.</summary>
+public readonly record struct DDGIAtlasExternalResources(
+    RhiBuffer ProbePositions,
+    RhiBuffer GridToProbeIndex,
+    RhiBuffer ProbeCounter,
+    RhiBuffer ProbeDrawArgs,
+    RhiBuffer Lights,
+    RhiBuffer LightTreeNodes,
+    RhiTexture Irradiance,
+    RhiTexture Visibility);
+
 public interface IDDGIAtlasProvider
 {
     /// <summary>Returns the bindless slots the plugin has assigned to
@@ -87,6 +110,11 @@ public interface IDDGIAtlasProvider
         out Engine.RHI.RhiBuffer probePositions,
         out Engine.RHI.RhiBuffer gridToProbeIndex,
         out Engine.RHI.RhiBuffer probeCounter);
+
+    /// <summary>Gets stable graph handles and the matching persistent RHI
+    /// resources used to bind DDGI's external resources before execution.</summary>
+    DDGIAtlasResourceHandles ResourceHandles { get; }
+    bool TryGetExternalResources(out DDGIAtlasExternalResources resources);
 
     /// <summary>Returns the volumetric grid origin / extent / count so
     /// the consumer shader can map any shading point back to its

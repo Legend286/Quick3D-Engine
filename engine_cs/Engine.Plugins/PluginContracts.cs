@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 namespace Engine.Plugins;
 
 /// <summary>Identifies the primary capability supplied by a plugin.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum EnginePluginKind
 {
     /// <summary>Supplies a viewport or runtime renderer.</summary>
@@ -143,6 +144,18 @@ public interface IEditorPluginHost : IEnginePluginHost
 
     /// <summary>Registers a tool panel (Avalonia control) in the Editor UI.</summary>
     void RegisterToolPanel(string pluginId, string title, object avaloniaControl);
+
+    /// <summary>Registers a plugin-owned debug view in the viewport's
+    /// visualization dropdown. The editor appends
+    /// <paramref name="viewName"/> while the plugin is loaded and
+    /// invokes <paramref name="onToggle"/> with <c>true</c> when the
+    /// view is selected and <c>false</c> otherwise, so plugin overlay
+    /// passes are driven entirely from the plugin side — host code
+    /// never needs to name a plugin type or its state registry.</summary>
+    void RegisterDebugView(
+        string pluginId,
+        string viewName,
+        Action<bool> onToggle);
 }
 
 /// <summary>Defines a plugin specifically designed to extend the Editor.</summary>

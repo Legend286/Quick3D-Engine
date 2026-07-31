@@ -27,7 +27,12 @@ public sealed class RhiBindlessHeapTests
             return probe.Handle != IntPtr.Zero;
         }
         catch (DllNotFoundException) { return false; }
-        catch (Exception ex) when (ex.Message.Contains("backend")) { return false; }
+        catch (Exception ex) when (
+            ex.Message.Contains("backend", StringComparison.OrdinalIgnoreCase) ||
+            ex.Message.Contains("rhi_init", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
     }
 
     private static RhiTexture CreateTestTexture(RhiDevice device, uint w = 16, uint h = 16)

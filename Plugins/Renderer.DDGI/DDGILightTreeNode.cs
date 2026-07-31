@@ -8,7 +8,7 @@ namespace Engine.DDGI;
 /// 32-byte BBV light-tree node descriptor used by the DDGI
 /// probe-update kernel's hierarchical light gather.
 ///
-/// Packing (matches <see cref="Content/shaders/ddgi_probe_update.slang"/>
+/// Packing (matches <see cref="shaders/ddgi_probe_update.slang"/>
 /// LightTreeNode):
 ///   * <see cref="MinData0"/>: xyz = node AABB min,
 ///     w = asfloat(childLeft index) when internal, OR

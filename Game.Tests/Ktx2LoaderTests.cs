@@ -108,7 +108,12 @@ public sealed class Ktx2LoaderTests
             return probe.Handle != IntPtr.Zero;
         }
         catch (DllNotFoundException) { return false; }
-        catch (Exception ex) when (ex.Message.Contains("backend")) { return false; }
+        catch (Exception ex) when (
+            ex.Message.Contains("backend", StringComparison.OrdinalIgnoreCase) ||
+            ex.Message.Contains("rhi_init", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
     }
 
     /// <summary>

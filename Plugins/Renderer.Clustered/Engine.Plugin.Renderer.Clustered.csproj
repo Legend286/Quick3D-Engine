@@ -10,7 +10,6 @@
     <ProjectReference Include="..\..\engine_cs\Engine.Plugins\Engine.Plugins.csproj" />
     <ProjectReference Include="..\..\engine_cs\Engine.Renderer\Engine.Renderer.csproj" />
     <ProjectReference Include="..\..\Game\Engine.Game.csproj" />
-    <ProjectReference Include="..\Renderer.DDGI\Engine.Plugin.Renderer.DDGI.csproj" />
   </ItemGroup>
 
   <ItemGroup>

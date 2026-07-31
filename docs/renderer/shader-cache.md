@@ -99,6 +99,32 @@ Trade-offs:
   bytes each lookup; on-disk `.dxil`/`.metallib` caching is out of
   scope for this commit.
 
+## Disposal detection
+
+The cache's `GetOrCompile` and `GetOrCompileHash` hit paths consult
+[`RhiShader.IsAlive`](../engine_cs/Engine.RHI/RhiShader.cs) on the
+cached wrapper before returning it. If the wrapper's `Handle` has been
+zeroed by an external holder's `Dispose()` — typical when an earlier
+plan's render-pass lifecycle tore down its own `_shader` field during
+a hot reload or scene reload — the cache treats the entry as a miss
+and re-runs the factory closure to produce a fresh wrapper.
+
+The detection is necessary because the cache stores raw `IDisposable`
+references (no proxy), and the original holder's `Dispose()` does not
+inform the cache. Without the check a dead `RhiShader` would round
+trip back into the next plan build's
+[`RhiPipeline.CreateCompute`](../engine_cs/Engine.RHI/RhiPipeline.cs),
+which now correctly throws `ObjectDisposedException` — but the
+affected pass would still fail to register on the graph. Treating the
+hit as a miss lets the cache recover transparently without invalidating
+the calling renderer plan.
+
+Cost: a single `is RhiShader` cast + one field read on the hit path,
+in the low-microsecond range, dwarfed by the millisecond-scale Slang
+recompile that would otherwise run on a content miss. The detection
+is idempotent on healthy entries so the hit path latency budget is
+unchanged.
+
 ## Known follow-ups
 
 - **ReloadShaders needs refcount.** Once a pass grows a

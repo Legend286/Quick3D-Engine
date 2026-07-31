@@ -76,6 +76,7 @@ if [[ ! -f "${DYLIB_SRC}" ]]; then
 fi
 mkdir -p "${PROJECT_ROOT}/out"
 cp -f "${DYLIB_SRC}" "${DYLIB_OUT}"
+touch "${DYLIB_OUT}"
 log_info "${DYLIB_OUT}"
 
 cp -f "${CMAKE_BUILD_DIR}/_deps/basis_universal-src/bin/basisu" "${PROJECT_ROOT}/out/basisu" 2>/dev/null || true
@@ -144,7 +145,7 @@ mkdir -p "${APP_BUNDLE_DIR}/Contents/MacOS"
 mkdir -p "${APP_BUNDLE_DIR}/Contents/Resources"
 cp -R "${PUBLISH_FLAT}/." "${APP_BUNDLE_DIR}/Contents/MacOS/"
 cp -R "${PROJECT_ROOT}/Content" "${APP_BUNDLE_DIR}/Contents/MacOS/Content"
-cp -f "${DYLIB_OUT}" "${APP_BUNDLE_DIR}/Contents/MacOS/libEngineC.dylib"
+cp -f "${DYLIB_OUT}" "${APP_BUNDLE_DIR}/Contents/MacOS/libEngineC.dylib" 2>/dev/null || cp -f "${DYLIB_SRC}" "${APP_BUNDLE_DIR}/Contents/MacOS/libEngineC.dylib"
 cp -f "${PROJECT_ROOT}/out/engine_cook" "${APP_BUNDLE_DIR}/Contents/MacOS/engine_cook" 2>/dev/null || true
 cp -f "${PROJECT_ROOT}/out/basisu" "${APP_BUNDLE_DIR}/Contents/MacOS/basisu" 2>/dev/null || true
 cp "${PROJECT_ROOT}/Editor/Info.plist" "${APP_BUNDLE_DIR}/Contents/Info.plist"

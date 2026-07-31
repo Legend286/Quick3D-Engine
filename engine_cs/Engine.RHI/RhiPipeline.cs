@@ -15,6 +15,22 @@ public sealed class RhiPipeline : IDisposable
     public static RhiPipeline CreateGraphics(RhiDevice device, RhiShader vertexShader, RhiShader fragmentShader,
         RhiNative.TextureFormat colorFormat, bool enableDepth = true, bool enableDepthWrite = true, bool enableBlend = false, RhiNative.PrimitiveTopology topology = RhiNative.PrimitiveTopology.TriangleList, RhiNative.CompareOp depthCompare = RhiNative.CompareOp.LessEqual)
     {
+        // MARK: Defensive guards. Without these a GC finaliser on the
+        // shader wrappers can run mid-P/Invoke; the Dispose finalizer
+        // path zeroes the Handle field (see RhiShader.Dispose) which
+        // then marshals as IntPtr.Zero down to the Metal backend, where
+        // the cast to RhiShaderImpl* and subsequent cs->fn dereference
+        // trips EXC_BAD_ACCESS at the ISA pointer offset (0x8).
+        // Validating here gives a clear ObjectDisposedException at the
+        // C# call site, and GC.KeepAlive pins both shader references
+        // alive across the native call so a concurrent finaliser on a
+        // render-thread worker cannot stale the handle mid-call.
+        if (vertexShader == null || vertexShader.Handle == IntPtr.Zero)
+            throw new ObjectDisposedException(nameof(vertexShader),
+                "Vertex shader was disposed before the graphics pipeline could be created.");
+        if (fragmentShader == null || fragmentShader.Handle == IntPtr.Zero)
+            throw new ObjectDisposedException(nameof(fragmentShader),
+                "Fragment shader was disposed before the graphics pipeline could be created.");
         var desc = new RhiNative.GraphicsPipelineDesc
         {
             Abi = 4,
@@ -29,6 +45,8 @@ public sealed class RhiPipeline : IDisposable
             DepthCompare = depthCompare,
         };
         int res = RhiNative.RhiCreateGraphicsPipeline(device.Handle, in desc, out IntPtr handle);
+        GC.KeepAlive(vertexShader);
+        GC.KeepAlive(fragmentShader);
         if (res != 0 || handle == IntPtr.Zero)
             throw new Exception("Failed to create graphics pipeline.");
         return new RhiPipeline(handle);
@@ -53,12 +71,21 @@ public sealed class RhiPipeline : IDisposable
 
     public static RhiPipeline CreateCompute(RhiDevice device, RhiShader computeShader)
     {
+        // MARK: Defensive guards. See the matching comment in
+        // CreateGraphics for the fault chain; the previous form
+        // silently forwarded a Handle==IntPtr.Zero (from a disposed
+        // or GCed shader) to compute-pipeline creation, crashing the
+        // Metal backend inside cs->fn at offset 0x8.
+        if (computeShader == null || computeShader.Handle == IntPtr.Zero)
+            throw new ObjectDisposedException(nameof(computeShader),
+                "Compute shader was disposed before the compute pipeline could be created.");
         var desc = new RhiNative.ComputePipelineDesc
         {
             Abi = 2,
             ComputeShader = computeShader.Handle
         };
         int rc = RhiNative.RhiCreateComputePipeline(device.Handle, in desc, out IntPtr p);
+        GC.KeepAlive(computeShader);
         if (rc != 0) throw new InvalidOperationException($"rhi_create_compute_pipeline rc={rc}");
         return new RhiPipeline(p);
     }

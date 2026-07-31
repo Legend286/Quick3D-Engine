@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT
 using System;
+using System.Buffers.Binary;
 using System.Numerics;
+using System.Threading;
 using Engine.CBindings;
 using Engine.RHI;
+using Engine.RenderGraph;
 
 namespace Engine.DDGI;
 
@@ -28,28 +31,56 @@ namespace Engine.DDGI;
 /// </remarks>
 public sealed class DDGIAtlasResources : IDisposable
 {
+    private static int _nextGraphResourceId = 0x60000000;
+
     public RhiTexture Irradiance { get; }
     public RhiTexture Visibility { get; }
     public RhiBuffer ProbePositions { get; }
     public RhiBuffer GridToProbeIndex { get; }
     public RhiBuffer Lights { get; }
     public RhiBuffer ProbeCounter { get; }
+    public RhiBuffer ProbeDrawArgs { get; }
     public uint IrradianceBindlessIndex { get; }
     public uint VisibilityBindlessIndex { get; }
+    // MARK: Sentinel-and-log helpers. The C# producer used to fall
+    // back to slot 0 via `sharedHeap?.Register(...) ?? 0u`, which
+    // was silent — the heap genuinely can allocate its first
+    // registered texture at slot 0, so the consumer-side `if
+    // (slot == 0u)` gate mis-classified a valid binding as
+    // "unbound" and surfaced the bind only via the orange debug
+    // viz fallback. We now coalesce the null sharedHeap branch to
+    // <see cref="Engine.RHI.RhiBindlessHeap.InvalidSlot"/> (=
+    // uint.MaxValue), which the shader-side consumers gate on
+    // explicitly, AND we surface one-and-done Error logs so a
+    // silent failure becomes audible in the engine log without
+    // spamming each frame.
     public Vector3I GridResolution { get; }
     public Vector3 Origin { get; }
     public Vector3 Extent { get; }
     public int MaxProbesTotalBudget { get; }
     public int CoarseGridCells { get; }
     public int UploadedProbeCount { get; private set; }
+    // MARK: SparseLayoutReady is the consumer/sample-readiness flag.
+    // The CPU-side volume seed in DDGIRendererPlugin.EnsureVolumeLayout
+    // and the GPU placement pass both flip it true so PBR and the
+    // debug viz can sample the atlas. SparseLayoutGpuPlaced is the
+    // GPU-placement-success flag: only the GPU dispatch path (the
+    // placement pass that actually issued the kernel) sets it true.
+    // DDGIRendererPlugin.ShouldKickPlacement gates on
+    // SparseLayoutGpuPlaced rather than SparseLayoutReady so the
+    // CPU seed cannot pre-empt the GPU placement run for the
+    // current scene — see docs/renderer/ddgi.md#placement-race.
     public bool SparseLayoutReady { get; private set; }
+    public bool SparseLayoutGpuPlaced { get; private set; }
     public int LightSlotCount =>
         (int)((Lights?.Size ?? 0ul) / 64ul);
+    public int UploadedLightCount { get; private set; }
     public RhiBuffer LightTreeNodes { get; }
     public int LightTreeNodeCapacity { get; }
     public int TreeNodeCount { get; private set; }
     public int TreeRootIndex { get; private set; } = -1;
     public RhiBindlessHeap SharedHeap { get; }
+    public DDGIAtlasResourceHandles ResourceHandles { get; }
 
     public DDGIAtlasResources(
         RhiDevice device,
@@ -73,6 +104,15 @@ public sealed class DDGIAtlasResources : IDisposable
                 "maxProbesTotalBudget must be positive.");
 
         SharedHeap = sharedHeap;
+        ResourceHandles = new DDGIAtlasResourceHandles(
+            new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()));
         GridResolution = baseGridResolution;
         Origin = origin;
         Extent = extent;
@@ -102,8 +142,8 @@ public sealed class DDGIAtlasResources : IDisposable
 
         ProbePositions = RhiBuffer.Create(
             device,
-            (ulong)maxProbesTotalBudget * 12ul,
-            RhiNative.BufferUsage.Storage);
+            (ulong)maxProbesTotalBudget * 16ul,
+            RhiNative.BufferUsage.Storage | RhiNative.BufferUsage.Vertex);
         ProbePositions.SetDebugName("DDGI Probe Positions", "DDGI");
 
         GridToProbeIndex = RhiBuffer.Create(
@@ -119,6 +159,13 @@ public sealed class DDGIAtlasResources : IDisposable
             RhiNative.BufferUsage.Storage);
         ProbeCounter.SetDebugName(
             "DDGI Placement Probe Counter", "DDGI");
+
+        ProbeDrawArgs = RhiBuffer.Create(
+            device,
+            16ul,
+            RhiNative.BufferUsage.Storage | RhiNative.BufferUsage.Indirect);
+        ProbeDrawArgs.SetDebugName(
+            "DDGI GPU Probe Draw Args", "DDGI");
 
         // DDGILightSnapshot is 4 x Vector4 = 64 bytes (position w=range,
         // direction w=type, color w=intensity, shapeParams). Structurally
@@ -141,10 +188,26 @@ public sealed class DDGIAtlasResources : IDisposable
             RhiNative.BufferUsage.Storage);
         LightTreeNodes.SetDebugName("DDGI Light Tree Nodes", "DDGI");
 
-        IrradianceBindlessIndex =
-            sharedHeap?.Register(Irradiance) ?? 0u;
-        VisibilityBindlessIndex =
-            sharedHeap?.Register(Visibility) ?? 0u;
+        // Sentinel value used when the shared heap is null -
+        // shader-side consumers gate on the same uint.MaxValue
+        // literal (see ddgi_sampling.slang + ddgi_debug.slang)
+        // so a failed registration can't be confused with a valid
+        // slot-0 atlas binding.
+        if (sharedHeap == null)
+        {
+            Engine.CBindings.Log.Error(
+                "[DDGI] atlas allocation received a null bindless heap; " +
+                "DDGI atlas slots will be RhiBindlessHeap.InvalidSlot " +
+                "(0xFFFFFFFF) so consumers fall through to no-atlas sampling.",
+                "DDGI");
+            IrradianceBindlessIndex = RhiBindlessHeap.InvalidSlot;
+            VisibilityBindlessIndex = RhiBindlessHeap.InvalidSlot;
+        }
+        else
+        {
+            IrradianceBindlessIndex = sharedHeap.Register(Irradiance);
+            VisibilityBindlessIndex = sharedHeap.Register(Visibility);
+        }
 
         SparseLayoutReady = false;
         UploadedProbeCount = 0;
@@ -176,17 +239,36 @@ public sealed class DDGIAtlasResources : IDisposable
                 $"does not match CoarseGridCells {CoarseGridCells}.",
                 nameof(gridToProbeIndex));
 
-        ProbePositions.Upload(new ReadOnlySpan<Vector3>(positions));
+        Vector4[] packedPositions = new Vector4[positions.Length];
+        for (int i = 0; i < positions.Length; ++i)
+            packedPositions[i] = new Vector4(positions[i], 1f);
+        ProbePositions.Upload(packedPositions);
         UploadInts(
             GridToProbeIndex,
             new ReadOnlySpan<int>(gridToProbeIndex));
         UploadedProbeCount = positions.Length;
+        // MARK: UploadSparseLayout is the volume-seed path. The CPU
+        // fallback in DDGIRendererPlugin.EnsureVolumeLayout and the
+        // UploadEmptySparseLayout failure mode both reach here. Set
+        // SparseLayoutReady=true so PBR + debug viz can sample, but
+        // leave SparseLayoutGpuPlaced untouched so the
+        // ShouldKickPlacement gate stays open until the GPU dispatch
+        // actually commits a refined layout. Without this split the
+        // CPU seed pre-empts the GPU placement run on tick 1 because
+        // both paths used to flip the same flag.
         SparseLayoutReady = true;
     }
 
     public void MarkSparseLayoutReady()
     {
         SparseLayoutReady = true;
+        // MARK: MarkSparseLayoutReady is called exclusively from the
+        // GPU placement pass's Execute() method immediately after
+        // sink.Dispatch() succeeds. Being the ONLY writer of
+        // SparseLayoutGpuPlaced makes it the canonical "GPU placement
+        // committed this scene" signal that ShouldKickPlacement keys
+        // off.
+        SparseLayoutGpuPlaced = true;
     }
 
     /// <summary>
@@ -202,6 +284,8 @@ public sealed class DDGIAtlasResources : IDisposable
     {
         uint zero = 0;
         ProbeCounter.Upload(new ReadOnlySpan<uint>(ref zero));
+        Span<uint> drawArgs = stackalloc uint[4] { 0u, 1u, 0u, 0u };
+        ProbeDrawArgs.Upload(drawArgs);
     }
 
     /// <summary>Marks the sparse-layout cache stale when the host
@@ -214,6 +298,7 @@ public sealed class DDGIAtlasResources : IDisposable
     public void ResetSparseLayoutForSceneReload()
     {
         SparseLayoutReady = false;
+        SparseLayoutGpuPlaced = false;
         UploadedProbeCount = 0;
     }
 
@@ -224,6 +309,17 @@ public sealed class DDGIAtlasResources : IDisposable
             buffer.Upload(new ReadOnlySpan<byte>(
                 p, data.Length * sizeof(int)));
         }
+    }
+
+    /// <summary>Legacy compatibility switch. Runtime DDGI never performs CPU atlas writes.</summary>
+    public bool WarmupEnabled { get; set; } = false;
+
+    /// <summary>Legacy compatibility switch retained for configuration compatibility.</summary>
+    public static bool WarmupEnabledGlobally { get; set; } = false;
+
+    /// <summary>Retained for source compatibility; GPU placement and update own the atlas.</summary>
+    public void WarmUpAtlas()
+    {
     }
 
     public void Dispose()
@@ -238,6 +334,7 @@ public sealed class DDGIAtlasResources : IDisposable
         ProbePositions?.Dispose();
         GridToProbeIndex?.Dispose();
         ProbeCounter?.Dispose();
+        ProbeDrawArgs?.Dispose();
         Lights?.Dispose();
         LightTreeNodes?.Dispose();
     }
@@ -251,6 +348,7 @@ public sealed class DDGIAtlasResources : IDisposable
     {
         if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
         Lights.Upload(snapshot);
+        UploadedLightCount = snapshot.Length;
     }
 
     /// <summary>Uploads the BBV light tree node array built on the
@@ -284,6 +382,9 @@ public sealed class DDGIAtlasResources : IDisposable
         TreeNodeCount = nodes.Length;
         TreeRootIndex = rootIndex;
     }
+
+    private static uint NextGraphResourceId()
+        => unchecked((uint)Interlocked.Increment(ref _nextGraphResourceId));
 
     private static int NextPow2(int value)
     {

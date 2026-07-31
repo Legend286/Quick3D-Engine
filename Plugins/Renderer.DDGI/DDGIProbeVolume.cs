@@ -99,9 +99,18 @@ public sealed class DDGIProbeVolume
         _initialized = true;
     }
 
-    /// <summary>True once <see cref="Initialize"/> has populated the
-    /// sparse position list + indirection array. Until then the
-    /// volume contributes zero probes to the render graph.</summary>
+    /// <summary>Marks the volume as GPU-owned. The CPU retains only the
+    /// volume bounds; probe positions and indirection are generated and
+    /// updated by the placement kernel.</summary>
+    public void InitializeGpuOwned()
+    {
+        _positions = Array.Empty<Vector3>();
+        _gridToProbeIndex = AllocateGridIndirection();
+        _initialized = true;
+    }
+
+    /// <summary>True once the volume metadata is ready. Probe positions
+    /// are GPU-owned when <see cref="InitializeGpuOwned"/> was used.</summary>
     public bool IsInitialized => _initialized;
 
     /// <summary>World-space position of probe index

@@ -1,21 +1,6 @@
 // SPDX-License-Identifier: MIT
-// GPU-only DDGI sparse probe placement pipeline:
-//   1. Reads scene mesh AABBs from the raster-scene instance buffer.
-//   2. Walks a top-down octree over the volume's coarse 32³ grid,
-//      subdividing only cells whose AABB intersects any mesh AABB.
-//   3. For each leaf at the maximum octree depth, casts six outward
-//      rays (±X, ±Y, ±Z) at the host TLAS and rejects candidates
-//      that fail the inside-geometry (ε=5 cm) or free-space (r=50 cm)
-//      sanity checks.
-//   4. Atomic-allocates slot positions in the ProbePositions SSBO
-//      and writes the coarse-grid indirection table.
-// Consumed by the DDGIRendererPlugin once per scene-load; subsequent
-// ticks the plugin skips the pass and lets the probe-update pass
-// re-radiance the existing sparse positions.
-
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Engine.Assets;
@@ -28,24 +13,37 @@ using Engine.Scene.Components;
 
 namespace Engine.DDGI;
 
+/// <summary>
+/// Rebuilds the sparse DDGI layout on the GPU every frame. The GPU owns probe
+/// positions, grid indirection, active count, and indirect debug draw arguments.
+/// The CPU supplies only scene AABBs and volume constants.
+/// </summary>
 public sealed class DDGIProbePlacementPass : RenderPass, IDisposable
 {
-    public const string PlacementShaderSource = "shaders/ddgi_probe_placement.slang";
-
+    public const string PlacementShaderSource = "ddgi_probe_placement.slang";
     public const float ProbeFreeSpaceRadiusMeters = 0.50f;
     public const float ProbeInsideGeometryEpsilon = 0.05f;
     public const int MaxOctreeDepth = 3;
     public const int CoarseGridResolution = 32;
-    public const int CoarseGridCells = CoarseGridResolution *
-        CoarseGridResolution * CoarseGridResolution;
-    public const int MaxProbeBudget = 4096;
+    public const int CoarseGridCells =
+        CoarseGridResolution * CoarseGridResolution * CoarseGridResolution;
+    public const int MaxProbeBudget = DDGIProbeVolume.DefaultMaxProbesTotalBudget;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct PlacementPushData
     {
         public Vector4 VolumeMinAndCoarseRes;
         public Vector4 VolumeCellSizeAndMaxDepth;
-        public Vector4 ProbeBudgetAndParams; // x:maxProbes y:freeSpaceR z:insideEps w:meshAabbCount
+        public Vector4 ProbeBudgetAndParams;
+        public ulong MeshAabbs;
+        public ulong ProbePositions;
+        public ulong GridToProbeIndex;
+        public ulong ProbeCounter;
+        public ulong ProbeDrawArgs;
+        public uint UseSceneTlas;
+        public uint Padding0;
+        public uint Padding1;
+        public uint Padding2;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -63,9 +61,6 @@ public sealed class DDGIProbePlacementPass : RenderPass, IDisposable
     private readonly RhiPipeline _pipeline;
     private RhiBuffer _meshAabbBuffer;
     private int _meshAabbCapacity;
-    private readonly IReadOnlyList<string>? _includeDirs;
-    private readonly IReadOnlyList<string>? _cliArgs;
-    private readonly ShaderCompileCache? _compileCache;
 
     public DDGIProbePlacementPass(
         RhiDevice device,
@@ -83,197 +78,191 @@ public sealed class DDGIProbePlacementPass : RenderPass, IDisposable
         _world = world;
         _atlas = atlas;
         _sceneCache = new RaytracingSceneCache(device, world);
-        _includeDirs = includeDirs;
-        _cliArgs = cliArgs;
-        _compileCache = compileCache;
-
         _meshAabbCapacity = 1024;
         _meshAabbBuffer = RhiBuffer.Create(
             device,
             (ulong)_meshAabbCapacity * (ulong)Marshal.SizeOf<MeshAabb>(),
             RhiNative.BufferUsage.Storage);
-        _meshAabbBuffer.SetDebugName(
-            "DDGI Placement Mesh AABBs", "DDGI");
+        _meshAabbBuffer.SetDebugName("DDGI Placement Mesh AABBs", "DDGI");
 
         Name = "DDGI Probe Placement";
-        Queue = RhiNative.QueueType.Compute;
-
-        if (compileCache == null)
-        {
-            _shader = RhiShader.FromSource(
+        Queue = RhiNative.QueueType.Graphics;
+        _shader = compileCache == null
+            ? RhiShader.FromSource(
                 device, shaderSource, "computeMain",
-                RhiNative.ShaderStage.Compute,
-                includeDirs, cliArgs);
-        }
-        else
-        {
-            _shader = (RhiShader)compileCache.GetOrCompileHash(
-                shaderSource, "computeMain",
-                RhiNative.ShaderStage.Compute,
+                RhiNative.ShaderStage.Compute, includeDirs, cliArgs)
+            : (RhiShader)compileCache.GetOrCompileHash(
+                shaderSource, "computeMain", RhiNative.ShaderStage.Compute,
                 includeDirs, cliArgs,
                 () => RhiShader.FromSource(
                     device, shaderSource, "computeMain",
-                    RhiNative.ShaderStage.Compute,
-                    includeDirs, cliArgs));
-        }
+                    RhiNative.ShaderStage.Compute, includeDirs, cliArgs));
         _shader.SetDebugName("DDGI Probe Placement CS", "DDGI");
-
-        _pipeline = RhiPipeline.CreateCompute(_device, _shader);
-        _pipeline.SetDebugName(
-            "DDGI Probe Placement Pipeline", "DDGI");
+        _pipeline = RhiPipeline.CreateCompute(device, _shader);
+        _pipeline.SetDebugName("DDGI Probe Placement Pipeline", "DDGI");
     }
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.UnorderedAccess);
+        builder.ImportBuffer(_atlas.ResourceHandles.ProbePositions);
+        builder.ImportBuffer(_atlas.ResourceHandles.GridToProbeIndex);
+        builder.ImportBuffer(_atlas.ResourceHandles.ProbeCounter);
+        builder.ImportBuffer(_atlas.ResourceHandles.ProbeDrawArgs);
+        builder.Write(
+            _atlas.ResourceHandles.ProbePositions,
+            ResourceState.UnorderedAccess);
+        builder.Write(
+            _atlas.ResourceHandles.GridToProbeIndex,
+            ResourceState.UnorderedAccess);
+        builder.Write(
+            _atlas.ResourceHandles.ProbeCounter,
+            ResourceState.UnorderedAccess);
+        builder.Write(
+            _atlas.ResourceHandles.ProbeDrawArgs,
+            ResourceState.UnorderedAccess);
     }
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext context)
     {
-        if (_atlas == null) return;
-
         _atlas.ZeroProbeCounter();
 
         MeshAabb[] aabbs = CollectMeshAabbs(_world);
-        if (aabbs.Length == 0)
-        {
-            UploadEmptySparseLayout();
-            return;
-        }
+        // A missing ECS-side AABB snapshot must not collapse the GPU
+        // layout to zero probes. A valid TLAS enables free-space tests;
+        // otherwise the shader accepts the volume cells directly.
         EnsureMeshAabbCapacity(aabbs.Length);
         UploadMeshAabbs(aabbs);
-
-        RaytracingSceneCache.TlasUpdateResult tlasInfo =
-            _sceneCache.TryUpdateTlas(sink);
-        if (tlasInfo.SceneTlas == null)
+        RaytracingSceneCache.TlasUpdateResult tlasInfo;
+        try
         {
-            UploadEmptySparseLayout();
-            return;
+            tlasInfo = _sceneCache.TryUpdateTlas(sink);
         }
+        catch (Exception exception)
+        {
+            Log.Error(
+                $"[DDGI] placement TLAS unavailable; using GPU volume fallback: " +
+                $"{exception.Message}",
+                "DDGI");
+            tlasInfo = default;
+        }
+        bool useSceneTlas = tlasInfo.SceneTlas != null;
 
         Vector3 volumeMin = _atlas.Origin - _atlas.Extent;
-        Vector3 volumeCellSize =
-            _atlas.Extent * 2.0f / CoarseGridResolution;
-
+        Vector3 cellSize = _atlas.Extent * 2.0f / CoarseGridResolution;
         PlacementPushData push = new()
         {
             VolumeMinAndCoarseRes = new Vector4(
-                volumeMin.X, volumeMin.Y, volumeMin.Z,
-                (float)CoarseGridResolution),
+                volumeMin, CoarseGridResolution),
             VolumeCellSizeAndMaxDepth = new Vector4(
-                volumeCellSize.X,
-                volumeCellSize.Y,
-                volumeCellSize.Z,
-                (float)MaxOctreeDepth),
+                cellSize, MaxOctreeDepth),
             ProbeBudgetAndParams = new Vector4(
-                (float)MaxProbeBudget,
+                MaxProbeBudget,
                 ProbeFreeSpaceRadiusMeters,
                 ProbeInsideGeometryEpsilon,
-                (float)aabbs.Length),
+                aabbs.Length),
+            MeshAabbs = _meshAabbBuffer.DeviceAddress,
+            ProbePositions = _atlas.ProbePositions.DeviceAddress,
+            GridToProbeIndex = _atlas.GridToProbeIndex.DeviceAddress,
+            ProbeCounter = _atlas.ProbeCounter.DeviceAddress,
+            ProbeDrawArgs = _atlas.ProbeDrawArgs.DeviceAddress,
+            UseSceneTlas = useSceneTlas ? 1u : 0u,
         };
 
         sink.BeginComputePass(Name);
         sink.BindPipeline(_pipeline);
         sink.UseBuffer(_meshAabbBuffer, 1);
-        sink.UseBuffer(_atlas.ProbePositions, 5);
-        sink.UseBuffer(_atlas.GridToProbeIndex, 6);
-        sink.UseBuffer(_atlas.ProbeCounter, 0);
+        sink.UseBuffer(            _atlas.ProbePositions, 2);
 
-        if (_atlas.SharedHeap != null && _atlas.SharedHeap.IsInitialized)
-            sink.BindHeap(1, _atlas.SharedHeap);
-
-        sink.BindAccelStruct(3, tlasInfo.SceneTlas);
-        sink.UseAccelStruct(tlasInfo.SceneTlas, 1);
-
-        sink.PushConstants(
-            0,
-            (uint)sizeof(PlacementPushData),
-            (IntPtr)(&push));
-
-        sink.Dispatch((uint)CoarseGridResolution,
-            (uint)CoarseGridResolution,
-            (uint)CoarseGridResolution,
-            1, 1, 1);
-        _atlas.MarkSparseLayoutReady();
+        sink.UseBuffer(_atlas.GridToProbeIndex, 2);
+        sink.UseBuffer(_atlas.ProbeCounter, 2);
+        sink.UseBuffer(_atlas.ProbeDrawArgs, 2);
+        if (useSceneTlas)
+        {
+            sink.BindAccelStruct(3, tlasInfo.SceneTlas!);
+            sink.UseAccelStruct(tlasInfo.SceneTlas!, 1);
+        }
+        sink.PushConstants(0, (uint)sizeof(PlacementPushData), (IntPtr)(&push));
+        sink.Dispatch(
+            CoarseGridResolution / 8u,
+            CoarseGridResolution / 8u,
+            CoarseGridResolution / 8u,
+            8, 8, 8);
         sink.EndComputePass();
+        _atlas.MarkSparseLayoutReady();
     }
 
-    private void UploadEmptySparseLayout()
+    private void ClearEmptySparseLayout()
     {
-        int coarseCells = _atlas.CoarseGridCells;
-        var positions = Array.Empty<Vector3>();
-        var grid = new int[coarseCells];
+        int[] grid = new int[_atlas.CoarseGridCells];
         Array.Fill(grid, -1);
-        _atlas.UploadSparseLayout(positions, grid);
+        _atlas.GridToProbeIndex.Upload(grid);
+        _atlas.ZeroProbeCounter();
+        _atlas.MarkSparseLayoutReady();
     }
 
     private static MeshAabb[] CollectMeshAabbs(IEntityStore world)
     {
         var result = new List<MeshAabb>();
-        foreach (var entityId in world.Entities)
+        foreach (ulong entityId in world.Entities)
         {
-            if (!world.TryGet<ModelComponent>(entityId, out var modelComp))
+            if (!world.TryGet<ModelComponent>(entityId, out ModelComponent modelComp))
                 continue;
-            Engine.Scene.Components.Transform transform =
-                world.TryGet<Engine.Scene.Components.Transform>(entityId, out var t)
-                ? t
-                : Engine.Scene.Components.Transform.Default;
-            var model = AssetRegistry.GetModel(modelComp.ModelId);
-            if (model == null || model.Parts == null) continue;
-            foreach (var part in model.Parts)
+            Transform transform = world.TryGet<Transform>(entityId, out Transform value)
+                ? value
+                : Transform.Default;
+            Model? model = AssetRegistry.GetModel(modelComp.ModelId);
+            if (model?.Parts == null)
+                continue;
+
+            foreach (ModelPart part in model.Parts)
             {
-                Vector3 localMin = part.BoundsMin;
-                Vector3 localMax = part.BoundsMax;
-                Matrix4x4 partMat =
-                    Matrix4x4.CreateTranslation(part.LocalOffset);
-                Matrix4x4 modelMat =
+                Matrix4x4 modelMatrix =
                     Matrix4x4.CreateScale(transform.Scale) *
                     Matrix4x4.CreateFromQuaternion(transform.Rotation) *
                     Matrix4x4.CreateTranslation(transform.Position);
-                Matrix4x4 fullMat = partMat * modelMat;
+                Matrix4x4 fullMatrix =
+                    Matrix4x4.CreateTranslation(part.LocalOffset) * modelMatrix;
                 TransformBoundingBox(
-                    localMin, localMax, fullMat,
-                    out Vector3 worldMin, out Vector3 worldMax);
-                AddExpandedAabb(result, worldMin, worldMax);
+                    part.BoundsMin,
+                    part.BoundsMax,
+                    fullMatrix,
+                    out Vector3 worldMin,
+                    out Vector3 worldMax);
+                Vector3 grow = (worldMax - worldMin) * 0.05f + new Vector3(0.10f);
+                result.Add(new MeshAabb
+                {
+                    Min = new Vector4(worldMin - grow, 0f),
+                    Max = new Vector4(worldMax + grow, 0f),
+                });
             }
         }
         return result.ToArray();
     }
 
-    private static void AddExpandedAabb(
-        List<MeshAabb> result, Vector3 min, Vector3 max)
-    {
-        Vector3 grow = new(
-            (max.X - min.X) * 0.05f + 0.10f,
-            (max.Y - min.Y) * 0.05f + 0.10f,
-            (max.Z - min.Z) * 0.05f + 0.10f);
-        result.Add(new MeshAabb
-        {
-            Min = new Vector4(min - grow, 0f),
-            Max = new Vector4(max + grow, 0f),
-        });
-    }
-
     private static void TransformBoundingBox(
-        Vector3 localMin, Vector3 localMax,
+        Vector3 localMin,
+        Vector3 localMax,
         Matrix4x4 matrix,
-        out Vector3 worldMin, out Vector3 worldMax)
+        out Vector3 worldMin,
+        out Vector3 worldMax)
     {
         Span<Vector3> corners = stackalloc Vector3[8];
-        int idx = 0;
-        for (int oz = 0; oz < 2; ++oz)
-        for (int oy = 0; oy < 2; ++oy)
-        for (int ox = 0; ox < 2; ++ox)
+        int index = 0;
+        for (int z = 0; z < 2; ++z)
+        for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 2; ++x)
         {
-            Vector3 corner = new(
-                ox == 0 ? localMin.X : localMax.X,
-                oy == 0 ? localMin.Y : localMax.Y,
-                oz == 0 ? localMin.Z : localMax.Z);
-            corners[idx++] = Vector3.Transform(corner, matrix);
+            corners[index++] = Vector3.Transform(
+                new Vector3(
+                    x == 0 ? localMin.X : localMax.X,
+                    y == 0 ? localMin.Y : localMax.Y,
+                    z == 0 ? localMin.Z : localMax.Z),
+                matrix);
         }
+
         worldMin = corners[0];
         worldMax = corners[0];
-        for (int i = 1; i < 8; ++i)
+        for (int i = 1; i < corners.Length; ++i)
         {
             worldMin = Vector3.Min(worldMin, corners[i]);
             worldMax = Vector3.Max(worldMax, corners[i]);
@@ -282,35 +271,35 @@ public sealed class DDGIProbePlacementPass : RenderPass, IDisposable
 
     private void EnsureMeshAabbCapacity(int required)
     {
-        if (required <= _meshAabbCapacity) return;
-        int newCap = Math.Max(_meshAabbCapacity, 1024);
-        while (newCap < required)
-            newCap *= 2;
-        _meshAabbBuffer?.Dispose();
-        _meshAabbCapacity = newCap;
+        if (required <= _meshAabbCapacity)
+            return;
+        int capacity = _meshAabbCapacity;
+        while (capacity < required)
+            capacity *= 2;
+        _meshAabbBuffer.Dispose();
+        _meshAabbCapacity = capacity;
         _meshAabbBuffer = RhiBuffer.Create(
             _device,
-            (ulong)_meshAabbCapacity * (ulong)Marshal.SizeOf<MeshAabb>(),
+            (ulong)capacity * (ulong)Marshal.SizeOf<MeshAabb>(),
             RhiNative.BufferUsage.Storage);
-        _meshAabbBuffer.SetDebugName(
-            "DDGI Placement Mesh AABBs", "DDGI");
+        _meshAabbBuffer.SetDebugName("DDGI Placement Mesh AABBs", "DDGI");
     }
 
     private unsafe void UploadMeshAabbs(MeshAabb[] aabbs)
     {
-        int structSize = Marshal.SizeOf<MeshAabb>();
-        fixed (MeshAabb* p = aabbs)
+        fixed (MeshAabb* data = aabbs)
         {
             _meshAabbBuffer.Upload(new ReadOnlySpan<byte>(
-                p, aabbs.Length * structSize));
+                data,
+                aabbs.Length * Marshal.SizeOf<MeshAabb>()));
         }
     }
 
     public void Dispose()
     {
-        _pipeline?.Dispose();
-        _shader?.Dispose();
-        _meshAabbBuffer?.Dispose();
-        _sceneCache?.Dispose();
+        _pipeline.Dispose();
+        _shader.Dispose();
+        _meshAabbBuffer.Dispose();
+        _sceneCache.Dispose();
     }
 }

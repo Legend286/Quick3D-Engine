@@ -187,32 +187,51 @@ public sealed class PluginCatalogService :
         ProjectRoot = projectRoot;
         HashSet<string> enabled = ReadEnabledIds();
 
+        // Always cycle renderer extension plugins on project switch.
+        // Even if the enabled-state is unchanged, the Renderer may have
+        // been rebuilt for the new scene and AddExtensionPlugin must be
+        // called again on the current ActiveInstance.
         foreach (var plugin in Plugins)
         {
             if (plugin.Manifest.Required) continue;
-            
+            if (plugin.Manifest.Kind != EnginePluginKind.Renderer) continue;
+
             bool shouldEnable = enabled.Contains(plugin.Id);
-            if (shouldEnable != plugin.IsEnabled)
+            bool wasEnabled   = plugin.IsEnabled;
+
+            // Unload the old registration (removes from old renderer too).
+            if (wasEnabled)
+                UnloadPlugin(plugin.Id);
+
+            plugin.SetEnabledSilently(shouldEnable);
+
+            if (shouldEnable)
             {
-                plugin.SetEnabledSilently(shouldEnable);
-                if (shouldEnable)
-                {
-                    LoadPlugin(plugin);
-                    if (plugin.Manifest.Kind == EnginePluginKind.Renderer &&
-                        ResolveAssemblyPath(plugin) == null)
-                    {
-                        _ = BuildPluginAsync(plugin);
-                    }
-                }
-                else
-                {
-                    UnloadPlugin(plugin.Id);
-                }
+                LoadPlugin(plugin);
+                if (ResolveAssemblyPath(plugin) == null)
+                    _ = BuildPluginAsync(plugin);
             }
         }
-        
+
+        // Handle non-renderer plugins: only toggle if state actually changed.
+        foreach (var plugin in Plugins)
+        {
+            if (plugin.Manifest.Required) continue;
+            if (plugin.Manifest.Kind == EnginePluginKind.Renderer) continue;
+
+            bool shouldEnable = enabled.Contains(plugin.Id);
+            if (shouldEnable == plugin.IsEnabled) continue;
+
+            plugin.SetEnabledSilently(shouldEnable);
+            if (shouldEnable)
+                LoadPlugin(plugin);
+            else
+                UnloadPlugin(plugin.Id);
+        }
+
         AvailabilityChanged?.Invoke();
     }
+
 
     /// <summary>Gets whether a plugin is enabled for the active project.</summary>
     public bool IsEnabled(string pluginId)
@@ -801,12 +820,14 @@ public sealed class PluginCatalogService :
                 {
                     try
                     {
-                        while (Engine.Renderer.Renderer.ActiveInstance is null)
+                        Engine.Renderer.Renderer? renderer;
+                        do
                         {
                             await System.Threading.Tasks.Task.Delay(250);
+                            renderer = Engine.Renderer.Renderer.ActiveInstance;
                         }
-                        Engine.Renderer.Renderer.ActiveInstance
-                            .AddExtensionPlugin(extension);
+                        while (renderer is null || !renderer.HasActiveScene);
+                        renderer.AddExtensionPlugin(extension);
                     }
                     catch (System.Exception bgEx)
                     {
@@ -999,5 +1020,14 @@ public sealed class PluginCatalogService :
     public void RegisterToolPanel(string pluginId, string title, object avaloniaControl)
     {
         DynamicMenuService.Shared.RegisterToolPanel(pluginId, title, avaloniaControl);
+    }
+
+    public void RegisterDebugView(
+        string pluginId,
+        string viewName,
+        Action<bool> onToggle)
+    {
+        DynamicMenuService.Shared.RegisterDebugView(
+            pluginId, viewName, onToggle);
     }
 }

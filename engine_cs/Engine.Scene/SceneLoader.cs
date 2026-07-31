@@ -26,9 +26,17 @@ public sealed class SceneLoader
             ? sceneName
             : Path.Combine(_contentRoot, sceneName);
             
-        if (!File.Exists(path) && !path.EndsWith(".scene.json", System.StringComparison.OrdinalIgnoreCase))
+        if (!File.Exists(path) &&
+            !path.EndsWith(".scene.json", System.StringComparison.OrdinalIgnoreCase))
         {
-            path += ".scene.json";
+            string directScenePath = path + ".scene.json";
+            string scenesDirectoryPath = Path.Combine(
+                _contentRoot,
+                "scenes",
+                sceneName + ".scene.json");
+            path = File.Exists(directScenePath)
+                ? directScenePath
+                : scenesDirectoryPath;
         }
 
         if (!File.Exists(path))

@@ -16,6 +16,7 @@ public sealed class DynamicMenuService
     private readonly Dictionary<string, List<MenuActionRegistration>> _menus = new();
     private readonly Dictionary<string, List<Action>> _imguiOverlays = new();
     private readonly Dictionary<string, List<object>> _toolPanels = new();
+    private readonly Dictionary<string, List<DebugViewRegistration>> _debugViews = new();
 
     /// <summary>Fired on the UI thread whenever a plugin adds or removes a menu action.</summary>
     public event Action? OnMenusChanged;
@@ -23,6 +24,8 @@ public sealed class DynamicMenuService
     public event Action? OnImGuiOverlaysChanged;
     /// <summary>Fired on the UI thread whenever a plugin adds or removes a tool panel.</summary>
     public event Action? OnToolPanelsChanged;
+    /// <summary>Fired on the UI thread whenever a plugin adds or removes a debug view.</summary>
+    public event Action? OnDebugViewsChanged;
 
     /// <summary>One menu action registered by an editor-kind plugin.</summary>
     public sealed record MenuActionRegistration(string MenuPath, string ItemName, Action OnExecute);
@@ -57,16 +60,52 @@ public sealed class DynamicMenuService
         OnToolPanelsChanged?.Invoke();
     }
 
+    /// <summary>One debug-view registration owned by a plugin. The
+    /// <see cref="OnToggle"/> callback receives <c>true</c> when the
+    /// view is selected and <c>false</c> when it is deselected.</summary>
+    public sealed record DebugViewRegistration(
+        string ViewName,
+        Action<bool> OnToggle);
+
+    /// <summary>Registers a debug view (viewport visualization dropdown
+    /// entry) owned by the named plugin.</summary>
+    public void RegisterDebugView(
+        string pluginId,
+        string viewName,
+        Action<bool> onToggle)
+    {
+        if (!_debugViews.ContainsKey(pluginId))
+            _debugViews[pluginId] = new();
+
+        _debugViews[pluginId].Add(
+            new DebugViewRegistration(viewName, onToggle));
+        OnDebugViewsChanged?.Invoke();
+    }
+
+    /// <summary>Enumerates every debug-view registration, in registration order.</summary>
+    public IEnumerable<DebugViewRegistration> EnumerateDebugViews()
+    {
+        foreach (var pluginViews in _debugViews.Values)
+        {
+            foreach (var view in pluginViews)
+            {
+                yield return view;
+            }
+        }
+    }
+
     /// <summary>Removes every registration owned by the named plugin.</summary>
     public void UnregisterPlugin(string pluginId)
     {
         bool changedMenus = _menus.Remove(pluginId);
         bool changedImGui = _imguiOverlays.Remove(pluginId);
         bool changedPanels = _toolPanels.Remove(pluginId);
+        bool changedViews = _debugViews.Remove(pluginId);
 
         if (changedMenus) OnMenusChanged?.Invoke();
         if (changedImGui) OnImGuiOverlaysChanged?.Invoke();
         if (changedPanels) OnToolPanelsChanged?.Invoke();
+        if (changedViews) OnDebugViewsChanged?.Invoke();
     }
 
     /// <summary>Enumerates every menu-action registration, in registration order.</summary>

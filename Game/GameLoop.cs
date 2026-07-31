@@ -144,7 +144,30 @@ public sealed class GameLoop : IGameLoop
     }
 
     public void LoadScene(string contentRoot, string sceneName)
-        => _gameRenderer?.LoadScene(contentRoot, sceneName);
+    {
+        _gameRenderer?.LoadScene(contentRoot, sceneName);
+        BuildProceduralDemoIfPresent(contentRoot);
+    }
+
+    /// <summary>If the freshly loaded scene carries a
+    /// <c>ProceduralDemoDefinition</c> with <c>Enabled == true</c>,
+    /// expand it into world entities via the procedural-demo builder.
+    /// The builder is invoked AFTER <see cref="GameRenderer.LoadScene"/>
+    /// so the procedural entities are added on top of the explicit
+    /// <c>models[]</c> list (this scene type uses <c>"models": []</c>
+    /// and relies entirely on the procedural builder to populate
+    /// geometry + lights). Marked private because every other
+    /// load-site should route through <see cref="LoadScene"/>.</summary>
+    private void BuildProceduralDemoIfPresent(string contentRoot)
+    {
+        if (_device == null || _world == null) return;
+        SceneGraph? scene = _gameRenderer?.CurrentScene;
+        ProceduralDemoDefinition? definition = scene?.ProceduralDemo;
+        if (definition == null || !definition.Enabled) return;
+
+        Engine.Game.ProceduralDemoSceneBuilder.Build(
+            _device, _world, contentRoot, definition);
+    }
 
     public ulong AddPointLight(Vector3 position, Vector3 color, float intensity, float range, float sourceRadius, bool castShadows = true)
         => _gameRenderer?.AddPointLight(position, color, intensity, range, sourceRadius, castShadows) ?? 0;
@@ -206,6 +229,9 @@ public sealed class GameLoop : IGameLoop
         => _gameRenderer?.ApplyMaterialToSubmesh(x, y, w, h, materialPath);
 
     /// <inheritdoc />
+    public void InvalidateRenderPlan()
+        => _gameRenderer?.InvalidateRenderPlan();
+
     public void ReloadPluginShaders(string pluginId)
         => _gameRenderer?.ReloadPluginShaders(pluginId);
 

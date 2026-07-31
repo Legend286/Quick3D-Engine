@@ -22,6 +22,23 @@ public sealed class RhiBindlessHeap : IDisposable
     public uint Capacity { get; }
     public bool IsInitialized => Handle != IntPtr.Zero;
 
+    /// <summary>
+    /// Sentinel value a producer writes into a bindless-slot
+    /// consumer-side field when the heap-side <c>Register</c> path
+    /// failed (null shared heap, kernel registration refused the
+    /// texture, etc). The native heap's <c>next_unalloc</c> counter
+    /// starts at zero so a registered texture can legitimately
+    /// land at slot 0 — consumers therefore must NOT treat slot 0
+    /// as "unbound", and producers must NOT use 0 as a fallback.
+    /// Resolving both sides on this single sentinel removes the
+    /// silent ambiguity that masquerades as "atlas allocated" while
+    /// sampling reads garbage. The value mirrors the shader-side
+    /// <c>0xFFFFFFFFu</c> literal in <c>ddgi_*.slang</c> — keep
+    /// them in sync; per AGENTS.md §3 every cross-file constant is
+    /// dual-named.
+    /// </summary>
+    public const uint InvalidSlot = uint.MaxValue;
+
     private readonly bool _owns;
 
     /// <summary>

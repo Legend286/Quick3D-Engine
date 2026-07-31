@@ -36,14 +36,20 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="..\..\out\libEngineC.dylib"
-             Condition="Exists('..\..\out\libEngineC.dylib')">
+    <Content Include="$(MSBuildThisFileDirectory)..\..\out\build-smoke\libEngineC.dylib"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\out\build-smoke\libEngineC.dylib')">
       <Link>libEngineC.dylib</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
-    <Content Include="..\..\out\build-smoke\libEngineC.a"
-             Condition="Exists('..\..\out\build-smoke\libEngineC.a')">
+    <Content Include="$(MSBuildThisFileDirectory)..\..\out\libEngineC.dylib"
+             Condition="!Exists('$(MSBuildThisFileDirectory)..\..\out\build-smoke\libEngineC.dylib') and Exists('$(MSBuildThisFileDirectory)..\..\out\libEngineC.dylib')">
+      <Link>libEngineC.dylib</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="$(MSBuildThisFileDirectory)..\..\out\build-smoke\libEngineC.a"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\out\build-smoke\libEngineC.a')">
       <Link>libEngineC.a</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

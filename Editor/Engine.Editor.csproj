@@ -37,11 +37,6 @@
     <ProjectReference Include="..\engine_cs\Engine.Assets\Engine.Assets.csproj" />
     <ProjectReference Include="..\engine_cs\Engine.Plugins\Engine.Plugins.csproj" />
     <ProjectReference Include="..\engine_cs\Engine.Renderer\Engine.Renderer.csproj" />
-    <!-- Phase-2 DDGI overlay toggle: ViewportPanelViewModel.WriteThrough
-         (OnShowDDGIProbesChanged) routes through the plugin-owned
-         Engine.DDGI.DDGIVolumeRegistry.ShowProbes static so the host
-         enum stays plugin-feature-free. -->
-    <ProjectReference Include="..\Plugins\Renderer.DDGI\Engine.Plugin.Renderer.DDGI.csproj" />
   </ItemGroup>
 
   <!-- AvaloniaNativeWindowInterop.cs lives under OutOfBand/Engine.CBindings

@@ -77,6 +77,9 @@ public static class ShaderIncludeResolver
                     ? relative
                     : Path.GetFullPath(
                         Path.Combine(pluginRoot, relative));
+                full = Path.TrimEndingDirectorySeparator(full);
+                if (string.IsNullOrEmpty(full))
+                    full = Path.DirectorySeparatorChar.ToString();
                 if (!Directory.Exists(full))
                 {
                     continue;

@@ -38,6 +38,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     private int _gpuFrameHistoryCount;
     private int _gpuFrameHistoryIndex;
     private double? _lastRawGpuFrameMilliseconds;
+    private double? _lastComputeRawFrameMilliseconds;
     private double? _lastGpuFrameMilliseconds;
     private long _lastGpuTimingFrameNumber = -1;
     private int _timestampPassCount;
@@ -79,6 +80,27 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     public void UnbindTexture(ResourceHandle handle)
     {
         _ctx.Textures.Remove(handle);
+    }
+
+    /// <summary>Removes an imported buffer that is no longer in the plan.</summary>
+    public void UnbindBuffer(ResourceHandle handle)
+    {
+        _ctx.Buffers.Remove(handle);
+    }
+
+    /// <summary>Binds a persistent external texture to its graph handle.
+    /// The graph owns only the declaration and barrier timeline; the caller
+    /// retains ownership of the RHI object.</summary>
+    public void BindExternalTexture(ResourceHandle handle, RhiTexture texture)
+    {
+        _ctx.Textures[handle] = texture;
+    }
+
+    /// <summary>Binds a persistent external buffer to its graph handle.
+    /// The graph never disposes this caller-owned RHI object.</summary>
+    public void BindExternalBuffer(ResourceHandle handle, RhiBuffer buffer)
+    {
+        _ctx.Buffers[handle] = buffer;
     }
 
     /// <summary>Publish the logical frame dimensions to the context so
@@ -182,8 +204,10 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                         nativeBarriers[b] = new Engine.CBindings.RhiNative.Barrier
                         {
                             Resource = barriers[b].Resource.Id,
-                            StateBefore = (Engine.CBindings.RhiNative.ResourceState)barriers[b].StateBefore,
-                            StateAfter = (Engine.CBindings.RhiNative.ResourceState)barriers[b].StateAfter,
+                            StateBefore = ToNativeResourceState(
+                                barriers[b].StateBefore),
+                            StateAfter = ToNativeResourceState(
+                                barriers[b].StateAfter),
                         };
                     }
                     recorder.PipelineBarrier(nativeBarriers);
@@ -253,6 +277,25 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             _rec = null;
         }
     }
+
+    /// <summary>Converts the render-graph state vocabulary to the native
+    /// RHI vocabulary. The enums intentionally differ: graph depth states
+    /// collapse to the native depth-write state for this MVP, while native
+    /// shader-read and unordered-access values are offset by one.</summary>
+    public static RhiNative.ResourceState ToNativeResourceState(
+        ResourceState state)
+        => state switch
+        {
+            ResourceState.Undefined => RhiNative.ResourceState.Undefined,
+            ResourceState.RenderTarget => RhiNative.ResourceState.RenderTarget,
+            ResourceState.DepthStencil => RhiNative.ResourceState.DepthWrite,
+            ResourceState.ShaderRead => RhiNative.ResourceState.ShaderRead,
+            ResourceState.UnorderedAccess => RhiNative.ResourceState.UnorderedAccess,
+            ResourceState.CopySrc => RhiNative.ResourceState.CopySource,
+            ResourceState.CopyDst => RhiNative.ResourceState.CopyDest,
+            ResourceState.Present => RhiNative.ResourceState.Present,
+            _ => throw new ArgumentOutOfRangeException(nameof(state), state, null),
+        };
 
     private static bool CanUseAsyncCompute(RenderPlan graph)
     {
@@ -376,35 +419,88 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             }
         }
 
-        PollComputeGpuTimings(passCount);
+        // Compute pool runs asynchronously on its own queue/command
+        // buffer — its per-slot durations must be merged into
+        // _lastGpuPassMilliseconds WITHOUT being clobbered by the
+        // graphics poll that follows.
+        double?[]? computeDurations = PollComputeGpuTimings(passCount);
 
         if (newestDurations != null)
         {
-            double activeGraphicsMilliseconds = 0.0;
-            bool hasActiveGraphicsDuration = false;
+            // Per-pass timings remain informational. Frame-time
+            // accounting comes from the pool-resolved
+            // MTLCounterSetTimestamp duration when the driver
+            // supports it (already captured into
+            // newestFrameMilliseconds); concurrent passes do NOT
+            // sum-inflate.
+            //
+            // Only overwrite slots where the graphics pool produced
+            // a valid (non-null) duration. Compute-pool slots are
+            // null in the graphics pool (BeginTimestampScope was
+            // never recorded there for compute-queue passes), so
+            // skipping nulls preserves compute-pool data instead of
+            // stomping it with stale-null graphics-pool readings.
+            double passMaxMs = 0.0;
             for (int passIndex = 0;
                  passIndex < newestDurations.Length;
                  ++passIndex)
             {
-                _lastGpuPassMilliseconds[passIndex] =
-                    newestDurations[passIndex];
                 if (newestDurations[passIndex] is double duration &&
                     double.IsFinite(duration) &&
-                    duration >= 0.0)
+                    duration > passMaxMs)
                 {
-                    activeGraphicsMilliseconds += duration;
-                    hasActiveGraphicsDuration = true;
+                    passMaxMs = duration;
+                }
+                if (newestDurations[passIndex] is double graphics &&
+                    _lastGpuPassMilliseconds.Length > passIndex)
+                {
+                    _lastGpuPassMilliseconds[passIndex] = graphics;
                 }
             }
+
+            // Fold compute-queue per-pass durations into the
+            // published slots for the same logic: only overwrite
+            // where the compute pool produced a real value.
+            if (computeDurations != null)
+            {
+                for (int passIndex = 0;
+                     passIndex < computeDurations.Length &&
+                     passIndex < _lastGpuPassMilliseconds.Length;
+                     ++passIndex)
+                {
+                    if (computeDurations[passIndex] is double compute &&
+                        double.IsFinite(compute))
+                    {
+                        _lastGpuPassMilliseconds[passIndex] = compute;
+                        if (compute > passMaxMs)
+                            passMaxMs = compute;
+                    }
+                }
+            }
+
             _lastGpuTimingFrameNumber = newestFrame;
             _lastRawGpuFrameMilliseconds =
                 newestFrameMilliseconds;
-            if (hasActiveGraphicsDuration &&
-                activeGraphicsMilliseconds > 0.0)
+
+            // GPU frame wall time = max(graphics-queue, compute-queue,
+            // per-pass critical path). When async compute is on, the
+            // two queues run concurrently so the frame time isn't their
+            // sum — it's the longest of them. Both queue-actual frame
+            // durations are read from MTLCounterSetTimestamp when the
+            // driver supports it; fall back to SUM-of-per-pass for the
+            // appropriate queue (not max: serial compute would otherwise
+            // under-report; serial graphics likewise).
+            double graphicsPathMs =
+                newestFrameMilliseconds ?? passMaxMs;
+            double computePathMs =
+                _lastComputeRawFrameMilliseconds ?? 0.0;
+            double frameMs = Math.Max(graphicsPathMs, computePathMs);
+            if (frameMs <= 0.0)
+                frameMs = passMaxMs;
+            if (frameMs > 0.0)
             {
                 _lastGpuFrameMilliseconds =
-                    RecordGpuFrameDuration(
-                        activeGraphicsMilliseconds);
+                    RecordGpuFrameDuration(frameMs);
             }
             return;
         }
@@ -461,9 +557,25 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         return sorted[(_gpuFrameHistoryCount - 1) / 2];
     }
 
-    private void PollComputeGpuTimings(int passCount)
+    /// <summary>
+    /// Reads the most-recently-submitted compute-queue timestamp pool
+    /// and returns its per-pass durations. The returned array is
+    /// indexed parallel to <c>graph.Passes</c>; entries are <c>null</c>
+    /// wherever the compute pool has no recorded sample for that
+    /// slot (i.e. graphics-queue passes whose BeginTimestampScope was
+    /// never invoked on the compute recorder). Callers must fold the
+    /// returned array into <c>_lastGpuPassMilliseconds</c> instead of
+    /// overwriting it, otherwise per-pass GPU durations from the
+    /// compute pipe will silently cancel out the previously-published
+    /// graphics-queue values.
+    /// </summary>
+    private double?[]? PollComputeGpuTimings(int passCount)
     {
+        if (!EnableGpuTiming || _timestampPassCount != passCount)
+            return null;
+
         long newestFrame = -1;
+        double? newestFrameMilliseconds = null;
         double?[]? newestDurations = null;
         for (int poolIndex = 0;
              poolIndex < _computeTimestampPools.Length;
@@ -473,6 +585,12 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             if (pool is not { HasPendingResults: true })
                 continue;
 
+            double? poolFrameMilliseconds =
+                pool.TryReadFrameDuration(
+                    out ulong frameDurationNanoseconds)
+                    ? frameDurationNanoseconds / 1_000_000.0
+                    : null;
+
             var durationsNanoseconds = new ulong[passCount];
             if (!pool.TryReadDurations(durationsNanoseconds) ||
                 _computeTimestampPoolFrames[poolIndex] <= newestFrame)
@@ -481,6 +599,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             }
 
             newestFrame = _computeTimestampPoolFrames[poolIndex];
+            newestFrameMilliseconds = poolFrameMilliseconds;
             newestDurations = new double?[passCount];
             for (int passIndex = 0; passIndex < passCount; ++passIndex)
             {
@@ -491,13 +610,30 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             }
         }
 
-        if (newestDurations == null)
-            return;
-        for (int passIndex = 0; passIndex < newestDurations.Length; ++passIndex)
+        // MARK: Without an MTLCounterSetTimestamp duration, fall back to
+        // SUM-of-per-pass compute durations (not max). Async compute
+        // submits passes serially on the same queue command buffer, so
+        // queue wall time is the sum — taking max under-reports when
+        // two-or-more compute passes share the queue.
+        if (newestDurations != null && !newestFrameMilliseconds.HasValue)
         {
-            if (newestDurations[passIndex] is double duration)
-                _lastGpuPassMilliseconds[passIndex] = duration;
+            double computeSumMs = 0.0;
+            for (int passIndex = 0;
+                 passIndex < newestDurations.Length;
+                 ++passIndex)
+            {
+                if (newestDurations[passIndex] is double dur &&
+                    double.IsFinite(dur))
+                {
+                    computeSumMs += dur;
+                }
+            }
+            if (computeSumMs > 0.0)
+                newestFrameMilliseconds = computeSumMs;
         }
+
+        _lastComputeRawFrameMilliseconds = newestFrameMilliseconds;
+        return newestDurations;
     }
 
     private void DisposeTimestampPools()
@@ -513,10 +649,10 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         _timestampPassCount = 0;
         Array.Clear(_gpuFrameHistory);
         _gpuFrameHistoryCount = 0;
-        _gpuFrameHistoryIndex = 0;
-        _lastRawGpuFrameMilliseconds = null;
-        _lastGpuFrameMilliseconds = null;
-        _lastGpuTimingFrameNumber = -1;
+        _gpuFrameHistoryIndex = 0;            _lastRawGpuFrameMilliseconds = null;
+            _lastComputeRawFrameMilliseconds = null;
+            _lastGpuFrameMilliseconds = null;
+            _lastGpuTimingFrameNumber = -1;
     }
 
     private void AllocateTransientResources(RenderPlan graph)
@@ -573,8 +709,10 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     private void ReleaseTransientResources(RenderPlan graph)
     {
         // We dispose the transient wrappers. The underlying memory stays in the heap.
-        foreach (var handle in graph.ResourceDecls.Keys)
+        foreach (var (handle, decl) in graph.ResourceDecls)
         {
+            if (decl.External)
+                continue;
             if (_ctx.Textures.TryGetValue(handle, out var tex))
             {
                 tex.Dispose();

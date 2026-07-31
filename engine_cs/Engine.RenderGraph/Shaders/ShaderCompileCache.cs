@@ -17,6 +17,18 @@
 // Both dictionaries share disposal lifecycle — disposing the cache
 // closes every cached handle regardless of which dictionary it lives
 // in.
+//
+// Disposal detection: every cache-hit path consults
+// <see cref="RhiShader.IsAlive"/> on the cached wrapper and treats a
+// false return as a cache miss. This is the safety net for the case
+// where the original holder of the cached RhiShader was disposed
+// outside the cache (e.g. by an earlier plan's render-pass lifecycle
+// during plugin toggle / scene reload) without the cache observing
+// the disposal; without this guard, the cache would return a wrapper
+// whose <see cref="RhiShader.Handle"/> is <see cref="IntPtr.Zero"/>
+// and the consumer's <see cref="RhiPipeline.CreateCompute"/> would
+// throw <see cref="ObjectDisposedException"/> on the next plan build.
+// See docs/renderer/shader-cache.md#disposal-detection.
 
 using System;
 using System.Buffers.Binary;
@@ -73,12 +85,26 @@ public sealed class ShaderCompileCache : IDisposable
         {
             if (_entries.TryGetValue(cacheKey, out Entry? existing))
             {
-                _entries[cacheKey] = new Entry
+                // MARK: Disposal detection — see file header. If the
+                // original holder's Dispose ran outside the cache
+                // (typical for renderer-pass disposal on plan rebuild or
+                // plugin toggle), the cached wrapper now has Handle ==
+                // IntPtr.Zero. Treat it as a cache miss so the factory
+                // runs a fresh compile and re-populates the entry with
+                // a live wrapper. Do NOT call Dispose() on the dead
+                // wrapper — RhiShader.Dispose is idempotent on the
+                // IntPtr.Zero short-circuit and its pinned handles are
+                // already freed.
+                if (IsUsableForReturn(existing.Value))
                 {
-                    Value = existing.Value,
-                    Generation = _currentGeneration,
-                };
-                return existing.Value;
+                    _entries[cacheKey] = new Entry
+                    {
+                        Value = existing.Value,
+                        Generation = _currentGeneration,
+                    };
+                    return existing.Value;
+                }
+                _entries.Remove(cacheKey);
             }
             IDisposable compiled = factory(cacheKey);
             _entries[cacheKey] = new Entry
@@ -118,12 +144,22 @@ public sealed class ShaderCompileCache : IDisposable
         {
             if (_contentEntries.TryGetValue(contentKey, out Entry? existing))
             {
-                _contentEntries[contentKey] = new Entry
+                // MARK: Disposal detection — see file header. The
+                // content-hash dictionary returns the SAME RhiShader
+                // instance across phase-3 plugin-toggle rebuilds; if a
+                // previous holder's Dispose ran outside the cache, the
+                // wrapper now has Handle == IntPtr.Zero. Treat the hit
+                // as a miss so the factory compiles fresh.
+                if (IsUsableForReturn(existing.Value))
                 {
-                    Value = existing.Value,
-                    Generation = _currentGeneration,
-                };
-                return existing.Value;
+                    _contentEntries[contentKey] = new Entry
+                    {
+                        Value = existing.Value,
+                        Generation = _currentGeneration,
+                    };
+                    return existing.Value;
+                }
+                _contentEntries.Remove(contentKey);
             }
             IDisposable compiled = factory();
             _contentEntries[contentKey] = new Entry
@@ -133,6 +169,26 @@ public sealed class ShaderCompileCache : IDisposable
             };
             return compiled;
         }
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when the cached <see cref="IDisposable"/>
+    /// wrapper is safe to hand back to a consumer. Currently accepts
+    /// <c>null</c> (defensive — should not occur since we never store
+    /// null) and <see cref="RhiShader"/> instances whose
+    /// <see cref="RhiShader.IsAlive"/> flag is still true. Anything
+    /// else (a disposed RhiShader, or a future IDisposable type whose
+    /// wrapper is not a shader) is treated as a miss so the caller
+    /// runs the factory.
+    /// </summary>
+    private static bool IsUsableForReturn(IDisposable value)
+    {
+        if (value == null) return false;
+        if (value is RhiShader shader) return shader.IsAlive;
+        // Non-shader cache users (none today; reserved for future
+        // pipeline / texture caches if they co-locate) skip the
+        // disposal check — they own their own wrapper invariants.
+        return true;
     }
 
     /// <summary>

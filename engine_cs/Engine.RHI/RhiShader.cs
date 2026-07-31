@@ -19,6 +19,16 @@ public sealed class RhiShader : IDisposable
     private GCHandle _includePin;
     private GCHandle _cliArgsPin;
 
+    /// <summary>True while the native MTLLibrary/MTLFunction pair is
+    /// still owned by this wrapper. Cache callers (e.g. <see
+    /// cref="Engine.RenderGraph.Shaders.ShaderCompileCache"/>) consult
+    /// this property before returning a cached entry so a previous
+    /// holder's <see cref="Dispose"/> doesn't silently hand a wrapper
+    /// with <see cref="Handle"/> = <see cref="IntPtr.Zero"/> back to
+    /// the next consumer. See the disposal-race analysis under
+    /// docs/renderer/shader-cache.md#disposal-detection.</summary>
+    public bool IsAlive => Handle != IntPtr.Zero;
+
     internal RhiShader(IntPtr handle, GCHandle source, GCHandle entry, GCHandle includeHandle, GCHandle cliArgsHandle)
     {
         Handle = handle;

@@ -174,6 +174,20 @@ public class PbrPass : RenderPass
                     ResourceState.ShaderRead);
             }
         }
+        if (_ddgiAtlas != null &&
+            _ddgiAtlas.TryGetExternalResources(out _))
+        {
+            DDGIAtlasResourceHandles handles =
+                _ddgiAtlas.ResourceHandles;
+            builder.ImportBuffer(handles.ProbePositions);
+            builder.ImportBuffer(handles.GridToProbeIndex);
+            builder.ImportTexture(handles.Irradiance);
+            builder.ImportTexture(handles.Visibility);
+            builder.Read(handles.ProbePositions, ResourceState.ShaderRead);
+            builder.Read(handles.GridToProbeIndex, ResourceState.ShaderRead);
+            builder.Read(handles.Irradiance, ResourceState.ShaderRead);
+            builder.Read(handles.Visibility, ResourceState.ShaderRead);
+        }
         builder.Read(_drawCommandsHandle, ResourceState.ShaderRead);
         builder.Read(_drawCountHandle, ResourceState.ShaderRead);
         builder.Read(_clusterRecordsHandle, ResourceState.ShaderRead);
@@ -397,12 +411,10 @@ public class PbrPass : RenderPass
         {
             var (irradSlot, visSlot) =
                 _ddgiAtlas.GetAtlasBindlessSlots();
-            int packedGrid =
-                baseGrid.X * baseGrid.Y * baseGrid.Z;
             pbrPush.DDGIAtlasParams = new Vector4(
                 irradSlot,
                 visSlot,
-                (float)packedGrid,
+                (float)baseGrid.X,
                 _ddgiAtlas.IsSparseLayoutReady ? 1f : 0f);
             pbrPush.DDGIOriginAndCountZ = new Vector4(
                 origin.X,
@@ -412,14 +424,26 @@ public class PbrPass : RenderPass
             pbrPush.DDGIExtentAndFlags = new Vector4(
                 extent.X,
                 extent.Y,
-                _ddgiAtlas.RaysPerProbe,
+                extent.Z,
                 _ddgiAtlas.MaxProbesPerFrame);
+            if (_ddgiAtlas.TryGetSparseBuffers(out var probePositions, out var gridToProbeIndex, out _))
+            {
+                pbrPush.DDGIProbePositions = probePositions.DeviceAddress;
+                pbrPush.DDGIGridToProbeIndex = gridToProbeIndex.DeviceAddress;
+            }
+            else
+            {
+                pbrPush.DDGIProbePositions = 0;
+                pbrPush.DDGIGridToProbeIndex = 0;
+            }
         }
         else
         {
             pbrPush.DDGIAtlasParams = Vector4.Zero;
             pbrPush.DDGIOriginAndCountZ = Vector4.Zero;
             pbrPush.DDGIExtentAndFlags = Vector4.Zero;
+            pbrPush.DDGIProbePositions = 0;
+            pbrPush.DDGIGridToProbeIndex = 0;
         }
     }
 

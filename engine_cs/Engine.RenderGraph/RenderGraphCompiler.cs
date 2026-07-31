@@ -137,6 +137,8 @@ public sealed class RenderGraphCompiler
 
         foreach (var (handle, decl) in decls)
         {
+            if (decl.External)
+                continue;
             if (!lifespans.TryGetValue(handle, out var span)) continue;
 
             ulong size = GetResourceSize(decl);

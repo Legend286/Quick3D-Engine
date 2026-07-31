@@ -129,6 +129,8 @@ public struct ScenePushData
     public Vector4 DDGIAtlasParams;     // x: irradiance bindless slot, y: visibility bindless slot, z: probeGridXY, w: probeCount
     public Vector4 DDGIOriginAndCountZ; // xyz: probe origin, w: probeCountZ
     public Vector4 DDGIExtentAndFlags;  // x: extentX, y: extentY, z: raysPerProbe, w: maxProbesPerFrame
+    public ulong DDGIProbePositions;
+    public ulong DDGIGridToProbeIndex;
 }
 
 [StructLayout(LayoutKind.Sequential)]

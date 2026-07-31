@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Numerics;
+using System.Threading;
 
 namespace Engine.DDGI;
 
@@ -34,6 +35,16 @@ public sealed class DDGIRendererPlugin :
 
     private const int LogSampleEvery = 60;
 
+    // MARK: Fingerprint-stability counters for the disappearance
+    // audit. The fingerprint is currently (modelCount, lightCount,
+    // contentHash); if modelCount or lightCount churn per frame
+    // (ECS streaming, async entity creation), every churn resets
+    // the sparse layout, so the placement must run again next tick
+    // and the debug viz hides for >=1 frame. Cumulative counters
+    // surface the pattern without flooding every tick.
+    private int _fingerprintResetsTotal;
+    private long _fingerprintResetsWindowStartTick;
+
 
     private readonly DDGIProbeVolume _volume;
     private readonly DDGIProbePriority.Tuning _tuning;
@@ -49,6 +60,7 @@ public sealed class DDGIRendererPlugin :
     private long _sceneFingerprint;
     private DDGIProbePriority.LightInfluence[] _lastInfluences =
         Array.Empty<DDGIProbePriority.LightInfluence>();
+    private SceneGraph? _currentScene;
 
     public DDGIRendererPlugin()
     {
@@ -77,12 +89,44 @@ public sealed class DDGIRendererPlugin :
     private bool _atlasAllocFailed;
     private IEnginePluginHost? _host;
 
+    // MARK: Plugin-lifetime CancellationToken. Instantiated in
+    // Initialize() and disposed in Shutdown() so a fresh CTS is paired
+    // with each plugin (re)activation. Pass _lifecycleCts.Token into
+    // ConstructPassWithTimeout so the wrapping factory can pre-check
+    // ThrowIfCancellationRequested; if a user toggles the DDGI plugin
+    // off mid-shader-compile, the in-flight Task sees the cancel and
+    // returns a faulted/cancelled result the wrapper handles without
+    // ever allocating a pipeline against the disposed _atlas. Without
+    // scoping this CTS to the plugin lifetime, repeated enable/disable
+    // cycles would accumulate spent CancellationTokenSource instances
+    // and leak their native wait-handle resources.
+    private CancellationTokenSource? _lifecycleCts;
+
     /// <inheritdoc />
     public void Initialize(IEnginePluginHost host)
     {
         _host = host;
+        // MARK: Fresh CancellationTokenSource per Initialize so a stale
+        // token from a prior shutdown cannot suppress the new instance's
+        // first pass-construction. Cancel-before-construct defense also
+        // covers the case where Shutdown was called during a hot reload
+        // and Initialize runs again with the same managed object.
+        _lifecycleCts = new CancellationTokenSource();
         DDGIVolumeRegistry.Register(this, _volume);
         DDGIAtlasProviderRegistry.Register(Id, this);
+
+        // Self-contained debug-view registration: the plugin owns the
+        // "DDGI Probes" entry in the editor's viewport dropdown. The
+        // toggle only flips the ShowProbes static; the DDGIDebugPass is
+        // always present in the plan and self-gates in Execute, so no
+        // render-plan rebuild is needed to show/hide probes.
+        if (host is IEditorPluginHost editorHost)
+        {
+            editorHost.RegisterDebugView(
+                Id,
+                "DDGI Probes",
+                on => DDGIVolumeRegistry.ShowProbes = on);
+        }
     }
 
     /// <inheritdoc />
@@ -90,6 +134,22 @@ public sealed class DDGIRendererPlugin :
     {
         DDGIAtlasProviderRegistry.Unregister(Id);
         DDGIVolumeRegistry.Unregister(this);
+        // MARK: Cancel every in-flight ConstructPassWithTimeout Task
+        // before disposing _atlas. The wrapped factory throw-checks
+        // _lifecycleCts.Token as its first line; cancelling here flips
+        // that check so an orphan sliver of shader/pipeline compile
+        // work that survived the user's fast toggle-off lands in a
+        // faulted/cancelled Task the wrapper discards without
+        // registering into the next plan. Cancel then Dispose then
+        // null so the field is ready for re-Initialize without a
+        // dangling timer-handle leak.
+        if (_lifecycleCts != null)
+        {
+            try { _lifecycleCts.Cancel(); }
+            catch (AggregateException) { /* already-cancel is fine */ }
+            _lifecycleCts.Dispose();
+            _lifecycleCts = null;
+        }
         _atlas?.Dispose();
         _atlas = null;
         _probeSnapshots = Array.Empty<DDGIProbePriority.ProbeSnapshot>();
@@ -102,44 +162,133 @@ public sealed class DDGIRendererPlugin :
     /// <inheritdoc />
     public RendererPluginPlan BuildPlan(RendererPluginContext context)
     {
+        // MARK: Plugin-loaded heartbeat. If this line never
+        // appears in the engine log, the DDGI plugin is not
+        // enabled in the project's addons.json — the entire
+        // BuildPlan including placement, update, warmup and the
+        // debug viz pass is unreachable. Open the editor's
+        // Plugins/addons UI and toggle DDGI on, then re-run.
+        // Uses DiagnosticLogTicks rather than `== 0` so the first
+        // placement/update wiring window remains visible even when
+        // a prior plan build advanced the plugin tick.
+        // `tickWindowEnd` exposes DiagnosticLogTicks so the user
+        // can confirm the heartbeat fired inside the diagnostic
+        // window rather than being masked by an over-aggressive
+        // sample-rate constant.
+        if (_tickCounter <= DiagnosticLogTicks)
+        {
+            Log.Info(
+                $"[DDGI] BuildPlan first-window invocation " +
+                $"(tick={_tickCounter}, tickWindowEnd={DiagnosticLogTicks}, " +
+                $"atlas={(_atlas == null ? "null" : "ok")}, " +
+                $"atlasProbeCount={_atlas?.UploadedProbeCount ?? -1}, " +
+                $"atlasIrradSlot={(_atlas?.IrradianceBindlessIndex.ToString("X8") ?? "FFFFFFFF")}, " +
+                $"volume={_volume?.IsInitialized switch { true => "initialized", false => "notInitialized", _ => "<null>" }}, " +
+                $"warmupEnabledGlobally={DDGIAtlasResources.WarmupEnabledGlobally}, " +
+                $"warmupEnabled={_atlas?.WarmupEnabled ?? false}, " +
+                $"gpuPlaced={_atlas?.SparseLayoutGpuPlaced ?? false}, " +
+                $"sparseReady={_atlas?.SparseLayoutReady ?? false}, " +
+                $"fingerprint={_sceneFingerprint}, " +
+                $"scene={context.Scene?.Name ?? "<none>"})",
+                "DDGI");
+        }
+
         EnsureAtlas(context);
 
+        // MARK: Scene fingerprint reset must precede layout re-upload.
         long fingerprint = ComputeSceneFingerprint(context);
         if (fingerprint != _sceneFingerprint)
         {
+            ++_fingerprintResetsTotal;
+            // Surface churn (>=2 resets within 60 ticks) so the
+            // disappearance audit can confirm Hypothesis B without
+            // forcing the user to count manually. First 30 ticks
+            // always log so the very first churn event is captured.
+            long windowTicks = _tickCounter - _fingerprintResetsWindowStartTick;
+            if (_tickCounter <= 30 ||
+                _tickCounter % MaxLogSampleEvery == 0 ||
+                (_fingerprintResetsTotal >= 2 && windowTicks <= 60))
+            {
+                int prevModelCount =
+                    (int)(_sceneFingerprint & 0xFFFF);
+                int prevLightCount =
+                    (int)((_sceneFingerprint >> 16) & 0xFFFF);
+                int prevContentHash =
+                    (int)((_sceneFingerprint >> 32) & 0xFFFFFFFF);
+                int newModelCount =
+                    (int)(fingerprint & 0xFFFF);
+                int newLightCount =
+                    (int)((fingerprint >> 16) & 0xFFFF);
+                int newContentHash =
+                    (int)((fingerprint >> 32) & 0xFFFFFFFF);
+                Log.Info(
+                    $"[DDGI] fingerprint flip: " +
+                    $"model {prevModelCount}->{newModelCount} " +
+                    $"light {prevLightCount}->{newLightCount} " +
+                    $"content 0x{prevContentHash:X}->0x{newContentHash:X} " +
+                    $"resetsTotal={_fingerprintResetsTotal} " +
+                    $"windowTicks={windowTicks}",
+                    "DDGI");
+                _fingerprintResetsWindowStartTick = _tickCounter;
+            }
             _sceneFingerprint = fingerprint;
             _lastPlacementTick = -1;
             if (_atlas != null) _atlas.ResetSparseLayoutForSceneReload();
-            if (_tickCounter % MaxLogSampleEvery == 0)
-            {
-                Log.Info(
-                    $"[DDGI] scene fingerprint changed; re-running GPU probe placement next tick",
-                    "DDGI");
-            }
         }
 
         _tickCounter++;
-        _priority.AdvanceFrame(_tickCounter);
 
+        EnsureVolumeLayout(context);
         var plan = new RendererPluginPlan();
 
-        if (ShouldKickPlacement())
+        if (ShouldKickPlacement(context))
         {
             try
             {
                 string? placementSource = LocateShaderSource(
-                    DDGIProbePlacementPass.PlacementShaderSource, context);
+                    DDGIProbePlacementPass.PlacementShaderSource,
+                    context,
+                    _lastPlacementSearchedDirs);
                 if (placementSource != null)
                 {
-                    plan.AddPass(new DDGIProbePlacementPass(
+                RenderPass? placement = ConstructPassWithTimeout(
+                    "DDGI Probe Placement pass",
+                    () => new DDGIProbePlacementPass(
                         context.Device,
                         context.World,
                         placementSource,
                         _atlas!,
                         context.ShaderIncludeDirs,
                         context.ShaderCliArgs,
-                        context.SharedShaderCache));
+                        context.SharedShaderCache),
+                    TimeSpan.FromSeconds(60),
+                    _lifecycleCts?.Token ?? CancellationToken.None);
+                if (placement != null)
+                {
+                    plan.AddPass(placement);
                     _lastPlacementTick = _tickCounter;
+                    if (_tickCounter <= DiagnosticLogTicks)
+                    {
+                        Log.Info(
+                            $"[DDGI] registered DDGI Probe Placement " +
+                            $"pass (tick={_tickCounter}, " +
+                            $"sourceLength={placementSource.Length})",
+                            "DDGI");
+                    }
+                }
+                }
+                else if (_tickCounter <= DiagnosticLogTicks ||
+                         _tickCounter % MaxLogSampleEvery == 0)
+                {
+                    Log.Info(
+                        $"[DDGI] probe-placement shader source not found " +
+                        $"({DDGIProbePlacementPass.PlacementShaderSource}) " +
+                        $"includeDirs=[{string.Join("; ", context.ShaderIncludeDirs ?? System.Array.Empty<string>())}] " +
+                        $"contentRoot={context.ContentRoot} " +
+                        $"(searched={_lastPlacementSearchedDirs.Count} " +
+                        $"dirs: {string.Join("; ", _lastPlacementSearchedDirs)}); " +
+                        $"pass NOT registered this frame",
+                        "DDGI");
                 }
             }
             catch (Exception exception)
@@ -151,29 +300,74 @@ public sealed class DDGIRendererPlugin :
             }
         }
 
-        _lastInfluences =
-            BuildLightInfluences(context.Scene);
-
-        UploadLightsSnapshot(context.Scene);
-        BuildAndUploadLightTree();
-
-        RefreshProbeSnapshots();
+        // MARK: Light upload wrapped so a partial-upload throw does
+        // not abort the entire BuildPlan and drop the probe-update
+        // pass registration.
+        try
+        {
+            _currentScene = context.Scene;
+            UploadLightsSnapshot(context.Scene);
+            BuildAndUploadLightTree();
+        }
+        catch (Exception lightException)
+        {
+            Log.Error(
+                $"[DDGI] light upload failed (continuing without " +
+                $"update lighting): {lightException.Message}",
+                "DDGI");
+            // MARK: Reset the light-tree SSBO to empty so the
+            // probe-update shader's TraverseLightTree() early-out
+            // (rootIdx >= nodeCount) prevents reading a half-
+            // initialized tree on the next dispatch. Otherwise the
+            // catch masks a GPU-side inconsistency that surfaces as
+            // flicker artifacts during the next probe update.
+            _atlas?.UploadLightTree(
+                ReadOnlySpan<DDGILightTreeNode>.Empty,
+                rootIndex: -1);
+        }
 
         try
         {
-            string? shaderSource = LocateProbeUpdateSource(context);
+            string? shaderSource = LocateProbeUpdateSource(context, _lastUpdateSearchedDirs);
             if (shaderSource != null)
             {
-                plan.AddPass(new DDGIProbeUpdatePass(
-                    context.Device,
-                    context.World,
-                    shaderSource,
-                    context.ShaderIncludeDirs,
-                    context.ShaderCliArgs,
-                    _atlas!,
-                    this,
-                    context.GpuWorkScheduler,
-                    context.SharedShaderCache));
+                RenderPass? update = ConstructPassWithTimeout(
+                    "DDGI Probe Update pass",
+                    () => new DDGIProbeUpdatePass(
+                        context.Device,
+                        context.World,
+                        shaderSource,
+                        context.ShaderIncludeDirs,
+                        context.ShaderCliArgs,
+                        _atlas!,
+                        context.SharedShaderCache),
+                    TimeSpan.FromSeconds(60),
+                    _lifecycleCts?.Token ?? CancellationToken.None);
+                if (update != null)
+                {
+                    plan.AddPass(update);
+                    if (_tickCounter <= DiagnosticLogTicks)
+                    {
+                        Log.Info(
+                            $"[DDGI] registered DDGI Probe Update pass " +
+                            $"(tick={_tickCounter}, sourceLength=" +
+                            $"{shaderSource.Length})",
+                            "DDGI");
+                    }
+                }
+            }
+            else if (_tickCounter <= DiagnosticLogTicks ||
+                     _tickCounter % MaxLogSampleEvery == 0)
+            {
+                Log.Info(
+                    $"[DDGI] probe-update shader source not found " +
+                    $"(ddgi_probe_update.slang) " +
+                    $"includeDirs=[{string.Join("; ", context.ShaderIncludeDirs ?? System.Array.Empty<string>())}] " +
+                    $"contentRoot={context.ContentRoot} " +
+                    $"(searched={_lastUpdateSearchedDirs.Count} " +
+                    $"dirs: {string.Join("; ", _lastUpdateSearchedDirs)}); " +
+                    $"pass NOT registered this frame",
+                    "DDGI");
             }
         }
         catch (Exception exception)
@@ -182,6 +376,45 @@ public sealed class DDGIRendererPlugin :
                 $"[DDGI] probe-update pass wiring failed: " +
                 $"{exception.Message}",
                 "DDGI");
+        }
+
+        // The GPU update pass is the sole atlas writer. The former CPU
+        // warmup pass wrote a magenta diagnostic seed after every update,
+        // which masked real probe lighting and made purple output look like
+        // a renderer failure. Keep that diagnostic pass out of the runtime
+        // plan; GPU placement and update now own the complete atlas lifecycle.
+
+        // Always present so the ShowProbes toggle is a pure static
+        // flag flip — no plan rebuild needed to show/hide probes.
+        // DDGIDebugPass.Execute self-gates on DDGIVolumeRegistry.ShowProbes.
+        if (_atlas != null && _host != null)
+        {
+            try
+            {
+                RenderPass? debug = ConstructPassWithTimeout(
+                    "DDGI Probe (Debug) pass",
+                    () => new DDGIDebugPass(
+                        context.Device,
+                        _volume,
+                        _atlas,
+                        _host,
+                        context.ContentRoot,
+                        context.ShaderCliArgs,
+                        context.ShaderIncludeDirs,
+                        context.SharedShaderCache),
+                    TimeSpan.FromSeconds(60),
+                    _lifecycleCts?.Token ?? CancellationToken.None);
+                if (debug != null)
+                {
+                    plan.AddPostPass(debug);
+                }
+            }
+            catch (Exception exception)
+            {
+                Log.Error(
+                    $"[DDGI] debug pass wiring failed: {exception.Message}",
+                    "DDGI");
+            }
         }
 
         return plan;
@@ -201,23 +434,50 @@ public sealed class DDGIRendererPlugin :
             DDGIProbeUpdatePass.MaxProbesPerFrame,
             camera);
 
+        int totalVolumeProbes = _probeSnapshots.Length;
         int admittedProbes = 0;
-        foreach (int _ in updates)
+        bool hitBudgetCeiling = false;
+
+        for (int i = 0; i < updates.Count; ++i)
         {
             if (scheduler.TryAdmit(GpuWorkDomain.Gi))
+            {
+                int probeIdx = updates[i];
+                if (probeIdx >= 0 && probeIdx < _probeSnapshots.Length)
+                {
+                    _probeSnapshots[probeIdx] = new DDGIProbePriority.ProbeSnapshot(
+                        Index: probeIdx,
+                        Position: _volume.PositionAt(probeIdx),
+                        LastUpdateFrame: _tickCounter);
+                }
                 admittedProbes++;
+            }
+            else
+            {
+                hitBudgetCeiling = true;
+                break;
+            }
         }
-        int deferredProbes = updates.Count - admittedProbes;
-        if (deferredProbes > 0)
-            scheduler.Defer(GpuWorkDomain.Gi, deferredProbes);
+
+        int totalDeferredProbes = Math.Max(0, totalVolumeProbes - admittedProbes);
+        int uncountedDeferred = totalDeferredProbes;
+        if (hitBudgetCeiling && uncountedDeferred > 0)
+        {
+            uncountedDeferred--;
+        }
+
+        if (uncountedDeferred > 0)
+        {
+            scheduler.Defer(GpuWorkDomain.Gi, uncountedDeferred);
+        }
 
         if (_tickCounter % LogSampleEvery == 0)
         {
             Log.Info(
                 $"[DDGI] tick={_tickCounter} volumeProbes=" +
-                $"{_probeSnapshots.Length} " +
+                $"{totalVolumeProbes} " +
                 $"scheduling={updates.Count} admitted={admittedProbes} " +
-                $"deferred={deferredProbes}",
+                $"deferred={totalDeferredProbes}",
                 "DDGI");
         }
 
@@ -229,13 +489,22 @@ public sealed class DDGIRendererPlugin :
     }
 
     private static string? LocateProbeUpdateSource(
-        RendererPluginContext context)
-        => LocateShaderSource("ddgi_probe_update.slang", context);
+        RendererPluginContext context,
+        List<string>? searchedDirectories = null)
+        => LocateShaderSource(
+            "ddgi_probe_update.slang",
+            context,
+            searchedDirectories);
 
     private static string? LocateShaderSource(
         string relativeName,
-        RendererPluginContext context)
+        RendererPluginContext context,
+        List<string>? searchedDirectories = null)
     {
+        // Reset per-tick audit log so failure diagnostics reflect
+        // only this tick's probed paths, not cumulative history.
+        searchedDirectories?.Clear();
+
         string[] candidates =
         {
             relativeName,
@@ -247,6 +516,7 @@ public sealed class DDGIRendererPlugin :
             foreach (string relative in candidates)
             {
                 string full = Path.Combine(includeDir, relative);
+                searchedDirectories?.Add(full);
                 if (File.Exists(full))
                     return File.ReadAllText(full);
             }
@@ -269,6 +539,92 @@ public sealed class DDGIRendererPlugin :
         }
     }
 
+    /// <summary>
+    /// Bounds a pass constructor in a <see cref="System.Threading.Tasks.Task{TResult}"/>
+    /// so a hung Metal shader compile (<c>newLibraryWithSource</c>) or
+    /// pipeline state creation
+    /// (<c>newComputePipelineStateWithFunction</c> /
+    /// <c>newRenderPipelineStateWithDescriptor</c>) cannot freeze the
+    /// editor. Returns <c>null</c> on timeout, exception, or lifetime
+    /// cancellation; the subsequent frame retries from the
+    /// <see cref="ShaderCompileCache"/>.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="lifetimeToken"/> is checked at the very start of
+    /// the wrapped factory so a Shutdown-cancelled plugin's in-flight
+    /// Task short-circuits before allocating a pipeline against the
+    /// disposed _atlas. <c>Task.Run(wrappedFactory, lifetimeToken)</c>
+    /// additionally short-circuits the Task itself if the token is
+    /// already cancelled at scheduling time, surfacing a faulted/cancelled
+    /// Task the wrapper catches via AggregateException so the editor's
+    /// Debug log shows the cancellation cause rather than an opaque
+    /// C# exception escalation.
+    /// </remarks>
+    private static RenderPass? ConstructPassWithTimeout(
+        string passName,
+        Func<RenderPass> factory,
+        TimeSpan timeout,
+        CancellationToken lifetimeToken)
+    {
+        Func<RenderPass> wrapped = () =>
+        {
+            lifetimeToken.ThrowIfCancellationRequested();
+            return factory();
+        };
+        var task = System.Threading.Tasks.Task.Run(wrapped, lifetimeToken);
+        try
+        {
+            // MARK: Three terminal states all funnel through one of two
+            // paths here:
+            //   * `return null` inside the if-branch when Wait times out
+            //     (the Task is still running when control returns);
+            //   * throw + catch when the Task is either Canceled (token
+            //     was pre-cancelled, so Task.Run scheduled a Cancelled
+            //     Task directly) or Faulted (the inner factory threw).
+            // If Wait returns true the Task is RanToCompletion so the
+            // post-try fall-through reads a valid `task.Result` — no
+            // additional IsCanceled/IsFaulted guard needed.
+            if (!task.Wait(timeout))
+            {
+                Log.Error(
+                    $"[DDGI] {passName} constructor did not return within " +
+                    $"{timeout.TotalSeconds:0}s; skipping this frame. " +
+                    "Metal's newLibraryWithSource / " +
+                    "newComputePipelineStateWithFunction can block for many " +
+                    "seconds on the first RT compute-kernel compile; a " +
+                    "concurrent reload path may have already populated the " +
+                    "ShaderCompileCache so subsequent frames will resolve " +
+                    "without reaching this timeout.",
+                    "DDGI");
+                return null;
+            }
+        }
+        catch (AggregateException aggregateException)
+        {
+            // MARK: Cancelled + Faulted tasks both surface as
+            // AggregateException via Task.Wait. OperationCanceledException
+            // is the normal path for a Shutdown-cancelled lifetimeToken;
+            // everything else is a constructor throw we still want to
+            // log+null without re-throwing into the build-plan caller.
+            foreach (Exception inner in aggregateException.InnerExceptions)
+            {
+                if (inner is OperationCanceledException)
+                {
+                    Log.Info(
+                        $"[DDGI] {passName} constructor cancelled by plugin shutdown; skipping this frame.",
+                        "DDGI");
+                    return null;
+                }
+            }
+            Exception fault = aggregateException.GetBaseException();
+            Log.Error(
+                $"[DDGI] {passName} constructor threw: {fault.Message}",
+                "DDGI");
+            return null;
+        }
+        return task.Result;
+    }
+
     private Vector3 BuildCameraPosition()
     {
         if (_host != null &&
@@ -283,51 +639,128 @@ public sealed class DDGIRendererPlugin :
         return Vector3.Zero;
     }
 
-    private void RefreshProbeSnapshots()
+    private void EnsureVolumeLayout(RendererPluginContext context)
     {
-        // ScheduleMax constant-bounded probe count without consulting
-        // the CPU volume: the probe-update kernel reads positions
-        // straight from _atlas.ProbePositions / GridToProbeIndex,
-        // so per-tick CPU positioning is unnecessary. Capping at
-        // MaxProbesPerFrame gives the scheduler a fixed input shape
-        // regardless of whether the GPU placement kernel has finished
-        // populating the sparse layout — unallocated cells just
-        // return gridToProbeIndex == -1 in the shader.
-        int cap = DDGIProbeUpdatePass.MaxProbesPerFrame;
-        if (_probeSnapshots.Length != cap)
-            _probeSnapshots =
-                new DDGIProbePriority.ProbeSnapshot[cap];
-        for (int i = 0; i < cap; ++i)
+        if (_volume.IsInitialized && _atlas != null && _atlas.SparseLayoutReady)
+            return;
+
+        _volume.InitializeGpuOwned();
+        return;
+
+        /*
+        var positions = new List<Vector3>();
+        int res = _volume.BaseGridResolution; // 32
+        int[] gridToProbeIndex = new int[res * res * res];
+        Array.Fill(gridToProbeIndex, -1);
+
+        Vector3 origin = _volume.Origin;
+        Vector3 extent = _volume.Extent;
+        Vector3 volumeMin = origin - extent;
+        Vector3 cellSize = extent * 2.0f / res;
+
+        // Step by 2 along each axis -> 16 * 16 * 16 = 4096 probes
+        int step = 2;
+        int probeIdx = 0;
+        for (int z = 0; z < res; z += step)
         {
-            _probeSnapshots[i] = new DDGIProbePriority.ProbeSnapshot(
-                Index: i,
-                Position: Vector3.Zero,
-                LastUpdateFrame: _tickCounter - 1);
+            for (int y = 0; y < res; y += step)
+            {
+                for (int x = 0; x < res; x += step)
+                {
+                    Vector3 pos = volumeMin + (new Vector3(x + 0.5f, y + 0.5f, z + 0.5f) * cellSize);
+                    positions.Add(pos);
+
+                    // Map the 2x2x2 block of coarse cells to this probe
+                    for (int dz = 0; dz < step; ++dz)
+                    {
+                        for (int dy = 0; dy < step; ++dy)
+                        {
+                            for (int dx = 0; dx < step; ++dx)
+                            {
+                                int cx = Math.Min(x + dx, res - 1);
+                                int cy = Math.Min(y + dy, res - 1);
+                                int cz = Math.Min(z + dz, res - 1);
+                                int linear = cz * res * res + cy * res + cx;
+                                gridToProbeIndex[linear] = probeIdx;
+                            }
+                        }
+                    }
+
+                    probeIdx++;
+                }
+            }
         }
+
+        Vector3[] posArray = positions.ToArray();
+        _volume.Initialize(posArray, gridToProbeIndex);
+
+        if (_atlas != null)
+        {
+            _atlas.UploadSparseLayout(posArray, gridToProbeIndex);
+        }
+        */
     }
 
-    private bool ShouldKickPlacement()
+    private void RefreshProbeSnapshots()
+    {
+        // Probe positions are GPU-owned. CPU priority scheduling is no
+        // longer used to select update slots; the update kernel consumes
+        // the placement counter directly.
+        _probeSnapshots = Array.Empty<DDGIProbePriority.ProbeSnapshot>();
+    }
+
+    private bool ShouldKickPlacement(RendererPluginContext context)
     {
         if (_atlas == null) return false;
-        if (_lastPlacementTick > 0) return false;
-        return true;
+        // Placement is a persistent GPU pass. It rebuilds the sparse
+        // layout and relocates probes every frame from scene geometry;
+        // no CPU position list or placement readback participates.
+        return _atlas != null;
+
+        /*
+        // MARK: gate on ACTUAL placement dispatch success, not the
+        // atlas sample-readiness flag. SparseLayoutReady flips true
+        // from three independent paths (CPU seed in EnsureVolumeLayout,
+        // UploadEmptySparseLayout in the failure-mode branches of the
+        // placement pass, and MarkSparseLayoutReady after a real
+        // dispatch). Keys off SparseLayoutGpuPlaced — which only
+        // MarkSparseLayoutReady writes — so the CPU seed cannot pre-empt
+        // the GPU placement run for the current scene. See
+        // docs/renderer/ddgi.md#placement-race.
+        if (_atlas.SparseLayoutGpuPlaced) return false;
+
+        // MARK: defer placement until ECS has a ModelComponent — see docs/renderer/ddgi.md#placement-race.
+        int entityCount = 0;
+        foreach (ulong entity in context.World.Entities)
+        {
+            ++entityCount;
+            if (context.World.TryGet<Engine.RHI.ModelComponent>(entity, out _))
+                return true;
+        }
+        if (_tickCounter <= DiagnosticLogTicks ||
+            _tickCounter % MaxLogSampleEvery == 0)
+        {
+            Log.Info(
+                $"[DDGI] ShouldKickPlacement skipped: " +
+                $"entityCount={entityCount} (no entity carries ModelComponent)",
+                "DDGI");
+        }
+        return false;
+        */
     }
 
     private long ComputeSceneFingerprint(RendererPluginContext context)
     {
-        int lights = context.Scene?.Lights?.Count ?? 0;
-        int entities = 0;
-        if (context.World != null)
-        {
-            foreach (int _ in context.World.Entities) entities++;
-        }
+        if (context.Scene == null) return 0;
+        int modelCount = context.Scene.Models?.Count ?? 0;
+        int lightCount = context.Scene.Lights?.Count ?? 0;
         int contentHash = context.ContentRoot == null
             ? 0
             : context.ContentRoot.GetHashCode();
-        long combined = (long)(uint)lights;
+        long combined = (long)modelCount;
         unchecked
         {
-            combined ^= (long)entities << 16;
+            combined |= (long)lightCount << 16;
             combined ^= (long)contentHash << 32;
         }
         return combined;
@@ -450,9 +883,9 @@ public sealed class DDGIRendererPlugin :
                         StringComparison.OrdinalIgnoreCase) ? 2f
                     : 0f;
 
-                Vector3 axis = type != 0f
-                    ? Vector3.Normalize(Vector3.Zero - position)
-                    : -ReadFloat3(node.Direction, new Vector3(0, -1, 0));
+                Vector3 dir = ReadFloat3(node.Direction, new Vector3(0, -1, 0));
+                if (dir.LengthSquared() < 0.0001f) dir = new Vector3(0, -1, 0);
+                Vector3 axis = Vector3.Normalize(dir);
 
                 float innerAngle = 0.0f;
                 float outerAngle = 0.0f;
@@ -477,6 +910,17 @@ public sealed class DDGIRendererPlugin :
         {
             _atlas.UploadLights(snapshot);
         }
+    }
+
+    /// <summary>Called every frame from <see cref="DDGIProbeUpdatePass.Execute"/>
+    /// to keep the GPU light buffer and BVH tree in sync with the current
+    /// scene state. This allows GI to react immediately to light edits
+    /// without waiting for the render plan to be recompiled.</summary>
+    public void RefreshLightsForFrame()
+    {
+        if (_atlas == null || _currentScene == null) return;
+        UploadLightsSnapshot(_currentScene);
+        BuildAndUploadLightTree();
     }
 
     private void EnsureAtlas(RendererPluginContext context)
@@ -538,6 +982,29 @@ public sealed class DDGIRendererPlugin :
         probePositions = _atlas.ProbePositions;
         gridToProbeIndex = _atlas.GridToProbeIndex;
         probeCounter = _atlas.ProbeCounter;
+        return true;
+    }
+
+    /// <inheritdoc />
+    public DDGIAtlasResourceHandles ResourceHandles =>
+        _atlas?.ResourceHandles ?? default;
+
+    /// <inheritdoc />
+    public bool TryGetExternalResources(
+        out DDGIAtlasExternalResources resources)
+    {
+        resources = default;
+        if (_atlas == null)
+            return false;
+        resources = new DDGIAtlasExternalResources(
+            _atlas.ProbePositions,
+            _atlas.GridToProbeIndex,
+            _atlas.ProbeCounter,
+            _atlas.ProbeDrawArgs,
+            _atlas.Lights,
+            _atlas.LightTreeNodes,
+            _atlas.Irradiance,
+            _atlas.Visibility);
         return true;
     }
 
@@ -639,7 +1106,17 @@ public sealed class DDGIRendererPlugin :
     }
 
     private const int MaxLogSampleEvery = 60;
-    private const int SparseLayoutWarmupTicks = 3;
+    private const int SparseLayoutWarmupTicks = 0;
+
+    /// <summary>First-N-ticks window during which the plugin
+    /// logs every registration outcome (success, skip, exception)
+    /// regardless of the steady-state sampling rate. After the
+    /// window, sampling degrades to <see cref="MaxLogSampleEvery"/>
+    /// so steady-state logs stay sparse.</summary>
+    private const int DiagnosticLogTicks = 30;
+
+    private readonly List<string> _lastUpdateSearchedDirs = new();
+    private readonly List<string> _lastPlacementSearchedDirs = new();
 
     /// <summary>Per-probe cap on the number of light-tree leaves
     /// visited by the probe-update kernel's hierarchical traversal.

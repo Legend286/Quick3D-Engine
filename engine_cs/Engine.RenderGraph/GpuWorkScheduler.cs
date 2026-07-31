@@ -232,6 +232,12 @@ public sealed class GpuWorkScheduler
 
         DomainState state = _domains[(int)domain];
         double measuredUnitMilliseconds = milliseconds / completedUnits;
+
+        // Cap the maximum estimated per-unit time so we don't completely starve
+        // the domain if fixed overhead dominates a small unit count.
+        double maxPerUnit = state.BudgetMilliseconds / 4.0;
+        measuredUnitMilliseconds = Math.Min(measuredUnitMilliseconds, maxPerUnit);
+
         state.EstimatedUnitMilliseconds =
             state.EstimatedUnitMilliseconds * 0.8 +
             measuredUnitMilliseconds * 0.2;

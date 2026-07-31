@@ -135,6 +135,9 @@ public interface IGameLoop : IDisposable
     /// <summary>Gets or sets whether the optional path-tracing plugin is available.</summary>
     bool IsPathTracingRendererAvailable { get; set; }
 
+    /// <summary>Invalidates the current render plan, forcing it to rebuild next frame.</summary>
+    void InvalidateRenderPlan();
+
     /// <summary>Recreates pipelines whose shaders are owned by a plugin.</summary>
     void ReloadPluginShaders(string pluginId);
 

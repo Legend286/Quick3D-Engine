@@ -123,7 +123,11 @@ struct RhiBindlessHeapImpl {
     
     std::vector<__unsafe_unretained id<MTLResource>> resident_cache;
     bool resident_cache_dirty = true;
+    std::mutex mutex;
 };
+
+static std::mutex g_bindless_mutex;
+static std::vector<RhiBindlessHeapImpl*> g_bindless_heaps;
 
 struct RhiAccelStructImpl {
     API_AVAILABLE(macos(11.0), ios(14.0))
@@ -241,40 +245,14 @@ static RhiEncoder*     metal_begin_compute_pass(RhiCommandList* cl,
                                                  const char* debug_name);
 static void            metal_end_pass(RhiEncoder* enc);
 
-static void metal_cmd_bind_pipeline(RhiEncoder* e, RhiPipeline* p);
-static void metal_cmd_bind_vertex_buffer(RhiEncoder* e, uint32_t slot,
-                                          RhiBuffer* b, uint64_t offset);
-static void metal_cmd_bind_uniform_buffer(RhiEncoder* e, uint32_t slot,
-                                           RhiBuffer* b);
-static void metal_cmd_set_viewport(RhiEncoder* e, float x, float y,
-                                    float w, float h,
-                                    float min_depth, float max_depth);
-static void metal_cmd_set_scissor(RhiEncoder* e, uint32_t x, uint32_t y,
-                                   uint32_t w, uint32_t h);
-static void metal_cmd_set_clear_color(RhiEncoder* e, float r, float g, float b, float a);
-static void metal_cmd_push_constants(RhiEncoder* e, uint32_t slot, uint32_t sz, const void* d);
-static void metal_cmd_draw(RhiEncoder* e, const RhiDrawArgs* a);
-static void metal_cmd_draw_indexed(RhiEncoder* e, const RhiDrawIndexedArgs* a);
-static void metal_cmd_bind_index_buffer(RhiEncoder* e, RhiBuffer* buf, int32_t is_32bit, uint64_t offset);
-static void metal_cmd_bind_texture(RhiEncoder* e, uint32_t slot, RhiTexture* tex);
-static void metal_cmd_bind_texture_array(RhiEncoder* e, uint32_t slot, RhiTexture** texs, uint32_t count);
-static void metal_cmd_dispatch(RhiEncoder* e, uint32_t x, uint32_t y, uint32_t z,
-                                 uint32_t tg_x, uint32_t tg_y, uint32_t tg_z);
-
-static int32_t metal_create_accel_struct(RhiDevice* d, const RhiAccelStructDesc* desc, RhiAccelStruct** out);
-static void    metal_destroy_accel_struct(RhiAccelStruct* as);
-static void    metal_cmd_build_accel_structs(RhiCommandList* cl, RhiAccelStruct** accel_structs, uint32_t count);
-static void    metal_cmd_compact_accel_structs(RhiCommandList* cl, RhiAccelStruct** accel_structs, uint32_t count);static void metal_cmd_bind_accel_struct(RhiEncoder* enc, uint32_t slot, RhiAccelStruct* as);
-static void metal_cmd_use_accel_struct(RhiEncoder* enc, RhiAccelStruct* as, uint32_t usage);
-
-static int32_t metal_create_bindless_heap(RhiDevice* d, const RhiBindlessHeapDesc* desc, RhiBindlessHeap** out);
-static void    metal_destroy_bindless_heap(RhiBindlessHeap* h);
-static int32_t metal_bindless_register_texture(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot);
-static void    metal_bindless_release_texture(RhiBindlessHeap* h, uint32_t slot);
-static int32_t metal_bindless_lookup_slot(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot);
-static void    metal_cmd_bind_bindless_heap(RhiEncoder* e, RhiBindlessHeap* h, uint32_t slot);
-
 // ----- impl -----
+// MARK: rhi_metal.mm uses no internal forward declarations of backend
+// command functions inside this anonymous namespace. The implementations
+// that follow are static, visible at the dispatch-table site in
+// rhi_metal_register(), and a previous forward-decl block at this position
+// with shortened parameter names (`e` / `b` / `d`) caused clang to read
+// (decl, impl) as an overload set, producing 20 errors at the dispatch
+// assignments.
 
 static int32_t metal_init(RhiDevice** out_device) {
     @autoreleasepool {
@@ -293,6 +271,42 @@ static int32_t metal_init(RhiDevice** out_device) {
         *out_device = reinterpret_cast<RhiDevice*>(di);
         ENGINE_LOG_INFO("rhi_metal", "device=%s queue ready",
                         [[dev name] UTF8String]);
+
+        // MARK: Counter support audit. Lands in the engine log on every
+        // startup so a developer can rule out hardware/driver mismatch
+        // before chasing per-pass timing bugs downstream. Stage-boundary
+        // sampling on M-series GPUs is officially supported since macOS
+        // 11; if any of these come back false, M1 Pro is on an
+        // unsupported SDK/runtime and the timing UI will show identical
+        // GPU ms across every pass (the "garbage values" symptom).
+        if (@available(macOS 11.0, iOS 14.0, *)) {
+            bool supports_stage =
+                [dev supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary];
+            bool supports_draw =
+                [dev supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
+            bool supports_dispatch =
+                [dev supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
+            bool supports_blit =
+                [dev supportsCounterSampling:MTLCounterSamplingPointAtBlitBoundary];
+            ENGINE_LOG_INFO(
+                "rhi_metal",
+                "counter-sampling support: stage=%s draw=%s dispatch=%s blit=%s",
+                supports_stage ? "yes" : "no",
+                supports_draw ? "yes" : "no",
+                supports_dispatch ? "yes" : "no",
+                supports_blit ? "yes" : "no");
+            id<MTLCounterSet> timestamp_set = nil;
+            for (id<MTLCounterSet> cs in dev.counterSets) {
+                if ([cs.name isEqualToString:MTLCommonCounterSetTimestamp]) {
+                    timestamp_set = cs;
+                    break;
+                }
+            }
+            ENGINE_LOG_INFO(
+                "rhi_metal",
+                "MTLCounterSetTimestamp present=%s",
+                timestamp_set ? "yes" : "no");
+        }
         return 0;
     }
 }
@@ -809,10 +823,30 @@ static int32_t metal_create_shader(RhiDevice* d, const RhiShaderDesc* desc, RhiS
 static int32_t metal_create_graphics_pipeline(RhiDevice* d,
                                               const RhiGraphicsPipelineDesc* desc,
                                               RhiPipeline** out) {
+    if (!out) return -1;
     @autoreleasepool {
         RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
+        if (!di) {
+            ENGINE_LOG_ERROR("rhi_metal", "graphics_pipeline: null device handle");
+            return -1;
+        }
+        // MARK: null-guard vs/fs. The C# wrapper now filters disposed
+        // shaders but a stale in-flight native request (e.g. an
+        // orphaned Task that outlived the plugin that scheduled it)
+        // can still arrive here with desc->vertex_shader or
+        // desc->fragment_shader == NULL. Returning a tagged error
+        // (vs -2 missing-vs -3 missing-fs) surfaces the real cause in
+        // the engine log instead of an opaque SIGSEGV @ 0x8.
         RhiShaderImpl* vs = reinterpret_cast<RhiShaderImpl*>(desc->vertex_shader);
         RhiShaderImpl* fs = reinterpret_cast<RhiShaderImpl*>(desc->fragment_shader);
+        if (!vs) {
+            ENGINE_LOG_ERROR("rhi_metal", "graphics_pipeline: null vertex_shader handle");
+            return -2;
+        }
+        if (!fs) {
+            ENGINE_LOG_ERROR("rhi_metal", "graphics_pipeline: null fragment_shader handle");
+            return -3;
+        }
         MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
         pd.vertexFunction   = vs->fn;
         pd.fragmentFunction = fs->fn;
@@ -875,9 +909,27 @@ static int32_t metal_create_graphics_pipeline(RhiDevice* d,
 static int32_t metal_create_compute_pipeline(RhiDevice* d,
                                              const RhiComputePipelineDesc* desc,
                                              RhiPipeline** out) {
+    if (!out) return -1;
     @autoreleasepool {
         RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
+        if (!di) {
+            ENGINE_LOG_ERROR("rhi_metal", "compute_pipeline: null device handle");
+            return -1;
+        }
+        // MARK: null-guard cs. The C# RhiPipeline.CreateCompute
+        // wrapper now throws ObjectDisposedException when the shader
+        // was already disposed at P/Invoke start, but an orphan in-
+        // flight background Task (DDGI placement-pass constructor
+        // outliving the plugin that scheduled its ConstructPassWith-
+        // Timeout wrapper) can still reach here with
+        // desc->compute_shader == NULL. Returning -2 surfaces the
+        // missing-shader cause in the engine log instead of the opaque
+        // EXC_BAD_ACCESS we used to see at cs->fn offset 0x8.
         RhiShaderImpl* cs = reinterpret_cast<RhiShaderImpl*>(desc->compute_shader);
+        if (!cs) {
+            ENGINE_LOG_ERROR("rhi_metal", "compute_pipeline: null compute_shader handle");
+            return -2;
+        }
         NSError* err = nil;
         id<MTLComputePipelineState> state =
             [di->device newComputePipelineStateWithFunction:cs->fn error:&err];
@@ -1106,6 +1158,27 @@ static void metal_destroy_buffer(RhiBuffer* b) {
 }
 static void metal_destroy_texture(RhiTexture* tex) {
     if (!tex) return;
+    {
+        std::lock_guard<std::mutex> lock(g_bindless_mutex);
+        for (auto* hi : g_bindless_heaps) {
+            std::lock_guard<std::mutex> hlock(hi->mutex);
+            auto it = hi->texture_to_slot.find(tex);
+            if (it != hi->texture_to_slot.end()) {
+                uint32_t slot = it->second;
+                if (hi->arg_encoder && hi->arg_buffer) {
+                    [hi->arg_encoder setArgumentBuffer:hi->arg_buffer offset:0];
+                    [hi->arg_encoder setTexture:nil atIndex:slot];
+                }
+                hi->texture_to_slot.erase(it);
+                if (slot < hi->slot_to_texture.size()) {
+                    hi->slot_to_texture[slot] = nullptr;
+                    hi->slot_to_resource[slot] = nil;
+                }
+                hi->free_list.push_back(slot);
+                hi->resident_cache_dirty = true;
+            }
+        }
+    }
     RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(tex);
     ti->tex = nil;
     if (ti->iosurface) {
@@ -2222,6 +2295,12 @@ static int32_t metal_create_bindless_heap(RhiDevice* d, const RhiBindlessHeapDes
         hi->capacity    = capacity;
         hi->slot_to_resource.assign(capacity, nil);
         hi->slot_to_texture.assign(capacity, nullptr);
+
+        {
+            std::lock_guard<std::mutex> lock(g_bindless_mutex);
+            g_bindless_heaps.push_back(hi);
+        }
+
         *out = reinterpret_cast<RhiBindlessHeap*>(hi);
         ENGINE_LOG_INFO("rhi_metal", "bindless heap created capacity=%u bytes=%lu",
                         capacity, (unsigned long)length);
@@ -2232,6 +2311,14 @@ static int32_t metal_create_bindless_heap(RhiDevice* d, const RhiBindlessHeapDes
 static void metal_destroy_bindless_heap(RhiBindlessHeap* h) {
     if (!h) return;
     auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
+    {
+        std::lock_guard<std::mutex> lock(g_bindless_mutex);
+        auto it = std::find(g_bindless_heaps.begin(), g_bindless_heaps.end(), hi);
+        if (it != g_bindless_heaps.end()) {
+            g_bindless_heaps.erase(it);
+        }
+    }
+    std::lock_guard<std::mutex> hlock(hi->mutex);
     // Drop our strong refs to all resident textures so ARC releases them.
     for (auto& res : hi->slot_to_resource) res = nil;
     hi->arg_buffer  = nil;
@@ -2244,6 +2331,8 @@ static int32_t metal_bindless_register_texture(RhiBindlessHeap* h, RhiTexture* t
     auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
     RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(tex);
     if (!ti->tex) return -2;
+
+    std::lock_guard<std::mutex> lock(hi->mutex);
 
     // Stable map: same RhiTexture* always maps to same slot.
     auto it = hi->texture_to_slot.find(tex);
@@ -2275,6 +2364,7 @@ static int32_t metal_bindless_register_texture(RhiBindlessHeap* h, RhiTexture* t
 static void metal_bindless_release_texture(RhiBindlessHeap* h, uint32_t slot) {
     if (!h) return;
     auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
+    std::lock_guard<std::mutex> lock(hi->mutex);
     if (slot >= hi->capacity) return;
     [hi->arg_encoder setArgumentBuffer:hi->arg_buffer offset:0];
     [hi->arg_encoder setTexture:nil atIndex:slot];
@@ -2290,6 +2380,7 @@ static void metal_bindless_release_texture(RhiBindlessHeap* h, uint32_t slot) {
 static int32_t metal_bindless_lookup_slot(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot) {
     if (!h || !tex || !out_slot) return -1;
     auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
+    std::lock_guard<std::mutex> lock(hi->mutex);
     auto it = hi->texture_to_slot.find(tex);
     if (it == hi->texture_to_slot.end()) return -1;
     *out_slot = it->second;
@@ -2492,31 +2583,38 @@ extern "C" void rhi_metal_register(void) {
     b.begin_render_pass          = metal_begin_render_pass;
     b.begin_compute_pass         = metal_begin_compute_pass;
     b.end_pass                   = metal_end_pass;
-    b.cmd_bind_pipeline          = metal_cmd_bind_pipeline;
-    b.cmd_bind_vertex_buffer     = metal_cmd_bind_vertex_buffer;
-    b.cmd_bind_uniform_buffer    = metal_cmd_bind_uniform_buffer;
-    b.cmd_set_viewport           = metal_cmd_set_viewport;
-    b.cmd_set_scissor            = metal_cmd_set_scissor;
-    b.cmd_set_clear_color        = metal_cmd_set_clear_color;
-    b.cmd_push_constants         = metal_cmd_push_constants;
-    b.cmd_draw                   = metal_cmd_draw;
-    b.cmd_draw_indirect          = metal_cmd_draw_indirect;
-    b.cmd_draw_indexed           = metal_cmd_draw_indexed;
-    b.cmd_draw_indexed_indirect  = metal_cmd_draw_indexed_indirect;
-    b.cmd_bind_index_buffer      = metal_cmd_bind_index_buffer;
-    b.cmd_bind_texture           = metal_cmd_bind_texture;
-    b.cmd_bind_texture_array     = metal_cmd_bind_texture_array;
-    b.cmd_bind_bindless_heap     = metal_cmd_bind_bindless_heap;
-    b.cmd_bind_sampler           = metal_cmd_bind_sampler;
-    b.cmd_use_buffer             = metal_cmd_use_buffer;
-    b.cmd_dispatch               = metal_cmd_dispatch;
+    // MARK: Address-of `&` on each function narrows the C++ overload
+    // set to a single function pointer matching the dispatch struct's
+    // C-linkage field, regardless of how many declarations exist in
+    // the translation unit. `&funcname` requires single-function
+    // resolution; the function-to-pointer conversion then conforms
+    // directly to the field's pointer type with no implicit-cast
+    // gymnastics.
+    b.cmd_bind_pipeline          = &metal_cmd_bind_pipeline;
+    b.cmd_bind_vertex_buffer     = &metal_cmd_bind_vertex_buffer;
+    b.cmd_bind_uniform_buffer    = &metal_cmd_bind_uniform_buffer;
+    b.cmd_set_viewport           = &metal_cmd_set_viewport;
+    b.cmd_set_scissor            = &metal_cmd_set_scissor;
+    b.cmd_set_clear_color        = &metal_cmd_set_clear_color;
+    b.cmd_push_constants         = &metal_cmd_push_constants;
+    b.cmd_draw                   = &metal_cmd_draw;
+    b.cmd_draw_indirect          = &metal_cmd_draw_indirect;
+    b.cmd_draw_indexed           = &metal_cmd_draw_indexed;
+    b.cmd_draw_indexed_indirect  = &metal_cmd_draw_indexed_indirect;
+    b.cmd_bind_index_buffer      = &metal_cmd_bind_index_buffer;
+    b.cmd_bind_texture           = &metal_cmd_bind_texture;
+    b.cmd_bind_texture_array     = &metal_cmd_bind_texture_array;
+    b.cmd_bind_bindless_heap     = &metal_cmd_bind_bindless_heap;
+    b.cmd_bind_sampler           = &metal_cmd_bind_sampler;
+    b.cmd_use_buffer             = &metal_cmd_use_buffer;
+    b.cmd_dispatch               = &metal_cmd_dispatch;
 
-    b.create_accel_struct        = metal_create_accel_struct;
-    b.destroy_accel_struct       = metal_destroy_accel_struct;
-    b.cmd_build_accel_structs    = metal_cmd_build_accel_structs;
-    b.cmd_compact_accel_structs  = metal_cmd_compact_accel_structs;
-    b.cmd_bind_accel_struct      = metal_cmd_bind_accel_struct;
-    b.cmd_use_accel_struct       = metal_cmd_use_accel_struct;
+    b.create_accel_struct        = &metal_create_accel_struct;
+    b.destroy_accel_struct       = &metal_destroy_accel_struct;
+    b.cmd_build_accel_structs    = &metal_cmd_build_accel_structs;
+    b.cmd_compact_accel_structs  = &metal_cmd_compact_accel_structs;
+    b.cmd_bind_accel_struct      = &metal_cmd_bind_accel_struct;
+    b.cmd_use_accel_struct       = &metal_cmd_use_accel_struct;
 
     b.create_bindless_heap       = metal_create_bindless_heap;
     b.destroy_bindless_heap      = metal_destroy_bindless_heap;

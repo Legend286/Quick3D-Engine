@@ -142,6 +142,17 @@ public sealed class CommandRecorder : IDisposable
     /// Begins a GPU timestamp scope spanning every encoder recorded by one
     /// logical render-graph pass.
     /// </summary>
+    /// <remarks>
+    /// Single EVEN write_timestamp call — the ODD sample is now written
+    /// exclusively by EndTimestampScope. Earlier revisions pre-paired the
+    /// end here on Metal, which prematurely flipped
+    /// <c>metal_cmd_write_timestamp</c>'s ODD branch and made
+    /// <c>metal_end_pass</c>'s flag-reset strip the second-and-later encoder's
+    /// sample buffer attachments, collapsing tail durations into the head.
+    /// TODO(rhi): re-introduce an RHI-backend-conditional pre-pair when
+    /// Vulkan lands — Metal records via stage sampling so the pre-pair is
+    /// actively harmful here.
+    /// </remarks>
     public bool BeginTimestampScope(
         RhiTimestampQueryPool pool,
         uint startSampleIndex)
@@ -155,21 +166,7 @@ public sealed class CommandRecorder : IDisposable
                 startSampleIndex) == 0;
         if (started)
         {
-            // Defensive companion to the Metal C RHI fix: prime the
-            // paired end-sample slot so cli->timing_end_index reads
-            // as (startSampleIndex + 1) at every encoder-open, even
-            // on Vulkan/desktop backends that don't auto-pair
-            // themselves. RhiCmdWriteTimestamp with index+1 configures
-            // timing_end_index + timing_end_requested on the
-            // underlying command list with the same semantics as
-            // EndTimestampScope's pre-encoder hint. EndTimestampScope
-            // later rewrites the same slot post-pass, so Metal's
-            // stage sampling records end-of-fragment-stage at the
-            // canonical pair rather than the previous pass's stale slot.
-            RhiNative.RhiCmdWriteTimestamp(
-                CmdList,
-                pool.Handle,
-                (uint)(startSampleIndex + 1));
+            // sole ODD writer is EndTimestampScope — keep that contract intact.
             _timestampScopeActive = true;
         }
         return started;
@@ -178,6 +175,12 @@ public sealed class CommandRecorder : IDisposable
     /// <summary>
     /// Ends a logical render-graph timestamp scope at its final encoder.
     /// </summary>
+    /// <remarks>
+    /// Sole ODD writer paired with BeginTimestampScope — the
+    /// RhiCmdWriteTimestamp call MUST happen before CloseCurrentEncoder
+    /// so that on Metal stage sampling, the encoder-close flag-reset
+    /// picks up the true end-of-fragment pair index.
+    /// </remarks>
     public bool EndTimestampScope(
         RhiTimestampQueryPool pool,
         uint endSampleIndex)

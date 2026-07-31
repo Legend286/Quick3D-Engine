@@ -30,26 +30,42 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
     private readonly IReadOnlyList<string>? _includeDirs;
     private readonly ShaderCompileCache? _compileCache;
     private readonly IEnginePluginHost _host;
+    private readonly DDGIAtlasResources _atlas;
 
     private readonly RhiShader _vs;
     private readonly RhiShader _fs;
     private readonly RhiPipeline _pipeline;
-    private RhiBuffer _probePositionsBuffer;
     private long _uploadedFrame = -1;
     private bool _loggedNoCamera;
 
+    // MARK: Per-gate early-return diagnostics. Each gate tracks
+    // whether it fired on the previous tick; on a transition (gate
+    // flipped from firing→passing or passing→firing) we log once
+    // so the user can pin exactly which condition is killing
+    // visibility. State stabilises after the first transition so
+    // log spam is bounded to O(gates) lines under steady state.
+    private const int GateSampleEvery = 60;
+    private long _executeTick;
+    private bool _prevShowProbesGate;
+    private bool _prevVolumeInitGate;
+    private bool _prevSparseReadyGate;
+    private bool _prevColorTargetGate;
+
     // Slang cbuffer round-up: Metal's `setVertexBytes` auto-pads the
     // upload to a 16-byte multiple and `ConstantBuffer<DDGIDebugPush>`
-    // reserves 80 bytes. The C# struct is 76 bytes; the trailing `Pad`
-    // zero-initialises bytes 76-79 so the cbuffer's reserved-but-
-    // unwritten tail never carries state from a previous push.
+    // reserves 88 bytes (matches the shader's DDGIDebugPush struct:
+    // 64-byte matrix + 6 trailing scalars + 4-byte pad). OriginY +
+    // HalfHeight feed the spatial fallback gradient so probes are
+    // visible across any volume the plugin constructs.
     [StructLayout(LayoutKind.Sequential)]
     private struct DebugPush
     {
         public Matrix4x4 ViewProj;
         public uint ProbeCount;
         public float HalfSize;
-        public float ExtentY;
+        public float OriginY;
+        public float HalfHeight;
+        public uint IrradianceBindlessIndex;
         public uint Pad;
     }
 
@@ -58,6 +74,7 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
     public DDGIDebugPass(
         RhiDevice device,
         DDGIProbeVolume volume,
+        DDGIAtlasResources atlas,
         IEnginePluginHost host,
         string contentRoot,
         IReadOnlyList<string>? cliArgs,
@@ -66,6 +83,7 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
     {
         _device = device;
         _volume = volume;
+        _atlas = atlas;
         _host = host;
         _contentRoot = contentRoot;
         _cliArgs = cliArgs;
@@ -81,16 +99,18 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
             RhiNative.TextureFormat.Bgra8Unorm,
             enableDepth: false,
             enableDepthWrite: false);
-
-        _probePositionsBuffer = RhiBuffer.Create(
-            _device,
-            (ulong)volume.ProbeCount * (ulong)Vector3SizeBytes,
-            RhiNative.BufferUsage.Storage);
-        _probePositionsBuffer.SetDebugName("DDGI Probe Positions", "DDGI");
     }
 
     public override void Setup(RenderGraphBuilder builder)
     {
+        builder.ImportBuffer(_atlas.ResourceHandles.ProbePositions);
+        builder.ImportBuffer(_atlas.ResourceHandles.ProbeDrawArgs);
+        builder.Read(
+            _atlas.ResourceHandles.ProbePositions,
+            ResourceState.ShaderRead);
+        builder.Read(
+            _atlas.ResourceHandles.ProbeDrawArgs,
+            ResourceState.ShaderRead);
         builder.Write(
             RenderGraphResources.BackBufferHandle,
             ResourceState.RenderTarget);
@@ -99,33 +119,72 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
     public override unsafe void Execute(
         ICommandSink sink, RenderGraphContext context)
     {
-        // Defensive: the editor can flip the DDGI Probes overlay on
-        // before the GPU placement kernel has populated the sparse
-        // layout (e.g. first frame after plugin enable). ProbeCount
-        // is the safest non-throwing initialization gate; rendering
-        // nothing is preferable to NRE-ing the render thread.
-        if (!_volume.IsInitialized || _volume.ProbeCount <= 0)
+        ++_executeTick;
+        bool sampledThisTick = _executeTick <= 30 ||
+            _executeTick % GateSampleEvery == 0;
+
+        bool showProbesGate = !DDGIVolumeRegistry.ShowProbes;
+        if (showProbesGate)
+        {
+            LogGateTransition(nameof(DDGIDebugPass),
+                "ShowProbes",
+                ref _prevShowProbesGate,
+                fired: true,
+                sampledThisTick);
             return;
-        if (_probePositionsBuffer == null)
+        }
+        _prevShowProbesGate = LogGateTransition(nameof(DDGIDebugPass),
+            "ShowProbes",
+            ref _prevShowProbesGate,
+            fired: false,
+            sampledThisTick);
+
+        if (!_volume.IsInitialized)
+        {
+            _prevVolumeInitGate = LogGateTransition(nameof(DDGIDebugPass),
+                "VolumeInitialized",
+                ref _prevVolumeInitGate,
+                fired: true,
+                sampledThisTick);
             return;
+        }
+        _prevVolumeInitGate = LogGateTransition(nameof(DDGIDebugPass),
+            "VolumeInitialized",
+            ref _prevVolumeInitGate,
+            fired: false,
+            sampledThisTick);
+
+        if (!_atlas.SparseLayoutReady)
+        {
+            _prevSparseReadyGate = LogGateTransition(nameof(DDGIDebugPass),
+                "SparseLayoutReady",
+                ref _prevSparseReadyGate,
+                fired: true,
+                sampledThisTick);
+            return;
+        }
+        _prevSparseReadyGate = LogGateTransition(nameof(DDGIDebugPass),
+            "SparseLayoutReady",
+            ref _prevSparseReadyGate,
+            fired: false,
+            sampledThisTick);
 
         if (!context.TryGetTexture(
             RenderGraphResources.BackBufferHandle,
             out RhiTexture colorTarget))
-            return;
-
-        if (_uploadedFrame != context.FrameNumber)
         {
-            int probeCount = _volume.ProbeCount;
-            var positions = new Vector3[probeCount];
-            for (int i = 0; i < positions.Length; ++i)
-            {
-                try { positions[i] = _volume.PositionAt(i); }
-                catch { positions[i] = Vector3.Zero; }
-            }
-            _probePositionsBuffer.Upload(new ReadOnlySpan<Vector3>(positions));
-            _uploadedFrame = context.FrameNumber;
+            _prevColorTargetGate = LogGateTransition(nameof(DDGIDebugPass),
+                "ColorTarget",
+                ref _prevColorTargetGate,
+                fired: true,
+                sampledThisTick);
+            return;
         }
+        _prevColorTargetGate = LogGateTransition(nameof(DDGIDebugPass),
+            "ColorTarget",
+            ref _prevColorTargetGate,
+            fired: false,
+            sampledThisTick);
 
         if (!_host.TryGetActiveCameraData(
                 context.Width, context.Height,
@@ -147,9 +206,11 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
         DebugPush push = new()
         {
             ViewProj = viewProj,
-            ProbeCount = (uint)_volume.ProbeCount,
+            ProbeCount = (uint)_atlas.MaxProbesTotalBudget,
             HalfSize = 0.30f,
-            ExtentY = _volume.Extent.Y,
+            OriginY = _atlas.Origin.Y,
+            HalfHeight = _atlas.Extent.Y,
+            IrradianceBindlessIndex = _atlas.IrradianceBindlessIndex,
         };
 
         sink.BeginRenderPass(
@@ -161,13 +222,58 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
             0.0f, 0.0f,
             (float)context.Width,
             (float)context.Height);
-        sink.UseBuffer(_probePositionsBuffer, 1);
+        sink.BindVertexBuffer(5, _atlas.ProbePositions);
+        sink.UseBuffer(_atlas.ProbePositions, 1);
+        sink.UseBuffer(_atlas.ProbeDrawArgs, 1);
+        if (_atlas.SharedHeap != null && _atlas.SharedHeap.IsInitialized)
+            sink.BindHeap(1, _atlas.SharedHeap);
         sink.PushConstants(
             0,
             (uint)sizeof(DebugPush),
             (IntPtr)(&push));
-        sink.Draw((uint)(_volume.ProbeCount * 4), 1);
+        sink.DrawIndirect(_atlas.ProbeDrawArgs, 0, 1, 16);
         sink.EndPass();
+    }
+
+    /// <summary>Logs a per-gate state-transition event for the
+    /// disappearance audit. Fires when a gate's "fired on previous
+    /// tick" boolean disagrees with the current tick's value — log
+    /// the transition once at the moment of change. Steady-state
+    /// firing is sampled at <see cref="GateSampleEvery"/> intervals
+    /// so a perpetually-failing gate stays observable without
+    /// spamming the log every frame. Returns the just-fired value
+    /// so callers can assign it into their `_prevXxxGate` field for
+    /// the next tick's comparison.</summary>
+    /// <remarks>Wording is deliberately neutral ("no longer
+    /// blocking this gate" rather than "rendering resumes") because
+    /// a single gate clearing does not imply all gates cleared —
+    /// other gates higher in the call chain may still be latched.
+    /// See docs/renderer/ddgi.md#disappearance-audit.</remarks>
+    private static bool LogGateTransition(
+        string passName,
+        string gateName,
+        ref bool prevFired,
+        bool fired,
+        bool sampledThisTick)
+    {
+        if (fired == prevFired)
+        {
+            if (fired && sampledThisTick)
+            {
+                Log.Info(
+                    $"[DDGI] {passName} {gateName} gate still firing " +
+                    $"(steady-state sample)",
+                    "DDGI");
+            }
+            return fired;
+        }
+        prevFired = fired;
+        Log.Info(
+            $"[DDGI] {passName} {gateName} gate " +
+            (fired ? "LATCHED (blocking render)"
+                   : "CLEARED (this gate no longer blocking)"),
+            "DDGI");
+        return fired;
     }
 
     private string LoadShaderSource()
@@ -198,6 +304,5 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
     public void Dispose()
     {
         _pipeline?.Dispose();
-        _probePositionsBuffer?.Dispose();
     }
 }

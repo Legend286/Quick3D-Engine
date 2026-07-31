@@ -61,6 +61,7 @@ public sealed class Renderer : IDisposable
     private RenderPlan? _plan;
     private SceneGraph? _currentScene;
     private readonly RenderGraphExecutor _graphExecutor;
+    private DDGIAtlasResourceHandles? _boundDDGIHandles;
     private readonly GpuWorkScheduler _gpuWorkScheduler = new();
     private long _renderedFrameCount;
     private long _renderPlanVersion;
@@ -307,6 +308,20 @@ public sealed class Renderer : IDisposable
 
     public IEntityStore World => _world;
 
+    /// <summary>Most-recently loaded scene graph. <see cref="Engine.Game.GameLoop"/>
+    /// consults <c>CurrentScene.ProceduralDemo</c> after delegating to
+    /// <see cref="LoadScene"/> so the procedural-demo builder can
+    /// expand its <c>ProceduralDemoDefinition</c> into world entities
+    /// without <c>Engine.Game</c> taking a hard dependency on
+    /// <c>Engine.Renderer</c>'s private state.</summary>
+    public SceneGraph? CurrentScene => _currentScene;
+
+    /// <summary>True once a scene has been loaded via <see cref="LoadScene"/>
+    /// and the render plan has been compiled. Used by plugin-activation
+    /// background tasks to avoid calling <see cref="AddExtensionPlugin"/>
+    /// before <see cref="InvalidateRenderPlan"/> can trigger a recompile.</summary>
+    public bool HasActiveScene => _currentScene != null;
+
     public void SetPathTracingPlugin(
         IRendererPlanPlugin? plugin)
     {
@@ -364,20 +379,19 @@ public sealed class Renderer : IDisposable
         InvalidateRenderPlan();
     }
 
-    private void InvalidateRenderPlan()
+    public void InvalidateRenderPlan()
     {
-        bool wasActive =
-            _plan == _rasterPlan?.Plan ||
-            _plan == _pathTracingPlan?.Plan;
         _rasterPlan?.Dispose();
         _pathTracingPlan?.Dispose();
+        _rasterPlan = null;
+        _pathTracingPlan = null;
         _plan = null;
         _rasterSceneCache = null;
         _directionalShadowState = null;
         _directionalShadowPass = null;
         _punctualShadowState = null;
         _punctualShadowPass = null;
-        if (wasActive && _currentScene != null)
+        if (_currentScene != null)
             ActivateOrCompileRenderPlan(
                 _currentScene,
                 _contentRoot);
@@ -821,11 +835,13 @@ public sealed class Renderer : IDisposable
         // we add extension passes BEFORE the main plugin passes to ensure
         // DDGI computes the atlas before PbrPass reads it.
         var extPasses = new List<RenderPass>();
+        var extPostPasses = new List<RenderPass>();
         foreach (var ext in _extensionPlugins)
         {
             RendererPluginPlan extPlan =
                 ext.BuildPlan(pluginContext);
             extPasses.AddRange(extPlan.Passes);
+            extPostPasses.AddRange(extPlan.PostPasses);
         }
         passes.AddRange(extPasses);
 
@@ -842,6 +858,8 @@ public sealed class Renderer : IDisposable
 
         passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));
         passes.Add(new OutlineCompositePass(_device, contentRoot, this));
+
+        passes.AddRange(extPostPasses);
 
         if (_renderGrid)
         {
@@ -959,6 +977,8 @@ public sealed class Renderer : IDisposable
                 _graphExecutor.UnbindTexture(GetShadowPageHandle(pageIndex));
         }
 
+        BindDDGIExternalResources();
+
         try
         {
             _graphExecutor.Execute(_plan, syncFence, waitValue, syncFence, signalValue);
@@ -971,6 +991,48 @@ public sealed class Renderer : IDisposable
                 "[Renderer] Render frame aborted: " + ex.Message + "\n" + ex.StackTrace,
                 "Renderer");
         }
+    }
+
+    private void BindDDGIExternalResources()
+    {
+        IDDGIAtlasProvider? provider =
+            DDGIAtlasProviderRegistry.Active;
+        if (provider != null &&
+            provider.TryGetExternalResources(
+                out DDGIAtlasExternalResources resources))
+        {
+            DDGIAtlasResourceHandles handles = provider.ResourceHandles;
+            _graphExecutor.BindExternalBuffer(
+                handles.ProbePositions, resources.ProbePositions);
+            _graphExecutor.BindExternalBuffer(
+                handles.GridToProbeIndex, resources.GridToProbeIndex);
+            _graphExecutor.BindExternalBuffer(
+                handles.ProbeCounter, resources.ProbeCounter);
+            _graphExecutor.BindExternalBuffer(
+                handles.ProbeDrawArgs, resources.ProbeDrawArgs);
+            _graphExecutor.BindExternalBuffer(
+                handles.Lights, resources.Lights);
+            _graphExecutor.BindExternalBuffer(
+                handles.LightTreeNodes, resources.LightTreeNodes);
+            _graphExecutor.BindExternalTexture(
+                handles.Irradiance, resources.Irradiance);
+            _graphExecutor.BindExternalTexture(
+                handles.Visibility, resources.Visibility);
+            _boundDDGIHandles = handles;
+            return;
+        }
+
+        if (_boundDDGIHandles is not DDGIAtlasResourceHandles oldHandles)
+            return;
+        _graphExecutor.UnbindBuffer(oldHandles.ProbePositions);
+        _graphExecutor.UnbindBuffer(oldHandles.GridToProbeIndex);
+        _graphExecutor.UnbindBuffer(oldHandles.ProbeCounter);
+        _graphExecutor.UnbindBuffer(oldHandles.ProbeDrawArgs);
+        _graphExecutor.UnbindBuffer(oldHandles.Lights);
+        _graphExecutor.UnbindBuffer(oldHandles.LightTreeNodes);
+        _graphExecutor.UnbindTexture(oldHandles.Irradiance);
+        _graphExecutor.UnbindTexture(oldHandles.Visibility);
+        _boundDDGIHandles = null;
     }
 
     private void ConsumeGpuWorkTimings()
@@ -1029,6 +1091,32 @@ public sealed class Renderer : IDisposable
                     GpuWorkDomain.PunctualShadows,
                     milliseconds,
                     unitCount);
+            }
+            else if (timings[i].Name.Equals("DDGI Probe Update", StringComparison.Ordinal))
+            {
+                int giProbeCount = 0;
+                if (_plan != null)
+                {
+                    foreach (var pass in _plan.Passes)
+                    {
+                        if (pass.Name.Equals("DDGI Probe Update", StringComparison.Ordinal))
+                        {
+                            var prop = pass.GetType().GetProperty("LastAdmittedCount");
+                            if (prop != null && prop.GetValue(pass) is int count)
+                            {
+                                giProbeCount = count;
+                            }
+                            break;
+                        }
+                    }
+                }
+                if (giProbeCount > 0)
+                {
+                    _gpuWorkScheduler.RecordCompletedWork(
+                        GpuWorkDomain.Gi,
+                        milliseconds,
+                        giProbeCount);
+                }
             }
         }
     }

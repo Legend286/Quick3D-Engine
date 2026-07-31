@@ -220,6 +220,24 @@ public sealed class GpuWorkSchedulerTests
         scheduler.RecordCompletedWork(GpuWorkDomain.Shadows, 4.0, 2);
 
         GpuWorkBudgetSnapshot shadow = scheduler.GetSnapshots()[0];
-        Assert.Equal(1.2, shadow.EstimatedUnitMilliseconds, 6);
+        Assert.Equal(0.9, shadow.EstimatedUnitMilliseconds, 6);
+    }
+
+    [Fact]
+    public void GiCompletedWork_UpdatesEstimatedUnitCostAndSnapshot()
+    {
+        var scheduler = new GpuWorkScheduler();
+        scheduler.BeginFrame(1);
+
+        Assert.True(scheduler.TryAdmit(GpuWorkDomain.Gi, 4));
+        scheduler.Defer(GpuWorkDomain.Gi, 4092);
+
+        scheduler.RecordCompletedWork(GpuWorkDomain.Gi, 4.0, 4);
+
+        GpuWorkBudgetSnapshot gi = scheduler.GetSnapshots()[(int)GpuWorkDomain.Gi];
+        Assert.Equal("Global Illumination", gi.Name);
+        Assert.Equal(4, gi.AdmittedUnits);
+        Assert.Equal(4092, gi.DeferredUnits);
+        Assert.Equal(0.3, gi.EstimatedUnitMilliseconds, 6);
     }
 }

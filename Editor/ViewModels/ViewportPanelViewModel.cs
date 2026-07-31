@@ -73,13 +73,14 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     public string[] ProjectionModes { get; } =
         ["Perspective", "Orthographic"];
 
-    /// <summary>Gets visualization choices displayed in viewport chrome.
-    /// "DDGI Probes" is appended as the last entry; selecting it (and
-    /// "Lighting Only") auto-toggles <see cref="ShowDDGIProbes"/> in
-    /// <see cref="OnSelectedDebugViewChanged"/>. The DDGIDebugPass's
-    /// own Volume gate keeps rendering safe if the DDGI plugin isn't
-    /// actually loaded.</summary>
-    public string[] DebugViews { get; } =
+    /// <summary>Gets the engine's built-in visualization choices.
+    /// Plugin-owned debug views (e.g. the DDGI plugin's "DDGI Probes"
+    /// overlay) are appended dynamically from
+    /// <see cref="Services.DynamicMenuService.EnumerateDebugViews"/> so
+    /// the host never names a plugin type. Selecting a plugin view (or
+    /// "Lighting Only") invokes the owning plugin's registered toggle in
+    /// <see cref="OnSelectedDebugViewChanged"/>.</summary>
+    private static readonly string[] BaseDebugViews =
     [
         "Lit",
         "Wireframe",
@@ -93,9 +94,27 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         "Emissive",
         "UV",
         "Tangent",
-        "Bitangent",
-        "DDGI Probes"
+        "Bitangent"
     ];
+
+    /// <summary>Gets the composite debug-view dropdown: base views +
+    /// plugin-registered debug views in registration order. Refreshed
+    /// when <see cref="Services.DynamicMenuService.OnDebugViewsChanged"/>
+    /// fires.</summary>
+    public string[] DebugViews
+    {
+        get
+        {
+            var views = new List<string>(BaseDebugViews);
+            foreach (var view in
+                     Services.DynamicMenuService.Shared
+                         .EnumerateDebugViews())
+            {
+                views.Add(view.ViewName);
+            }
+            return views.ToArray();
+        }
+    }
 
     /// <summary>Gets transform gizmo operations displayed in viewport chrome.</summary>
     public string[] GizmoOperations { get; } =
@@ -166,30 +185,18 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     [ObservableProperty]
     private string _selectedDebugView = "Lit";
 
-    /// <summary>Boolean toggle for the DDGI probe marker overlay.
-    /// Lives outside the host <see cref="ViewportDebugView"/> enum so
-    /// the host enum stays plugin-feature-free. Bound to a separate
-    /// editor checkbox (AXAML wiring in a follow-up). Drive mirrors
-    /// into <see cref="Engine.DDGI.DDGIRendererPlugin.ShowProbes"/>
-    /// which the canonical clustered plan consults during
-    /// <c>BuildPlan</c> to decide whether to inject the debug pass.</summary>
-    [ObservableProperty]
-    private bool _showDDGIProbes;
-
-    partial void OnShowDDGIProbesChanged(bool value)
-    {
-        Engine.DDGI.DDGIVolumeRegistry.ShowProbes = value;
-    }
-
     partial void OnSelectedDebugViewChanged(string value)
     {
-        // Auto-toggle the DDGI probe overlay for two debug-view entries:
-        //   1. "DDGI Probes" — explicit user request for the marker overlay.
-        //   2. "Lighting Only" — GI contribution becomes visible against the
-        //      unlit baseline, so the marker overlay is useful as a
-        //      cross-reference of where indirect-diffuse samples are drawn.
-        if (value == "DDGI Probes" || value == "Lighting Only")
-            ShowDDGIProbes = true;
+        // Plugin debug views (e.g. DDGI Probes) toggle through the
+        // owning plugin's registered callback; host code never names a
+        // plugin type. "Lighting Only" keeps plugin overlays visible.
+        bool keepOverlays = value == "Lighting Only";
+        foreach (var view in
+                 Services.DynamicMenuService.Shared
+                     .EnumerateDebugViews())
+        {
+            view.OnToggle(keepOverlays || value == view.ViewName);
+        }
         ApplyViewportModes();
     }
 
@@ -250,6 +257,19 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         _contentRoot = contentRoot;
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
         _timer.Tick += OnTick;
+        Services.DynamicMenuService.Shared.OnDebugViewsChanged +=
+            OnPluginDebugViewsChanged;
+    }
+
+    /// <summary>Refreshes the debug-view dropdown when a plugin registers
+    /// or unregisters a debug view (e.g. DDGI Probes on plugin load).</summary>
+    private void OnPluginDebugViewsChanged()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_disposed) return;
+            OnPropertyChanged(nameof(DebugViews));
+        });
     }
 
     public void UpdateContentRoot(string contentRoot)
@@ -673,7 +693,6 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 "UV" => ViewportDebugView.Uv,
                 "Tangent" => ViewportDebugView.Tangent,
                 "Bitangent" => ViewportDebugView.Bitangent,
-                "DDGI Probes" => ViewportDebugView.Lit,
                 _ => ViewportDebugView.Lit
             };
         _gameLoop.CameraFieldOfViewDegrees =
@@ -1381,6 +1400,8 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
             _host.SizeChanged -= OnHostSizeChanged;
             _hostSizeHooked = false;
         }
+        Services.DynamicMenuService.Shared.OnDebugViewsChanged -=
+            OnPluginDebugViewsChanged;
         _sceneWatcher?.Dispose();
         _sceneWatcher = null;
         _scriptWatcher?.Dispose();

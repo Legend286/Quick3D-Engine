@@ -64,7 +64,10 @@ public sealed class RhiTimestampQueryPool : IDisposable
                 Handle,
                 (uint)durationNanoseconds.Length,
                 (IntPtr)durations);
-            HasPendingResults = false;
+            if (result != 0)
+            {
+                HasPendingResults = false;
+            }
             return result == 1;
         }
     }

@@ -43,6 +43,70 @@ public sealed class RenderGraphBuilder
         return h;
     }
 
+    /// <summary>Declares a persistent buffer owned outside the graph.
+    /// The executor must bind the matching RHI buffer before execution;
+    /// imported resources participate in barriers but never transient
+    /// heap aliasing.</summary>
+    /// <summary>Declares a persistent buffer without requiring a transient
+    /// descriptor. The matching RHI buffer is bound by the executor.</summary>
+    public void ImportBuffer(ResourceHandle handle)
+    {
+        ImportBuffer(handle, null);
+    }
+
+    /// <summary>Declares a persistent buffer with an optional descriptor.</summary>
+    public void ImportBuffer(ResourceHandle handle, BufferDesc? desc)
+    {
+        if (!handle.IsValid)
+            throw new ArgumentException("External resource handle must be valid.", nameof(handle));
+        if (_decls.TryGetValue(handle, out ResourceDecl? existing))
+        {
+            if (existing.Kind != ResourceKind.Buffer || !existing.External)
+                throw new InvalidOperationException(
+                    $"Resource handle 0x{handle.Id:X8} was already declared as a non-external resource.");
+            return;
+        }
+        _decls[handle] = new ResourceDecl
+        {
+            Handle = handle,
+            Kind = ResourceKind.Buffer,
+            Buffer = desc,
+            External = true,
+        };
+    }
+
+    /// <summary>Declares a persistent texture owned outside the graph.
+    /// The executor must bind the matching RHI texture before execution;
+    /// imported resources participate in barriers but never transient
+    /// heap aliasing.</summary>
+    public void ImportTexture(ResourceHandle handle)
+    {
+        ImportTexture(handle, null);
+    }
+
+    /// <summary>Declares a persistent texture with an optional descriptor.
+    /// External resources are never allocated by the graph, so a descriptor
+    /// is only needed when tooling wants to inspect the declaration.</summary>
+    public void ImportTexture(ResourceHandle handle, TextureDesc? desc)
+    {
+        if (!handle.IsValid)
+            throw new ArgumentException("External resource handle must be valid.", nameof(handle));
+        if (_decls.TryGetValue(handle, out ResourceDecl? existing))
+        {
+            if (existing.Kind != ResourceKind.Texture || !existing.External)
+                throw new InvalidOperationException(
+                    $"Resource handle 0x{handle.Id:X8} was already declared as a non-external resource.");
+            return;
+        }
+        _decls[handle] = new ResourceDecl
+        {
+            Handle = handle,
+            Kind = ResourceKind.Texture,
+            Texture = desc,
+            External = true,
+        };
+    }
+
     public void Read(ResourceHandle h, ResourceState state) =>
         _thisPassAccesses.Add(new AccessDecl(h, ResourceAccess.Read, state));
     public void Write(ResourceHandle h, ResourceState state) =>
@@ -76,6 +140,7 @@ public sealed class ResourceDecl
     public ResourceKind Kind;
     public TextureDesc? Texture;
     public BufferDesc?  Buffer;
+    public bool External;
 }
 
 public sealed record AccessDecl(ResourceHandle Resource,

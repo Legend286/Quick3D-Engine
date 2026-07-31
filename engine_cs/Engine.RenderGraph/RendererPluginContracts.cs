@@ -112,6 +112,7 @@ public sealed class RendererPluginPlan
     /// authors in different assemblies can schedule passes
     /// without taking a hard dependency on internals.</summary>
     public List<RenderPass> Passes { get; } = [];
+    public List<RenderPass> PostPasses { get; } = [];
 
     /// <summary>Append a renderer-owned pass to the plan. Plugins
     /// should call this from <see cref="IRendererPlanPlugin.BuildPlan"/>;
@@ -120,6 +121,12 @@ public sealed class RendererPluginPlan
     {
         if (pass == null) throw new ArgumentNullException(nameof(pass));
         Passes.Add(pass);
+    }
+
+    public void AddPostPass(RenderPass pass)
+    {
+        if (pass == null) throw new ArgumentNullException(nameof(pass));
+        PostPasses.Add(pass);
     }
     public object? RasterSceneCache { get; set; }
     public object? DirectionalShadowState
