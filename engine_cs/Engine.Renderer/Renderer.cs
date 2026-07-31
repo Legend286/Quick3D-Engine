@@ -117,6 +117,29 @@ public sealed class Renderer : IDisposable
     public ShaderCompileCache ShaderCompileCache => _compileCache;
     private IReadOnlyList<string>? _activeShaderCliArgs;
     private IReadOnlyList<string>? _activeShaderIncludeDirs;
+
+    public IReadOnlyList<string>? ActiveShaderIncludeDirs => _activeShaderIncludeDirs;
+
+    public string LoadShaderSource(string relPath, string contentRoot)
+    {
+        string full = Path.Combine(contentRoot, relPath);
+        if (File.Exists(full)) return File.ReadAllText(full);
+
+        if (_activeShaderIncludeDirs != null)
+        {
+            string fileName = Path.GetFileName(relPath);
+            foreach (var dir in _activeShaderIncludeDirs)
+            {
+                string fallback = Path.Combine(dir, fileName);
+                if (File.Exists(fallback)) return File.ReadAllText(fallback);
+                
+                string parentFallback = Path.Combine(Path.GetDirectoryName(dir) ?? dir, relPath);
+                if (File.Exists(parentFallback)) return File.ReadAllText(parentFallback);
+            }
+        }
+        throw new FileNotFoundException(full);
+    }
+
     private RasterSceneGpuCache? _rasterSceneCache;
     private DirectionalShadowState? _directionalShadowState;
     private DirectionalShadowPass? _directionalShadowPass;
@@ -269,6 +292,8 @@ public sealed class Renderer : IDisposable
             EnableGpuTiming = true,
         };
         EditorShaderBridge.ActiveShaderContextChanged += OnActiveShaderContextChanged;
+        _activeShaderCliArgs = EditorShaderBridge.LastCliArgs;
+        _activeShaderIncludeDirs = EditorShaderBridge.LastIncludeDirs;
     }
 
     private void OnActiveShaderContextChanged(
@@ -524,7 +549,7 @@ public sealed class Renderer : IDisposable
 
         var passes = new List<RenderPass>
         {
-            new TextureThumbnailPass(_device, sourceTexture, contentRoot)
+            new TextureThumbnailPass(_device, sourceTexture, contentRoot, this)
         };
 
         DisposeRenderPlans();
@@ -725,6 +750,20 @@ public sealed class Renderer : IDisposable
             : _rasterPlan;
         if (state == null)
         {
+            _directionalShadowPass = new DirectionalShadowPass(
+                _device,
+                contentRoot,
+                _rasterSceneCache,
+                _directionalShadowState,
+                _gpuWorkScheduler,
+                this);
+            _punctualShadowPass = new PunctualShadowPass(
+                _device,
+                contentRoot,
+                _rasterSceneCache,
+                _punctualShadowState,
+                _gpuWorkScheduler,
+                this);
             state = CompileRenderPlan(
                 scene,
                 contentRoot,
@@ -1180,7 +1219,8 @@ public sealed class Renderer : IDisposable
         _shadowAtlasPreviewRenderer ??=
             new ShadowAtlasPreviewRenderer(
                 _device,
-                _contentRoot);
+                _contentRoot,
+                this);
         _shadowAtlasPreviewRenderer.Render(
             tile,
             target,

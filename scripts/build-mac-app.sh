@@ -143,6 +143,7 @@ rm -rf "${APP_BUNDLE_DIR}"
 mkdir -p "${APP_BUNDLE_DIR}/Contents/MacOS"
 mkdir -p "${APP_BUNDLE_DIR}/Contents/Resources"
 cp -R "${PUBLISH_FLAT}/." "${APP_BUNDLE_DIR}/Contents/MacOS/"
+cp -R "${PROJECT_ROOT}/Content" "${APP_BUNDLE_DIR}/Contents/MacOS/Content"
 cp -f "${DYLIB_OUT}" "${APP_BUNDLE_DIR}/Contents/MacOS/libEngineC.dylib"
 cp -f "${PROJECT_ROOT}/out/engine_cook" "${APP_BUNDLE_DIR}/Contents/MacOS/engine_cook" 2>/dev/null || true
 cp -f "${PROJECT_ROOT}/out/basisu" "${APP_BUNDLE_DIR}/Contents/MacOS/basisu" 2>/dev/null || true

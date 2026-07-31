@@ -868,6 +868,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         _world = null;
 
         App.ProjectRoot = newProjectRoot;
+        Editor.Services.PluginCatalogService.Shared.SetProjectRoot(newProjectRoot);
         try { Directory.SetCurrentDirectory(newProjectRoot); }
         catch (Exception ex) { Log.Error($"[Viewport] chdir failed: {ex.Message}", "Editor"); }
 

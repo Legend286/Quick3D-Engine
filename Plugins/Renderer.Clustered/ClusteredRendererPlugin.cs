@@ -78,7 +78,8 @@ public sealed class ClusteredRendererPlugin :
                     context.ContentRoot,
                     rasterCache,
                     dirShadowState,
-                    context.GpuWorkScheduler);
+                    context.GpuWorkScheduler,
+                    (context.Renderer as Engine.Renderer.Renderer)!);
             result.DirectionalShadowPass = dirShadowPass;
 
             punctualShadowState =
@@ -94,7 +95,8 @@ public sealed class ClusteredRendererPlugin :
                     context.ContentRoot,
                     rasterCache,
                     punctualShadowState,
-                    context.GpuWorkScheduler);
+                    context.GpuWorkScheduler,
+                    (context.Renderer as Engine.Renderer.Renderer)!);
             result.PunctualShadowPass = punctualShadowPass;
         }
 

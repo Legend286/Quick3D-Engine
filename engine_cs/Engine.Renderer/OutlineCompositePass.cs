@@ -32,10 +32,9 @@ public sealed class OutlineCompositePass : RenderPass, IDisposable
         _renderer = renderer;
         Name = "OutlineCompositePass";
 
-        string shaderDir = Path.Combine(_contentRoot, "shaders");
-        string src = File.ReadAllText(Path.Combine(shaderDir, "outline_composite.slang"));
-        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex, shaderDir);
-        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment, shaderDir);
+        string src = _renderer.LoadShaderSource("shaders/outline_composite.slang", _contentRoot);
+        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex, _renderer.ActiveShaderIncludeDirs, _renderer.ActiveShaderCliArgs);
+        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment, _renderer.ActiveShaderIncludeDirs, _renderer.ActiveShaderCliArgs);
 
         _sampler = RhiSampler.Create(_device);
 

@@ -47,6 +47,8 @@ public sealed class DDGIRendererPlugin :
     private long _tickCounter;
     private long _lastPlacementTick = -1;
     private long _sceneFingerprint;
+    private DDGIProbePriority.LightInfluence[] _lastInfluences =
+        Array.Empty<DDGIProbePriority.LightInfluence>();
 
     public DDGIRendererPlugin()
     {
@@ -149,7 +151,7 @@ public sealed class DDGIRendererPlugin :
             }
         }
 
-        DDGIProbePriority.LightInfluence[] influences =
+        _lastInfluences =
             BuildLightInfluences(context.Scene);
 
         UploadLightsSnapshot(context.Scene);
@@ -193,12 +195,9 @@ public sealed class DDGIRendererPlugin :
         frameNumber = _tickCounter;
 
         DDGIProbePriority.CameraSnapshot camera = BuildCameraSnapshot();
-        DDGIProbePriority.LightInfluence[] influences =
-            _currentLightSnapshot.Length > 0 ? new DDGIProbePriority.LightInfluence[0] : new DDGIProbePriority.LightInfluence[0]; // Wait, light influences are just used to mark probes dirty. Since IsDirty is false after seed, passing empty here is fine for per-frame. Actually we should just keep _lastInfluences around, but for simplicity let's pass empty since IsDirty is only used once.
-        
         IReadOnlyList<int> updates = _priority.ScheduleProbeUpdates(
             _probeSnapshots,
-            Array.Empty<DDGIProbePriority.LightInfluence>(),
+            _lastInfluences,
             DDGIProbeUpdatePass.MaxProbesPerFrame,
             camera);
 
@@ -264,7 +263,10 @@ public sealed class DDGIRendererPlugin :
                 yield return dir;
         }
         if (!string.IsNullOrEmpty(context.ContentRoot))
+        {
             yield return context.ContentRoot;
+            yield return Path.Combine(context.ContentRoot, "shaders");
+        }
     }
 
     private Vector3 BuildCameraPosition()
@@ -430,13 +432,13 @@ public sealed class DDGIRendererPlugin :
         int capacity = _atlas.LightSlotCount;
         if (capacity <= 0) return;
 
-        var snapshot = new DDGILightSnapshot[capacity];
-        if (scene?.Lights != null)
+        var lights = scene?.Lights;
+        int count = lights != null ? Math.Min(lights.Count, capacity) : 0;
+        var snapshot = new DDGILightSnapshot[count];
+
+        for (int i = 0; i < count; ++i)
         {
-            int count = Math.Min(scene.Lights.Count, capacity);
-            for (int i = 0; i < count; ++i)
-            {
-                LightNode node = scene.Lights[i];
+            LightNode node = lights![i];
                 Vector3 position = ReadFloat3(node.Position, Vector3.Zero);
                 Vector3 color = ReadFloat3(node.Color, Vector3.One);
                 float range = node.Range > 0f ? node.Range : 1.0e6f;
@@ -469,9 +471,12 @@ public sealed class DDGIRendererPlugin :
                         innerAngle, outerAngle, 0f, 0f),
                 };
             }
-        }
 
-        _atlas.UploadLights(snapshot);
+        _currentLightSnapshot = snapshot;
+        if (snapshot.Length > 0)
+        {
+            _atlas.UploadLights(snapshot);
+        }
     }
 
     private void EnsureAtlas(RendererPluginContext context)

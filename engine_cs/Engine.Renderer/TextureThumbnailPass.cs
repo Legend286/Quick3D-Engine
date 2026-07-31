@@ -11,22 +11,23 @@ public sealed class TextureThumbnailPass : RenderPass, System.IDisposable
     private readonly RhiDevice _device;
     private readonly RhiTexture _sourceTexture;
     private readonly string _contentRoot;
+    private readonly Renderer _renderer;
     private readonly RhiShader _vs;
     private readonly RhiShader _fs;
     private readonly RhiPipeline _pipeline;
     private readonly RhiSampler _sampler;
 
-    public TextureThumbnailPass(RhiDevice device, RhiTexture sourceTexture, string contentRoot)
+    public TextureThumbnailPass(RhiDevice device, RhiTexture sourceTexture, string contentRoot, Renderer renderer)
     {
         _device = device;
         _sourceTexture = sourceTexture;
         _contentRoot = contentRoot;
+        _renderer = renderer;
         Name = "TextureThumbnailPass";
 
-        string shaderDir = Path.Combine(_contentRoot, "shaders");
-        string blitSrc = File.ReadAllText(Path.Combine(shaderDir, "blit.slang"));
-        _vs = RhiShader.FromSource(_device, blitSrc, "vertexMain", RhiNative.ShaderStage.Vertex, shaderDir);
-        _fs = RhiShader.FromSource(_device, blitSrc, "fragmentMain", RhiNative.ShaderStage.Fragment, shaderDir);
+        string blitSrc = _renderer.LoadShaderSource("shaders/blit.slang", _contentRoot);
+        _vs = RhiShader.FromSource(_device, blitSrc, "vertexMain", RhiNative.ShaderStage.Vertex, _renderer.ActiveShaderIncludeDirs, _renderer.ActiveShaderCliArgs);
+        _fs = RhiShader.FromSource(_device, blitSrc, "fragmentMain", RhiNative.ShaderStage.Fragment, _renderer.ActiveShaderIncludeDirs, _renderer.ActiveShaderCliArgs);
         _pipeline = RhiPipeline.CreateGraphics(_device, _vs, _fs, RhiNative.TextureFormat.Bgra8Unorm, enableDepth: false);
         _sampler = RhiSampler.Create(_device);
     }

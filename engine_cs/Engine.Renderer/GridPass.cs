@@ -49,9 +49,9 @@ public sealed class GridPass : RenderPass, IDisposable
         _renderer = renderer;
         Name = "GridPass";
 
-        string src = File.ReadAllText(Path.Combine(contentRoot, "shaders/grid.slang"));
-        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex);
-        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment);
+        string src = _renderer.LoadShaderSource("shaders/grid.slang", contentRoot);
+        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex, _renderer.ActiveShaderIncludeDirs, _renderer.ActiveShaderCliArgs);
+        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment, _renderer.ActiveShaderIncludeDirs, _renderer.ActiveShaderCliArgs);
 
         _pipeline = RhiPipeline.CreateGraphics(
             _device, _vs, _fs,

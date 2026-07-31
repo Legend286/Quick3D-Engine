@@ -92,7 +92,40 @@ public sealed class DDGIProbePriority
         for (int i = 0; i < probes.Count; ++i)
         {
             ProbeSnapshot probe = probes[i];
+            bool needsUpdate = probe.LastUpdateFrame == 0;
+            
+            if (dirtyLights is { Count: > 0 })
+            {
+                for (int j = 0; j < dirtyLights.Count; ++j)
+                {
+                    LightInfluence light = dirtyLights[j];
+                    float lightDistance = Vector3.Distance(
+                        probe.Position,
+                        light.Position);
+                    if (lightDistance >= light.Radius)
+                        continue;
+                    
+                    if (light.IsDirty)
+                        needsUpdate = true;
+                }
+            }
+
+            // Only update if never built, or explicitly dirty.
+            // We removed the background refresh because it caused lag spikes.
+            // Probes will now only update if lighting changes, or when we implement
+            // dynamic object tracking.
+            if (!needsUpdate)
+            {
+                scored[i] = (-1, -1.0f);
+                continue;
+            }
+
+            // Compute priority for probes that need an update
             float score = 0.0f;
+            if (probe.LastUpdateFrame == 0)
+                score += 10000.0f; // Must build
+            else
+                score += (_currentFrame - probe.LastUpdateFrame) * _tuning.StalePenaltyPerFrame; // Boost if it hasn't been updated in a while despite being dirty
 
             float distance = Vector3.Distance(probe.Position, camera.Position);
             if (distance < _tuning.DistanceFalloffMeters)
@@ -104,13 +137,6 @@ public sealed class DDGIProbePriority
             if (distance < frustumRadius)
             {
                 score += _tuning.FrustumContainmentBonus * 100.0f;
-            }
-
-            long age = _currentFrame - probe.LastUpdateFrame;
-            if (age > 0)
-            {
-                float capped = MathF.Min(age, (long)_tuning.StalePenaltyCap);
-                score += capped * _tuning.StalePenaltyPerFrame * 100.0f;
             }
 
             if (dirtyLights is { Count: > 0 })

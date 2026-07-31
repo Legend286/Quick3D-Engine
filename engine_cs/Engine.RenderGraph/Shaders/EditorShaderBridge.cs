@@ -24,6 +24,9 @@ public static class EditorShaderBridge
     public static event Action<IReadOnlyList<string>?, IReadOnlyList<string>?>?
         ActiveShaderContextChanged;
 
+    public static IReadOnlyList<string>? LastCliArgs { get; private set; }
+    public static IReadOnlyList<string>? LastIncludeDirs { get; private set; }
+
     /// <summary>Public raise seam: external emitters (the editor's
     /// <c>PluginCatalogService</c>) call this to forward both the
     /// currently-active cliArgs argv AND the resolved include dirs in
@@ -34,5 +37,9 @@ public static class EditorShaderBridge
     public static void RaiseActiveShaderContextChanged(
         IReadOnlyList<string>? cliArgs,
         IReadOnlyList<string>? includeDirs)
-        => ActiveShaderContextChanged?.Invoke(cliArgs, includeDirs);
+    {
+        LastCliArgs = cliArgs;
+        LastIncludeDirs = includeDirs;
+        ActiveShaderContextChanged?.Invoke(cliArgs, includeDirs);
+    }
 }

@@ -429,20 +429,78 @@ public class PbrPass : RenderPass
     private string LoadShaderSource(string relPath)
     {
         string full = Path.Combine(_contentRoot, relPath);
-        if (!File.Exists(full)) throw new FileNotFoundException(full);
-        return File.ReadAllText(full);
+        if (File.Exists(full)) return File.ReadAllText(full);
+
+        if (_includeDirs != null)
+        {
+            string fileName = Path.GetFileName(relPath);
+            foreach (var dir in _includeDirs)
+            {
+                string fallback = Path.Combine(dir, fileName);
+                if (File.Exists(fallback)) return File.ReadAllText(fallback);
+                
+                // Also check if relPath exists exactly inside the include dir's parent
+                string parentFallback = Path.Combine(Path.GetDirectoryName(dir) ?? dir, relPath);
+                if (File.Exists(parentFallback)) return File.ReadAllText(parentFallback);
+            }
+        }
+
+        throw new FileNotFoundException(full);
     }
+
+    private static readonly string FallbackShaderSource = @"
+#include ""scene_data.slang""
+
+[push_constant]
+ConstantBuffer<ScenePushData> push;
+
+struct VertexOutput {
+    float4 position : SV_Position;
+};
+
+[shader(""vertex"")]
+VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID) 
+{
+    VertexOutput output;
+    PartData part = push.parts[iid];
+    InstanceData inst = push.instances[part.instanceIdx];
+    uint index = part.indices[vid];
+    Vertex v = part.vertices[index];
+    float3 vPos = float3(v.px, v.py, v.pz) + part.localOffset.xyz;
+    float4 worldPos = mul(inst.modelMatrix, float4(vPos, 1.0));
+    output.position = mul(push.camera->viewProj, worldPos);
+    return output;
+}
+
+[shader(""fragment"")]
+float4 fragmentMain() : SV_Target
+{
+    return float4(1.0, 0.0, 1.0, 1.0);
+}
+";
 
     private RhiShader CompileCached(
         string source, string entry, RhiNative.ShaderStage stage)
     {
         string shaderDir = Path.Combine(_contentRoot, "shaders");
         IReadOnlyList<string>? dirs = _includeDirs ?? new[] { shaderDir };
-        if (_compileCache == null)
-            return RhiShader.FromSource(_device, source, entry, stage, dirs, _cliArgs);
-        return (RhiShader)_compileCache.GetOrCompileHash(
-            source, entry, stage, dirs, _cliArgs,
-            () => RhiShader.FromSource(_device, source, entry, stage, dirs, _cliArgs));
+        try
+        {
+            if (_compileCache == null)
+                return RhiShader.FromSource(_device, source, entry, stage, dirs, _cliArgs);
+            return (RhiShader)_compileCache.GetOrCompileHash(
+                source, entry, stage, dirs, _cliArgs,
+                () => RhiShader.FromSource(_device, source, entry, stage, dirs, _cliArgs));
+        }
+        catch (Exception exception)
+        {
+            Engine.CBindings.Log.Error($"[Renderer] Shader compilation failed for '{entry}': {exception.Message}", "Renderer");
+            if (entry == "vertexMain" || entry == "fragmentMain")
+            {
+                return RhiShader.FromSource(_device, FallbackShaderSource, entry, stage, dirs, _cliArgs);
+            }
+            throw;
+        }
     }
 
     private void EnsureBuffer(ref RhiBuffer buffer, ulong requiredSize, RhiNative.BufferUsage usage)

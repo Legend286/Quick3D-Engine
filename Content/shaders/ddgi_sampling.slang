@@ -34,7 +34,7 @@ uint FetchVisibilitySlot()
     => (uint)push.DDGIAtlasParams.y;
 
 bool SparseLayoutReady()
-    => FetchIrradianceSlot() != 0u;
+    => push.DDGIAtlasParams.w > 0.5;
 
 // MARK: Probe-grid mapping helpers
 // Coarse-grid resolution is the per-axis count of the outer bounding
@@ -111,6 +111,9 @@ float VisibilityWeight(float mean, float meanSq, float distanceToProbe)
 // MARK: Entry point consumed by pbr.slang
 float3 SampleIndirectDiffuse(float3 worldPosition, float3 worldNormal)
 {
+    if (!SparseLayoutReady())
+        return float3(0.0);
+
     uint irradSlot = FetchIrradianceSlot();
     if (irradSlot == 0)
         return float3(0.0);
@@ -148,6 +151,9 @@ float3 SampleIndirectDiffuse(float3 worldPosition, float3 worldNormal)
         float4 c2 = bindless.textures[irradSlot].Load(int3(colBase + 2, 0, 0));
         float4 c3 = bindless.textures[irradSlot].Load(int3(colBase + 3, 0, 0));
         float3 probeIrradiance = EvaluateTwoBandSH(c0, c1, c2, c3, worldNormal);
+
+        if (any(isnan(probeIrradiance)) || any(isinf(probeIrradiance)))
+            continue;
 
         float2 moments = bindless.textures[visSlot].Load(int3(sparseIdx, 0, 0)).rg;
 

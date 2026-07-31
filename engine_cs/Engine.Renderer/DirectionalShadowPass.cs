@@ -106,7 +106,8 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
         string contentRoot,
         RasterSceneGpuCache sceneCache,
         DirectionalShadowState state,
-        GpuWorkScheduler workScheduler)
+        GpuWorkScheduler workScheduler,
+        Renderer renderer)
     {
         Name = "Directional Shadows";
         _device = device;
@@ -114,32 +115,29 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
         _state = state;
         _workScheduler = workScheduler;
 
-        string shaderPath = Path.Combine(contentRoot, "shaders", "shadow_depth.slang");
-        string source = File.ReadAllText(shaderPath);
-        string shaderDirectory = Path.GetDirectoryName(shaderPath)!;
+        string source = renderer.LoadShaderSource("shaders/shadow_depth.slang", contentRoot);
         _vertexShader = RhiShader.FromSource(
             device,
             source,
             "vertexMain",
             RhiNative.ShaderStage.Vertex,
-            shaderDirectory);
+            renderer.ActiveShaderIncludeDirs,
+            renderer.ActiveShaderCliArgs);
         _fragmentShader = RhiShader.FromSource(
             device,
             source,
             "fragmentMain",
             RhiNative.ShaderStage.Fragment,
-            shaderDirectory);
+            renderer.ActiveShaderIncludeDirs,
+            renderer.ActiveShaderCliArgs);
         _pipeline = RhiPipeline.CreateDepthOnly(device, _vertexShader, _fragmentShader);
-        string cullShaderPath = Path.Combine(
-            contentRoot,
-            "shaders",
-            "shadow_cull.slang");
         _cullShader = RhiShader.FromSource(
             device,
-            File.ReadAllText(cullShaderPath),
+            renderer.LoadShaderSource("shaders/shadow_cull.slang", contentRoot),
             "computeMain",
             RhiNative.ShaderStage.Compute,
-            Path.GetDirectoryName(cullShaderPath)!);
+            renderer.ActiveShaderIncludeDirs,
+            renderer.ActiveShaderCliArgs);
         _cullPipeline = RhiPipeline.CreateCompute(device, _cullShader);
         _drawCommandBuffer = RhiBuffer.Create(
             device,

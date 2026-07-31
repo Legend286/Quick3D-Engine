@@ -47,10 +47,9 @@ public class IdPickingPass : RenderPass, IDisposable
         _renderer = renderer;
         Name = "Id Picking";
 
-        string shaderDir = Path.Combine(_contentRoot, "shaders");
-        string src = File.ReadAllText(Path.Combine(shaderDir, "id_picking.slang"));
-        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex, shaderDir);
-        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment, shaderDir);
+        string src = _renderer.LoadShaderSource("shaders/id_picking.slang", _contentRoot);
+        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex, _renderer.ActiveShaderIncludeDirs, _renderer.ActiveShaderCliArgs);
+        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment, _renderer.ActiveShaderIncludeDirs, _renderer.ActiveShaderCliArgs);
 
         _pipeline = RhiPipeline.CreateGraphics(
             _device, _vs, _fs,

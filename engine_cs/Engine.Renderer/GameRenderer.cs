@@ -448,7 +448,7 @@ public sealed class GameRenderer : IDisposable
     {
         _sceneAnimationTime = 0.0f;
         _pluginRuntime.SetProjectRoot(contentRoot);
-        _imguiRenderer?.LoadShaders(contentRoot);
+        _imguiRenderer?.LoadShaders(contentRoot, _renderer);
         _renderer.LoadScene(contentRoot, sceneName);
     }
 

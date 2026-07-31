@@ -92,14 +92,24 @@ public sealed class ImGuiRenderer : IDisposable
         }
     }
 
-    public void LoadShaders(string contentRoot)
+    public void LoadShaders(string contentRoot, Renderer? renderer = null)
     {
         if (_pipeline != null) return;
 
-        string shaderPath = Path.Combine(contentRoot, "shaders", "imgui.slang");
-        string src = File.ReadAllText(shaderPath);
-        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex);
-        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment);
+        string src;
+        if (renderer != null)
+        {
+            src = renderer.LoadShaderSource("shaders/imgui.slang", contentRoot);
+            _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex, renderer.ActiveShaderIncludeDirs, renderer.ActiveShaderCliArgs);
+            _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment, renderer.ActiveShaderIncludeDirs, renderer.ActiveShaderCliArgs);
+        }
+        else
+        {
+            string shaderPath = Path.Combine(contentRoot, "shaders", "imgui.slang");
+            src = File.ReadAllText(shaderPath);
+            _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex);
+            _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment);
+        }
 
         // ImGui uses BGRA or RGBA. Let's assume pipeline is for Bgra8Unorm
         _pipeline = RhiPipeline.CreateGraphics(

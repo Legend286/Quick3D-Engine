@@ -40,10 +40,9 @@ public sealed class OutlineMaskPass : RenderPass, IDisposable
         _renderer = renderer;
         Name = "OutlineMaskPass";
 
-        string shaderDir = Path.Combine(_contentRoot, "shaders");
-        string src = File.ReadAllText(Path.Combine(shaderDir, "outline_mask.slang"));
-        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex, shaderDir);
-        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment, shaderDir);
+        string src = _renderer.LoadShaderSource("shaders/outline_mask.slang", _contentRoot);
+        _vs = RhiShader.FromSource(_device, src, "vertexMain", RhiNative.ShaderStage.Vertex, _renderer.ActiveShaderIncludeDirs, _renderer.ActiveShaderCliArgs);
+        _fs = RhiShader.FromSource(_device, src, "fragmentMain", RhiNative.ShaderStage.Fragment, _renderer.ActiveShaderIncludeDirs, _renderer.ActiveShaderCliArgs);
 
         _pipeline = RhiPipeline.CreateGraphics(
             _device, _vs, _fs,

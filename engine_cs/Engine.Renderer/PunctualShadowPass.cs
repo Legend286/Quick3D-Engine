@@ -470,56 +470,56 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         string contentRoot,
         RasterSceneGpuCache sceneCache,
         PunctualShadowState state,
-        GpuWorkScheduler scheduler)
+        GpuWorkScheduler scheduler,
+        Renderer renderer)
     {
         Name = "Punctual Shadows";
         _device = device;
         _sceneCache = sceneCache;
         _state = state;
         _scheduler = scheduler;
-        string shaderDirectory = Path.Combine(contentRoot, "shaders");
-        string depthSource = File.ReadAllText(
-            Path.Combine(shaderDirectory, "shadow_depth.slang"));
+        string depthSource = renderer.LoadShaderSource("shaders/shadow_depth.slang", contentRoot);
         _depthVertexShader = RhiShader.FromSource(
             device,
             depthSource,
             "vertexMain",
             RhiNative.ShaderStage.Vertex,
-            shaderDirectory);
+            renderer.ActiveShaderIncludeDirs,
+            renderer.ActiveShaderCliArgs);
         _depthFragmentShader = RhiShader.FromSource(
             device,
             depthSource,
             "fragmentMain",
             RhiNative.ShaderStage.Fragment,
-            shaderDirectory);
+            renderer.ActiveShaderIncludeDirs,
+            renderer.ActiveShaderCliArgs);
         _depthPipeline = RhiPipeline.CreateDepthOnly(
             device,
             _depthVertexShader,
             _depthFragmentShader);
         _cullShader = RhiShader.FromSource(
             device,
-            File.ReadAllText(
-                Path.Combine(
-                    shaderDirectory,
-                    "punctual_shadow_cull.slang")),
+            renderer.LoadShaderSource("shaders/punctual_shadow_cull.slang", contentRoot),
             "computeMain",
             RhiNative.ShaderStage.Compute,
-            shaderDirectory);
+            renderer.ActiveShaderIncludeDirs,
+            renderer.ActiveShaderCliArgs);
         _cullPipeline = RhiPipeline.CreateCompute(device, _cullShader);
-        string clearSource = File.ReadAllText(
-            Path.Combine(shaderDirectory, "shadow_tile_clear.slang"));
+        string clearSource = renderer.LoadShaderSource("shaders/shadow_tile_clear.slang", contentRoot);
         _clearVertexShader = RhiShader.FromSource(
             device,
             clearSource,
             "vertexMain",
             RhiNative.ShaderStage.Vertex,
-            shaderDirectory);
+            renderer.ActiveShaderIncludeDirs,
+            renderer.ActiveShaderCliArgs);
         _clearFragmentShader = RhiShader.FromSource(
             device,
             clearSource,
             "fragmentMain",
             RhiNative.ShaderStage.Fragment,
-            shaderDirectory);
+            renderer.ActiveShaderIncludeDirs,
+            renderer.ActiveShaderCliArgs);
         _clearPipeline = RhiPipeline.CreateDepthClear(
             device,
             _clearVertexShader,

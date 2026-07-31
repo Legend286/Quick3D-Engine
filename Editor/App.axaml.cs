@@ -50,6 +50,7 @@ internal static class EngineLogBootstrap
     public static void InitFromProject(string projectRoot)
     {
         App.ProjectRoot = projectRoot;
+        Services.PluginCatalogService.Shared.SetProjectRoot(projectRoot);
         App.EngineSourceRoot = ResolveEngineSourceRoot();
         Services.EditorSettingsStore.RememberProject(projectRoot);
         Console.WriteLine($"[AppBootstrap] Resolved ProjectRoot: '{projectRoot}'");

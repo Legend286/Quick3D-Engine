@@ -22,6 +22,8 @@
 //   * ProbeIndex0..7 inline
 //   * TreeRootIndex, TreeNodeCount, TreeLeafVisitBudget
 
+#include "scene_data.slang"
+
 struct UpdatePushData
 {
     uint   probeCount;
@@ -60,11 +62,11 @@ RWTexture2D<float4> irradiance : register(u0);
 RWTexture2D<float4> visibility : register(u4);
 
 // MARK: SH basis constants (canonical 2-band spherical-harmonics)
-const float kY00  = 0.282095;
-const float kY1m1 = 0.488603;
+static const float kY00  = 0.282095;
+static const float kY1m1 = 0.488603;
 
-const uint kLeafFlagBit   = 0x80000000u;
-const uint kLeafMaskBits  = 0x7FFFFFFFu;
+static const uint kLeafFlagBit   = 0x80000000u;
+static const uint kLeafMaskBits  = 0x7FFFFFFFu;
 
 // MARK: LightTreeNode descriptor (32 bytes, matches Plugins/
 // Renderer.DDGI/DDGILightTreeNode.cs). High bit of
@@ -274,30 +276,19 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         bool hit = false;
         float hit_t = tMax;
 
-        RayQuery query;
-        RayQueryInitialize(query, sceneTlas,
-            RayFlagsFromVisibility(0xFF, RayQueryFlags.None),
-            0xFF, ray);
-        while (RayQueryProceed(query))
+        RayQuery<RAY_FLAG_NONE> query;
+        query.TraceRayInline(sceneTlas, RAY_FLAG_NONE, 0xFF, ray);
+        while (query.Proceed())
         {
-            if (RayQueryCandidateType(query) ==
-                RayQueryCandidateType.Triangle)
+            if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
             {
-                float candidateT =
-                    RayQueryCandidateTriangleRayT(query);
-                if (candidateT < hit_t)
-                {
-                    hit_t = candidateT;
-                    hit = true;
-                }
-                RayQueryConfirm(query);
+                query.CommitNonOpaqueTriangleHit();
             }
         }
-        if (RayQueryCommittedStatus(query) ==
-            RayQueryCommittedStatus.Triangle)
+        if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
         {
             hit = true;
-            hit_t = min(hit_t, tMax);
+            hit_t = min(query.CommittedRayT(), tMax);
         }
         else
         {

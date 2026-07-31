@@ -160,7 +160,7 @@ public sealed class PluginCatalogService :
     public string EngineRoot { get; }
 
     /// <inheritdoc />
-    public string ProjectRoot { get; }
+    public string ProjectRoot { get; private set; }
 
     /// <summary>Occurs when plugin shader pipelines must be recreated.</summary>
     public event Action<string>? ShaderReloadRequested;
@@ -176,6 +176,42 @@ public sealed class PluginCatalogService :
         ProjectRoot = projectRoot;
         EngineRoot = LocateEngineRoot();
         Discover();
+    }
+
+    /// <summary>Updates the catalog to a new project root and reloads enabled plugins.</summary>
+    public void SetProjectRoot(string projectRoot)
+    {
+        if (string.Equals(ProjectRoot, projectRoot, StringComparison.Ordinal))
+            return;
+
+        ProjectRoot = projectRoot;
+        HashSet<string> enabled = ReadEnabledIds();
+
+        foreach (var plugin in Plugins)
+        {
+            if (plugin.Manifest.Required) continue;
+            
+            bool shouldEnable = enabled.Contains(plugin.Id);
+            if (shouldEnable != plugin.IsEnabled)
+            {
+                plugin.SetEnabledSilently(shouldEnable);
+                if (shouldEnable)
+                {
+                    LoadPlugin(plugin);
+                    if (plugin.Manifest.Kind == EnginePluginKind.Renderer &&
+                        ResolveAssemblyPath(plugin) == null)
+                    {
+                        _ = BuildPluginAsync(plugin);
+                    }
+                }
+                else
+                {
+                    UnloadPlugin(plugin.Id);
+                }
+            }
+        }
+        
+        AvailabilityChanged?.Invoke();
     }
 
     /// <summary>Gets whether a plugin is enabled for the active project.</summary>
@@ -251,11 +287,10 @@ public sealed class PluginCatalogService :
         Log.Info(
             $"[Plugins] Shader reload requested for {plugin.Id}",
             "Editor");
-        // TODO(editor): reintroduce Engine.Renderer.RendererFeatureSet (or an Engine.RenderGraph equivalent) once the plugin-manifest-driven CLI-arg aggregation surface lands in the cycle-broke project graph. Empty argv for now so the editor still raises the context-change event.
         EditorShaderBridge.RaiseActiveShaderContextChanged(
-            System.Array.Empty<string>(),
+            Engine.RenderGraph.Shaders.RendererFeatureSet.BuildCliArgs(GetAllManifests()),
             ShaderIncludeResolver.Resolve(
-                Path.Combine(ProjectRoot, "Content"),
+                Path.Combine(EngineRoot, "Content"),
                 GetEnabledManifestsWithPaths()));
     }
 
@@ -321,6 +356,12 @@ public sealed class PluginCatalogService :
                     "Editor");
             }
         }
+
+        EditorShaderBridge.RaiseActiveShaderContextChanged(
+            Engine.RenderGraph.Shaders.RendererFeatureSet.BuildCliArgs(GetAllManifests()),
+            ShaderIncludeResolver.Resolve(
+                Path.Combine(EngineRoot, "Content"),
+                GetEnabledManifestsWithPaths()));
     }
 
     private HashSet<string> ReadEnabledIds()
@@ -756,17 +797,13 @@ public sealed class PluginCatalogService :
                 Engine.RenderGraph.IRendererPlanPlugin
                     extension)
             {
-                System.Threading.Tasks.Task.Run(() =>
+                System.Threading.Tasks.Task.Run(async () =>
                 {
                     try
                     {
-                        if (Engine.Renderer.Renderer.ActiveInstance
-                            is null)
+                        while (Engine.Renderer.Renderer.ActiveInstance is null)
                         {
-                            Engine.CBindings.Log.Warn(
-                                $"[Plugins] {plugin.Id} deferred to background thread but Renderer hasn't been constructed yet; load a scene or open the viewport to activate this extension plugin.",
-                                "Editor");
-                            return;
+                            await System.Threading.Tasks.Task.Delay(250);
                         }
                         Engine.Renderer.Renderer.ActiveInstance
                             .AddExtensionPlugin(extension);

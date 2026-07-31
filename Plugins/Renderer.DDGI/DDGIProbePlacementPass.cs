@@ -194,6 +194,7 @@ public sealed class DDGIProbePlacementPass : RenderPass, IDisposable
             (uint)CoarseGridResolution,
             (uint)CoarseGridResolution,
             1, 1, 1);
+        _atlas.MarkSparseLayoutReady();
         sink.EndComputePass();
     }
 

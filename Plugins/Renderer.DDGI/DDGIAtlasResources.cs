@@ -184,6 +184,11 @@ public sealed class DDGIAtlasResources : IDisposable
         SparseLayoutReady = true;
     }
 
+    public void MarkSparseLayoutReady()
+    {
+        SparseLayoutReady = true;
+    }
+
     /// <summary>
     /// Resets the placement counter SSBO to zero. Call this from the
     /// placement pass's <c>Execute()</c> BEFORE dispatch so the atomic
@@ -263,6 +268,12 @@ public sealed class DDGIAtlasResources : IDisposable
                 $"Light tree has {nodes.Length} nodes but capacity " +
                 $"is only {LightTreeNodeCapacity}.",
                 nameof(nodes));
+        if (nodes.Length == 0)
+        {
+            TreeNodeCount = 0;
+            TreeRootIndex = -1;
+            return;
+        }
         if (rootIndex < 0 || rootIndex >= nodes.Length)
             throw new ArgumentOutOfRangeException(
                 nameof(rootIndex),

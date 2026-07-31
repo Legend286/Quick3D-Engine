@@ -18,27 +18,25 @@ internal sealed class ShadowAtlasPreviewRenderer : IDisposable
 
     public ShadowAtlasPreviewRenderer(
         RhiDevice device,
-        string contentRoot)
+        string contentRoot,
+        Renderer renderer)
     {
         _device = device;
-        string shaderDirectory =
-            Path.Combine(contentRoot, "shaders");
-        string source = File.ReadAllText(
-            Path.Combine(
-                shaderDirectory,
-                "shadow_atlas_preview.slang"));
+        string source = renderer.LoadShaderSource("shaders/shadow_atlas_preview.slang", contentRoot);
         _vertexShader = RhiShader.FromSource(
             device,
             source,
             "vertexMain",
             RhiNative.ShaderStage.Vertex,
-            shaderDirectory);
+            renderer.ActiveShaderIncludeDirs,
+            renderer.ActiveShaderCliArgs);
         _fragmentShader = RhiShader.FromSource(
             device,
             source,
             "fragmentMain",
             RhiNative.ShaderStage.Fragment,
-            shaderDirectory);
+            renderer.ActiveShaderIncludeDirs,
+            renderer.ActiveShaderCliArgs);
         _pipeline = RhiPipeline.CreateGraphics(
             device,
             _vertexShader,

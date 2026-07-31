@@ -93,11 +93,19 @@ public static class ShaderIncludeResolver
         // resolver still works for tests / empty-content scenarios.
         if (!string.IsNullOrEmpty(contentRoot))
         {
-            string engineShaders = Path.Combine(contentRoot, "shaders");
-            if (Directory.Exists(engineShaders) &&
-                seen.Add(engineShaders))
+            string[] possibleRoots = new[]
             {
-                resolved.Add(engineShaders);
+                contentRoot,
+                Path.Combine(AppContext.BaseDirectory, "Content"),
+                Path.Combine(Environment.CurrentDirectory, "Content")
+            };
+            foreach (var root in possibleRoots)
+            {
+                string engineShaders = Path.Combine(root, "shaders");
+                if (Directory.Exists(engineShaders) && seen.Add(engineShaders))
+                {
+                    resolved.Add(engineShaders);
+                }
             }
         }
 
