@@ -205,7 +205,8 @@ public sealed class PluginCatalogService :
             .Where(plugin => plugin.IsEnabled)
             .Select(plugin => (
                 plugin.Manifest,
-                Path.Combine(plugin.DirectoryPath, "plugin.json")));
+                Path.Combine(plugin.DirectoryPath, "plugin.json")))
+            .ToArray();
 
     /// <summary>Enables an optional plugin by identifier.</summary>
     public bool Enable(string pluginId)
