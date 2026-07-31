@@ -756,21 +756,28 @@ public sealed class PluginCatalogService :
                 Engine.RenderGraph.IRendererPlanPlugin
                     extension)
             {
-                Avalonia.Threading.Dispatcher.UIThread.Post(
-                    () =>
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
                     {
                         if (Engine.Renderer.Renderer.ActiveInstance
                             is null)
                         {
                             Engine.CBindings.Log.Warn(
-                                $"[Plugins] {plugin.Id} deferred to next dispatcher tick but Renderer hasn't been constructed yet; load a scene or open the viewport to activate this extension plugin.",
+                                $"[Plugins] {plugin.Id} deferred to background thread but Renderer hasn't been constructed yet; load a scene or open the viewport to activate this extension plugin.",
                                 "Editor");
                             return;
                         }
                         Engine.Renderer.Renderer.ActiveInstance
                             .AddExtensionPlugin(extension);
-                    },
-                    Avalonia.Threading.DispatcherPriority.Default);
+                    }
+                    catch (System.Exception bgEx)
+                    {
+                        Engine.CBindings.Log.Error(
+                            $"[Plugins] Failed to activate {plugin.Id}: {bgEx.Message}\n{bgEx.StackTrace}",
+                            "Editor");
+                    }
+                });
             }
             _runtime[plugin.Id] =
                 new RuntimePlugin
