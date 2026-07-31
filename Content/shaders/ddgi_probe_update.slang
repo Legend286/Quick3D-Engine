@@ -9,41 +9,52 @@
 // and the 2-channel mean/mean² moments to the visibility atlas
 // (register(t4) RW).
 //
-// Push constants declare:
-//   * uint lightCount
-//   * uint probeIndices[8] (sparse indexes into probePositions)
-//   * The probe counted at probeIndices[GroupID.x] drives the
-//     thread; pad slots holding -1 get skipped.
+// Direct-light contribution is gathered via a hierarchical BBV
+// light tree (LightTreeNode at register(t2)) instead of an O(L)
+// loop over the full Lights SSBO. The CPU builder (see
+// Plugins/Renderer.DDGI/DDGILightTreeBuilder.cs) packs ≤ 4 lights
+// per leaf and reorders the Lights SSBO so leaf ranges are
+// contiguous; the shader therefore doesn't need a separate
+// remapping buffer.
+//
+// Push constants carry:
+//   * uint probeCount, frameNumber, lightCount, raysPerProbe
+//   * ProbeIndex0..7 inline
+//   * TreeRootIndex, TreeNodeCount, TreeLeafVisitBudget
 
 struct UpdatePushData
 {
     uint   probeCount;
     uint   frameNumber;
-    uint   padding0;
-    uint   padding1;
     uint   lightCount;
     uint   raysPerProbe;
-    uint   padding2;
-    uint   padding3;
     float4 cameraPositionAndJitter;
-    float4 atlasUVParams;        // x: irradSlot, y: visSlot, z: padding, w: padding
-    float4 originAndProbeCountZ; // xyz: volume origin, w: probeCount (debug)
-    float4 extent;               // x: maxProbeRadius, y: padding, z: padding, w: padding
+    float4 atlasUVParams;
+    float4 originAndProbeCountZ;
+    float4 extent;
+    uint   probeIndex0;
+    uint   probeIndex1;
+    uint   probeIndex2;
+    uint   probeIndex3;
+    uint   probeIndex4;
+    uint   probeIndex5;
+    uint   probeIndex6;
+    uint   probeIndex7;
+    uint   treeRootIndex;
+    uint   treeNodeCount;
+    uint   treeLeafVisitBudget;
+    uint   paddingTail3;
 };
 
 [push_constant]
 ConstantBuffer<UpdatePushData> push;
 
-// Probe index queue lives inline in the push struct (slot 0) so
-// Slang/HLSL does not treat it as a thread-local constant-initialised
-// to zero. Reads here go directly through the matched C# struct
-// fields; bump kMax if MaxProbesPerFrame ever grows past eight.
-
 static const int kMaxProbesPerFrame = 8;
 
-StructuredBuffer<float3> probePositions : register(t5);
-StructuredBuffer<LightData> lights : register(t1);
-RaytracingAccelerationStructure sceneTlas : register(t3);
+StructuredBuffer<float3>    probePositions : register(t5);
+StructuredBuffer<LightData> lights         : register(t1);
+StructuredBuffer<LightTreeNode> lightTree  : register(t2);
+RaytracingAccelerationStructure sceneTlas   : register(t3);
 
 RWTexture2D<float4> irradiance : register(u0);
 RWTexture2D<float4> visibility : register(u4);
@@ -51,6 +62,23 @@ RWTexture2D<float4> visibility : register(u4);
 // MARK: SH basis constants (canonical 2-band spherical-harmonics)
 const float kY00  = 0.282095;
 const float kY1m1 = 0.488603;
+
+const uint kLeafFlagBit   = 0x80000000u;
+const uint kLeafMaskBits  = 0x7FFFFFFFu;
+
+// MARK: LightTreeNode descriptor (32 bytes, matches Plugins/
+// Renderer.DDGI/DDGILightTreeNode.cs). High bit of
+// .minAndData0.w acts as the leaf flag; remaining 31 bits hold
+// either the child-left index or the leaf's first-light index.
+struct LightTreeNode
+{
+    float4 minAndData0;
+    float4 maxAndData1;
+
+    bool   IsLeaf()             { return (asuint(minAndData0.w) & kLeafFlagBit) != 0u; }
+    uint   FirstOrChildLeft()   { return asuint(minAndData0.w) & kLeafMaskBits; }
+    uint   CountOrChildRight()  { return asuint(maxAndData1.w); }
+};
 
 float3 OctahedralDirection(uint sampleIdx, uint raysCount, float jitter)
 {
@@ -65,52 +93,127 @@ float3 OctahedralDirection(uint sampleIdx, uint raysCount, float jitter)
                   cosTheta);
 }
 
-float3 EvaluateLights(
+float3 EvaluateOneLight(
     float3 dirToLightShadingPoint,
-    StructuredBuffer<LightData> lightBuffer,
-    uint lightCount)
+    LightData light)
 {
-    float3 accumulated = float3(0.0);
-    for (uint i = 0; i < lightCount; ++i)
-    {
-        LightData light = lightBuffer[i];
-        float lightType = light.direction.w;
-        float intensity = light.color.w;
+    float lightType = light.direction.w;
+    float intensity = light.color.w;
 
-        float3 irradiance = float3(0.0);
-        if (lightType == 0.0)
-        {
-            float3 n = -light.direction.xyz;
-            float dotNL = max(0.0, dot(dirToLightShadingPoint, n));
-            irradiance = light.color.xyz * intensity * dotNL;
-        }
-        else if (lightType == 1.0)
-        {
-            float range = light.position.w;
-            float3 toLight = light.position.xyz - dirToLightShadingPoint;
-            float dist = length(toLight);
-            float falloff = 1.0 - saturate(dist / max(range, 0.001));
-            irradiance = light.color.xyz * intensity *
-                falloff / max(dist * dist, 0.001);
-        }
-        else if (lightType == 2.0)
-        {
-            float range = light.position.w;
-            float3 axis = normalize(light.direction.xyz);
-            float3 toLight = light.position.xyz - dirToLightShadingPoint;
-            float dist = length(toLight);
-            float cosTheta = dot(-toLight / max(dist, 0.001), axis);
-            float outerCos = clamp(light.shapeParams.y, 0.001, 0.999);
-            float innerCos = clamp(light.shapeParams.x, 0.001, outerCos - 0.001);
-            float cone = saturate((cosTheta - outerCos) /
-                max(innerCos - outerCos, 0.001));
-            float falloff = cone *
-                (1.0 - saturate(dist / max(range, 0.001)));
-            irradiance = light.color.xyz * intensity * falloff /
-                max(dist * dist, 0.001);
-        }
-        accumulated += irradiance;
+    float3 irradiance = float3(0.0);
+    if (lightType == 0.0)
+    {
+        float3 n = -light.direction.xyz;
+        float dotNL = max(0.0, dot(dirToLightShadingPoint, n));
+        irradiance = light.color.xyz * intensity * dotNL;
     }
+    else if (lightType == 1.0)
+    {
+        float range = light.position.w;
+        float3 toLight = light.position.xyz - dirToLightShadingPoint;
+        float dist = length(toLight);
+        float falloff = 1.0 - saturate(dist / max(range, 0.001));
+        irradiance = light.color.xyz * intensity *
+            falloff / max(dist * dist, 0.001);
+    }
+    else if (lightType == 2.0)
+    {
+        float range = light.position.w;
+        float3 axis = normalize(light.direction.xyz);
+        float3 toLight = light.position.xyz - dirToLightShadingPoint;
+        float dist = length(toLight);
+        float cosTheta = dot(-toLight / max(dist, 0.001), axis);
+        float outerCos = clamp(light.shapeParams.y, 0.001, 0.999);
+        float innerCos = clamp(light.shapeParams.x, 0.001, outerCos - 0.001);
+        float cone = saturate((cosTheta - outerCos) /
+            max(innerCos - outerCos, 0.001));
+        float falloff = cone *
+            (1.0 - saturate(dist / max(range, 0.001)));
+        irradiance = light.color.xyz * intensity * falloff /
+            max(dist * dist, 0.001);
+    }
+    return irradiance;
+}
+
+// MARK: AABB slab test from ray origin in direction dir (assumed
+// roughly unit length). Returns true when the ray reaches the AABB
+// in front of the origin and within tFar. Used as a cheap node
+// culling step before descending into the tree.
+bool RayPlausiblyReachesAabb(
+    float3 origin,
+    float3 dir,
+    float3 aabbMin,
+    float3 aabbMax)
+{
+    float3 invDirSafe = 1.0 / max(abs(dir), float3(1e-6));
+    float3 t1 = (aabbMin - origin) * invDirSafe;
+    float3 t2 = (aabbMax - origin) * invDirSafe;
+    float3 tNear3 = min(t1, t2);
+    float3 tFar3  = max(t1, t2);
+    float tNear = max(max(tNear3.x, tNear3.y), tNear3.z);
+    float tFar  = min(min(tFar3.x, tFar3.y), tFar3.z);
+    return tFar >= max(tNear, 0.0);
+}
+
+// MARK: Hierarchical light gather. Iterative worklist descents
+// the tree, culls nodes whose world AABB the ray plausibility
+// test misses, and accumulates per-leaf contributions up to
+// `treeLeafVisitBudget`. When the tree is empty, returns zero so
+// the caller falls back to ambient only.
+float3 TraverseLightTree(
+    float3 probePos,
+    float3 rayDir,
+    uint rootIdx,
+    uint nodeCount,
+    uint leafBudget)
+{
+    if (rootIdx >= nodeCount || nodeCount == 0 || leafBudget == 0)
+        return float3(0.0);
+
+    float3 accumulated = float3(0.0);
+    const int kWorklistCap = 12;
+    uint worklist[kWorklistCap];
+    int top = 1;
+    worklist[0] = rootIdx;
+    uint leavesVisited = 0;
+
+    while (top > 0 && leavesVisited < leafBudget)
+    {
+        uint nIdx = worklist[--top];
+        if (nIdx >= nodeCount) continue;
+
+        LightTreeNode node = lightTree[nIdx];
+
+        if (!RayPlausiblyReachesAabb(
+            probePos, rayDir,
+            node.minAndData0.xyz,
+            node.maxAndData1.xyz))
+        {
+            continue;
+        }
+
+        if (node.IsLeaf())
+        {
+            uint first = node.FirstOrChildLeft();
+            uint count = node.CountOrChildRight();
+            for (uint i = 0u; i < count; ++i)
+            {
+                if (first + i >= push.lightCount) break;
+                accumulated += EvaluateOneLight(rayDir, lights[first + i]);
+            }
+            ++leavesVisited;
+            continue;
+        }
+
+        if (top + 2 <= kWorklistCap)
+        {
+            uint left = node.FirstOrChildLeft();
+            uint right = node.CountOrChildRight();
+            worklist[top++] = left;
+            worklist[top++] = right;
+        }
+    }
+
     return accumulated;
 }
 
@@ -142,7 +245,6 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
 
     uint raysPerProbe = push.raysPerProbe;
     if (raysPerProbe == 0) raysPerProbe = 32;
-    uint lightCount = push.lightCount;
 
     float frameJitter = push.cameraPositionAndJitter.w;
 
@@ -210,7 +312,12 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         }
         else
         {
-            float3 incidentLight   = EvaluateLights(rayDir, lights, lightCount);
+            float3 incidentLight =
+                TraverseLightTree(
+                    probePos, rayDir,
+                    push.treeRootIndex,
+                    push.treeNodeCount,
+                    push.treeLeafVisitBudget);
             float3 incidentAmbient = float3(0.20, 0.22, 0.25);
             float3 incident = incidentLight + incidentAmbient;
 

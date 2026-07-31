@@ -57,9 +57,9 @@ public sealed class DDGIProbeUpdatePass : RenderPass
         public uint ProbeIndex5;
         public uint ProbeIndex6;
         public uint ProbeIndex7;
-        public uint PaddingTail0;
-        public uint PaddingTail1;
-        public uint PaddingTail2;
+        public uint TreeRootIndex;
+        public uint TreeNodeCount;
+        public uint TreeLeafVisitBudget;
         public uint PaddingTail3;
     }
 
@@ -185,12 +185,16 @@ public sealed class DDGIProbeUpdatePass : RenderPass
             ProbeIndex5 = probeIndexSlots[5],
             ProbeIndex6 = probeIndexSlots[6],
             ProbeIndex7 = probeIndexSlots[7],
+            TreeRootIndex = (uint)Math.Max(0, _atlas.TreeRootIndex),
+            TreeNodeCount = (uint)_atlas.TreeNodeCount,
+            TreeLeafVisitBudget = DDGIRendererPlugin.LeafVisitBudget,
         };
 
         sink.BeginComputePass(Name);
         sink.BindPipeline(_pipeline);
         sink.UseBuffer(_atlas.ProbePositions, 5);
         sink.UseBuffer(_atlas.Lights, 1);
+        sink.UseBuffer(_atlas.LightTreeNodes, 2);
         sink.BindTexture(0, _atlas.Irradiance);
         sink.BindTexture(4, _atlas.Visibility);
 

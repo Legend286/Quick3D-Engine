@@ -111,6 +111,18 @@ public interface IDDGIAtlasProvider
     /// across frames within the Gi budget. Matched by the plugin's
     /// scheduler. Returns 0 when the plugin is not loaded.</summary>
     int MaxProbesPerFrame { get; }
+
+    /// <summary>Returns the BBV light tree SSBO + its populated node
+    /// count + the index of the root node. Returns false when the
+    /// plugin is not loaded or the tree has not been built yet
+    /// (no lights in scene). Consumers that want to do their own
+    /// light traversal can bind <paramref name="treeBuffer"/> at a
+    /// fixed shader register slot; the canonical path tracer and
+    /// DDGI plugin itself use this surface for the GI gather.</summary>
+    bool TryGetLightTree(
+        out Engine.RHI.RhiBuffer treeBuffer,
+        out uint nodeCount,
+        out uint rootIndex);
 }
 
 /// <summary>Process-wide cross-plugin lookup for the currently enabled

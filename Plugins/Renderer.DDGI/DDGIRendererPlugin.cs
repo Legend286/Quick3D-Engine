@@ -38,8 +38,11 @@ public sealed class DDGIRendererPlugin :
     private readonly DDGIProbeVolume _volume;
     private readonly DDGIProbePriority.Tuning _tuning;
     private readonly DDGIProbePriority _priority;
+    private readonly DDGILightTreeBuilder _lightTreeBuilder = new();
     private DDGIProbePriority.ProbeSnapshot[] _probeSnapshots =
         Array.Empty<DDGIProbePriority.ProbeSnapshot>();
+    private DDGILightSnapshot[] _currentLightSnapshot =
+        Array.Empty<DDGILightSnapshot>();
     private bool _lightsSeeded;
     private long _tickCounter;
     private long _lastPlacementTick = -1;
@@ -146,6 +149,7 @@ public sealed class DDGIRendererPlugin :
             BuildLightInfluences(context.Scene);
 
         UploadLightsSnapshot(context.Scene);
+        BuildAndUploadLightTree();
 
         RefreshProbeSnapshots();
 
@@ -529,7 +533,83 @@ public sealed class DDGIRendererPlugin :
     public int MaxProbesPerFrame =>
         DDGIProbeUpdatePass.MaxProbesPerFrame;
 
+    /// <inheritdoc />
+    public bool TryGetLightTree(
+        out Engine.RHI.RhiBuffer treeBuffer,
+        out uint nodeCount,
+        out uint rootIndex)
+    {
+        treeBuffer = null!;
+        nodeCount = 0u;
+        rootIndex = 0u;
+        if (_atlas == null || _atlas.TreeNodeCount <= 0)
+            return false;
+        treeBuffer = _atlas.LightTreeNodes;
+        nodeCount = (uint)_atlas.TreeNodeCount;
+        rootIndex = (uint)Math.Max(0, _atlas.TreeRootIndex);
+        return true;
+    }
+
+    private void BuildAndUploadLightTree()
+    {
+        if (_atlas == null) return;
+        if (_currentLightSnapshot.Length == 0)
+        {
+            _atlas.UploadLightTree(
+                ReadOnlySpan<DDGILightTreeNode>.Empty,
+                rootIndex: -1);
+            return;
+        }
+
+        Span<DDGILightSnapshot> liveSpan = _currentLightSnapshot.AsSpan(
+            0, Math.Min(
+                _currentLightSnapshot.Length,
+                _atlas.LightSlotCount));
+        DDGILightTreeNode[] nodes =
+            _lightTreeBuilder.BuildCpu(liveSpan, out int rootIndex);
+
+        if (_atlas.LightSlotCount > 0 && liveSpan.Length > 0)
+        {
+            ReadOnlySpan<DDGILightSnapshot> reordered =
+                new ReadOnlySpan<DDGILightSnapshot>(
+                    _currentLightSnapshot, 0, liveSpan.Length);
+            _atlas.UploadLights(reordered);
+        }
+
+        _atlas.UploadLightTree(nodes, rootIndex);
+
+        if (_tickCounter % MaxLogSampleEvery == 0)
+        {
+            Log.Info(
+                $"[DDGI] light tree rebuilt tick={_tickCounter} " +
+                $"nodes={nodes.Length} leaves={CountLeaves(nodes)} " +
+                $"root={rootIndex} leafBudget={LeafVisitBudget}",
+                "DDGI");
+        }
+    }
+
+    private static int CountLeaves(ReadOnlySpan<DDGILightTreeNode> nodes)
+    {
+        if (nodes.Length == 0) return 0;
+        int count = 0;
+        for (int i = 0; i < nodes.Length; ++i)
+        {
+            uint raw = BitConverter.SingleToUInt32Bits(nodes[i].MinData0.W);
+            if ((raw & DDGILightTreeNode.LeafBit) != 0u)
+                ++count;
+        }
+        return count;
+    }
+
     private const int MaxLogSampleEvery = 60;
     private const int SparseLayoutWarmupTicks = 3;
+
+    /// <summary>Per-probe cap on the number of light-tree leaves
+    /// visited by the probe-update kernel's hierarchical traversal.
+    /// Cross-file consumers (like <see cref="DDGIProbeUpdatePass"/>)
+    /// pull this from the push struct; bump it together with the
+    /// shader's <c>kWorklistCap</c> if tree depth grows past the
+    /// current frontier headroom.</summary>
+    public const int LeafVisitBudget = 4;
 }
 

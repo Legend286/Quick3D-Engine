@@ -45,6 +45,10 @@ public sealed class DDGIAtlasResources : IDisposable
     public bool SparseLayoutReady { get; private set; }
     public int LightSlotCount =>
         (int)((Lights?.Size ?? 0ul) / 16ul);
+    public RhiBuffer LightTreeNodes { get; }
+    public int LightTreeNodeCapacity { get; }
+    public int TreeNodeCount { get; private set; }
+    public int TreeRootIndex { get; private set; } = -1;
     public RhiBindlessHeap SharedHeap { get; }
 
     public DDGIAtlasResources(
@@ -121,6 +125,17 @@ public sealed class DDGIAtlasResources : IDisposable
             (ulong)maxLights * 16ul /* packed LightData */,
             RhiNative.BufferUsage.Storage);
         Lights.SetDebugName("DDGI Light Snapshot", "DDGI");
+
+        // BBV node capacity = next power-of-two above 2 * maxLights,
+        // ensures every split + leaf has a node wrapper. 32 bytes per
+        // node keeps SSBOs aligned to GPU cachelines.
+        int treeCapacity = Math.Max(64, NextPow2((int)maxLights * 2 + 8));
+        LightTreeNodeCapacity = treeCapacity;
+        LightTreeNodes = RhiBuffer.Create(
+            device,
+            (ulong)treeCapacity * 32ul,
+            RhiNative.BufferUsage.Storage);
+        LightTreeNodes.SetDebugName("DDGI Light Tree Nodes", "DDGI");
 
         IrradianceBindlessIndex =
             sharedHeap?.Register(Irradiance) ?? 0u;
@@ -202,6 +217,7 @@ public sealed class DDGIAtlasResources : IDisposable
         GridToProbeIndex?.Dispose();
         ProbeCounter?.Dispose();
         Lights?.Dispose();
+        LightTreeNodes?.Dispose();
     }
 
     /// <summary>Bulk upload of the light snapshot consumed by the
@@ -213,6 +229,39 @@ public sealed class DDGIAtlasResources : IDisposable
     {
         if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
         Lights.Upload(snapshot);
+    }
+
+    /// <summary>Uploads the BBV light tree node array built on the
+    /// CPU side. <paramref name="rootIndex"/> identifies the root
+    /// of the tree within <paramref name="nodes"/> (allows for
+    /// pre-padding textures later if needed). Until this is
+    /// called, <see cref="TreeNodeCount"/> is 0 and the shader
+    /// skips tree traversal entirely.</summary>
+    public void UploadLightTree(
+        ReadOnlySpan<DDGILightTreeNode> nodes,
+        int rootIndex)
+    {
+        if (nodes.Length > LightTreeNodeCapacity)
+            throw new ArgumentException(
+                $"Light tree has {nodes.Length} nodes but capacity " +
+                $"is only {LightTreeNodeCapacity}.",
+                nameof(nodes));
+        if (rootIndex < 0 || rootIndex >= nodes.Length)
+            throw new ArgumentOutOfRangeException(
+                nameof(rootIndex),
+                $"Light tree root index {rootIndex} is out of the " +
+                $"node range [0, {nodes.Length}).");
+
+        LightTreeNodes.Upload(nodes);
+        TreeNodeCount = nodes.Length;
+        TreeRootIndex = rootIndex;
+    }
+
+    private static int NextPow2(int value)
+    {
+        int result = 1;
+        while (result < value) result <<= 1;
+        return result;
     }
 }
 
