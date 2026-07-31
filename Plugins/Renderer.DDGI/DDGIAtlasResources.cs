@@ -44,7 +44,7 @@ public sealed class DDGIAtlasResources : IDisposable
     public int UploadedProbeCount { get; private set; }
     public bool SparseLayoutReady { get; private set; }
     public int LightSlotCount =>
-        (int)((Lights?.Size ?? 0ul) / 16ul);
+        (int)((Lights?.Size ?? 0ul) / 64ul);
     public RhiBuffer LightTreeNodes { get; }
     public int LightTreeNodeCapacity { get; }
     public int TreeNodeCount { get; private set; }
@@ -120,9 +120,13 @@ public sealed class DDGIAtlasResources : IDisposable
         ProbeCounter.SetDebugName(
             "DDGI Placement Probe Counter", "DDGI");
 
+        // DDGILightSnapshot is 4 x Vector4 = 64 bytes (position w=range,
+        // direction w=type, color w=intensity, shapeParams). Structurally
+        // identical to the host LightData so the shader reads the same
+        // fields without plugin-side indirection.
         Lights = RhiBuffer.Create(
             device,
-            (ulong)maxLights * 16ul /* packed LightData */,
+            (ulong)maxLights * 64ul,
             RhiNative.BufferUsage.Storage);
         Lights.SetDebugName("DDGI Light Snapshot", "DDGI");
 
