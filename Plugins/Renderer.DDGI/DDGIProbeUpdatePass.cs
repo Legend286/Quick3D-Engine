@@ -137,6 +137,15 @@ public sealed class DDGIProbeUpdatePass : RenderPass
 
         Span<uint> probeIndexSlots = stackalloc uint[MaxProbesPerFrame];
         uint admittedCount = (uint)_probeIndices.Count;
+        if (admittedCount > MaxProbesPerFrame)
+        {
+            throw new InvalidOperationException(
+                $"DDGI probe-update pass admitted {admittedCount} probes " +
+                $"but the shader push struct only carries " +
+                $"{MaxProbesPerFrame} inline ProbeIndex slots. Raise " +
+                $"MaxProbesPerFrame + the push struct fields in lockstep " +
+                $"and extend the shader's switch to cover the new range.");
+        }
         for (int i = 0; i < MaxProbesPerFrame; ++i)
         {
             int idx = i < (int)admittedCount ? _probeIndices[i] : -1;

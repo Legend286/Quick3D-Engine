@@ -142,11 +142,11 @@ void computeMain(uint3 cell : SV_DispatchThreadID)
     }
 
     // Per-thread fixed stack of node descriptors. Sized for
-    // MaxOctreeDepth up to 4 (worst-case frontier ≈ 15 nodes when
-    // root expands to depth 2 and a single branch goes one level
-    // deeper); bumping depth to 5 would push the DFS frontier to
-    // 31 nodes, so any further growth must also bump this cap and
-    // the overflow guard below.
+    // MaxOctreeDepth up to 6 (worst-case DFS frontier ≈ 30: one
+    // branch holds one open node per level for 7 levels of octree
+    // expansion). At MaxOctreeDepth = 7 the frontier would reach
+    // ≈ 38 nodes; further depth growth must bump this cap and the
+    // overflow guard below.
     const int kStackCap = 32;
     float3 stkMin[kStackCap];
     float3 stkMax[kStackCap];
