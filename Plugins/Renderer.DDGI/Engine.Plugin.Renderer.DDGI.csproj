@@ -11,8 +11,19 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\engine_cs\Engine.Renderer\Engine.Renderer.csproj" />
+    <!-- Plugin references Engine.RenderGraph (RenderPass, ICommandSink,
+         RenderGraphResources, ShaderCompileCache), Engine.Plugins
+         (IEnginePluginHost, EnginePluginManifest),
+         Engine.RHI (RhiDevice, RhiBuffer, RhiTexture, RhiBindlessHeap),
+         Engine.CBindings (RhiNative, Log) and Engine.Scene
+         (SceneGraph, LightNode, Camera, Transform).
+         NO dependency on Engine.Renderer: the DDGI plugin is
+         renderer-agnostic by the user's directive. -->
+    <ProjectReference Include="..\..\engine_cs\Engine.RenderGraph\Engine.RenderGraph.csproj" />
     <ProjectReference Include="..\..\engine_cs\Engine.Plugins\Engine.Plugins.csproj" />
+    <ProjectReference Include="..\..\engine_cs\Engine.RHI\Engine.RHI.csproj" />
+    <ProjectReference Include="..\..\OutOfBand\Engine.CBindings\Engine.CBindings.csproj" />
+    <ProjectReference Include="..\..\engine_cs\Engine.Scene\Engine.Scene.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -5,11 +5,22 @@ using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Engine.CBindings;
+using Engine.Plugins;
 using Engine.RHI;
 using Engine.RenderGraph;
+using Engine.RenderGraph.Shaders;
 
 namespace Engine.DDGI;
 
+/// <summary>
+/// Phase-2 CPU-only probe marker overlay pass. Reads the plugin's
+/// registered <see cref="DDGIProbeVolume"/> + queries the host's
+/// active-camera-pose service (<see cref="IEnginePluginHost.TryGetActiveCameraData"/>)
+/// per frame so the pass needs ZERO Engine.Renderer coupling.
+/// Plugin-flagged via the editor's <see cref="DDGIVolumeRegistry.ShowProbes"/>
+/// static gate; the canonical clustered plan consults that gate when
+/// injecting the pass.
+/// </summary>
 public sealed class DDGIDebugPass : RenderPass, IDisposable
 {
     private readonly RhiDevice _device;
@@ -17,8 +28,8 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
     private readonly string _contentRoot;
     private readonly IReadOnlyList<string>? _cliArgs;
     private readonly IReadOnlyList<string>? _includeDirs;
-    private readonly Engine.Renderer.ShaderCompileCache? _compileCache;
-    private readonly Engine.Renderer.Renderer _renderer;
+    private readonly ShaderCompileCache? _compileCache;
+    private readonly IEnginePluginHost _host;
 
     private readonly RhiShader _vs;
     private readonly RhiShader _fs;
@@ -47,15 +58,15 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
     public DDGIDebugPass(
         RhiDevice device,
         DDGIProbeVolume volume,
-        Engine.Renderer.Renderer renderer,
+        IEnginePluginHost host,
         string contentRoot,
         IReadOnlyList<string>? cliArgs,
         IReadOnlyList<string>? includeDirs,
-        Engine.Renderer.ShaderCompileCache? compileCache)
+        ShaderCompileCache? compileCache)
     {
         _device = device;
         _volume = volume;
-        _renderer = renderer;
+        _host = host;
         _contentRoot = contentRoot;
         _cliArgs = cliArgs;
         _includeDirs = includeDirs;
@@ -81,7 +92,7 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
     public override void Setup(RenderGraphBuilder builder)
     {
         builder.Write(
-            Engine.Renderer.Renderer.BackBufferHandle,
+            RenderGraphResources.BackBufferHandle,
             ResourceState.RenderTarget);
     }
 
@@ -89,7 +100,7 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
         ICommandSink sink, RenderGraphContext context)
     {
         if (!context.TryGetTexture(
-            Engine.Renderer.Renderer.BackBufferHandle,
+            RenderGraphResources.BackBufferHandle,
             out RhiTexture colorTarget))
             return;
 
@@ -102,17 +113,17 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
             _uploadedFrame = context.FrameNumber;
         }
 
-        if (!_renderer.TryGetActiveCameraData(
+        if (!_host.TryGetActiveCameraData(
                 context.Width, context.Height,
                 out _,
-                out _,
-                out Engine.Renderer.CameraData cameraData))
+                out Matrix4x4 viewProj,
+                out _))
         {
             if (!_loggedNoCamera)
             {
                 _loggedNoCamera = true;
                 Log.Info(
-                    "[DDGI] Probe viz skipped: no active camera entity on Renderer.",
+                    "[DDGI] Probe viz skipped: host returned no active camera data.",
                     "DDGI");
             }
             return;
@@ -121,7 +132,7 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
 
         DebugPush push = new()
         {
-            ViewProj = cameraData.ViewProj,
+            ViewProj = viewProj,
             ProbeCount = (uint)_volume.ProbeCount,
             HalfSize = 0.30f,
             ExtentY = _volume.Extent.Y,

@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Engine.RHI;
 using Engine.RenderGraph;
+using Engine.RenderGraph.Shaders;
 using Engine.Scene;
 using Engine.CBindings;
 
@@ -47,6 +48,7 @@ public class PbrPass : RenderPass
     private readonly IReadOnlyList<string>? _cliArgs;
     private readonly IReadOnlyList<string>? _includeDirs;
     private readonly ShaderCompileCache? _compileCache;
+    private readonly IDDGIAtlasProvider? _ddgiAtlas;
 
     private readonly RhiShader _vs;
     private readonly RhiShader _fs;
@@ -91,7 +93,8 @@ public class PbrPass : RenderPass
         bool renderSky,
         IReadOnlyList<string>? cliArgs = null,
         IReadOnlyList<string>? includeDirs = null,
-        ShaderCompileCache? compileCache = null)
+        ShaderCompileCache? compileCache = null,
+        IDDGIAtlasProvider? ddgiAtlas = null)
     {
         _device = device;
         _contentRoot = contentRoot;
@@ -102,6 +105,7 @@ public class PbrPass : RenderPass
         _cliArgs = cliArgs;
         _includeDirs = includeDirs;
         _compileCache = compileCache;
+        _ddgiAtlas = ddgiAtlas;
         Name = string.IsNullOrWhiteSpace(scenePass.Name) ||
             scenePass.Name.Equals("PbrPass", StringComparison.OrdinalIgnoreCase)
             ? "Forward PBR"
@@ -147,8 +151,8 @@ public class PbrPass : RenderPass
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        builder.Write(Engine.Renderer.Renderer.BackBufferHandle, ResourceState.RenderTarget);
-        builder.Write(Engine.Renderer.Renderer.DepthBufferHandle, ResourceState.DepthStencil);
+        builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.RenderTarget);
+        builder.Write(RenderGraphResources.DepthBufferHandle, ResourceState.DepthStencil);
         if (_directionalShadow != null)
         {
             for (int cascadeIndex = 0;
@@ -166,7 +170,7 @@ public class PbrPass : RenderPass
             for (int pageIndex = 4; pageIndex < 24; ++pageIndex)
             {
                 builder.Read(
-                    Engine.Renderer.Renderer.GetShadowPageHandle(pageIndex),
+                    RenderGraphResources.GetShadowPageHandle(pageIndex),
                     ResourceState.ShaderRead);
             }
         }
@@ -275,9 +279,9 @@ public class PbrPass : RenderPass
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext context)
     {
-        if (!context.TryGetTexture(Engine.Renderer.Renderer.BackBufferHandle, out RhiTexture colorTarget))
+        if (!context.TryGetTexture(RenderGraphResources.BackBufferHandle, out RhiTexture colorTarget))
             return;
-        context.TryGetTexture(Engine.Renderer.Renderer.DepthBufferHandle, out RhiTexture depthTarget);
+        context.TryGetTexture(RenderGraphResources.DepthBufferHandle, out RhiTexture depthTarget);
 
         uint w = context.Width > 0 ? context.Width : 1280;
         uint h = context.Height > 0 ? context.Height : 720;
@@ -302,6 +306,16 @@ public class PbrPass : RenderPass
             sink.UseBuffer(_clusterLightIndexBuffer, 1);
             if (_punctualShadow != null)
                 sink.UseBuffer(_punctualShadow.FaceBuffer, 1);
+            if (_ddgiAtlas != null &&
+                _ddgiAtlas.TryGetSparseBuffers(
+                    out RhiBuffer probePositions,
+                    out RhiBuffer gridToProbeIndex,
+                    out RhiBuffer probeCounter) &&
+                _ddgiAtlas.IsSparseLayoutReady)
+            {
+                sink.UseBuffer(probePositions, 5);
+                sink.UseBuffer(gridToProbeIndex, 6);
+            }
             foreach (var mesh in frameData.UniqueMeshes)
             {
                 sink.UseBuffer(mesh.VertexBuffer, 1);
@@ -364,6 +378,48 @@ public class PbrPass : RenderPass
             pbrPush.PunctualShadowFaces =
                 _punctualShadow.FaceBuffer.DeviceAddress;
             pbrPush.PunctualShadowFaceCount = 1024 * 6;
+        }
+
+        // DDGI consumer data. Zeroed when the plugin is not loaded
+        // so the shader-side `DDGI_AVAILABLE` macro can fall back to
+        // no-atlas sampling without host coupling. The sparse
+        // positions / gridToProbe / counter SSBOs are bound at
+        // fixed register slots (t5/t6/u0) by the per-frame
+        // UseBuffer block inside Execute() when the plugin reports
+        // its sparse layout ready; the .w component of
+        // DDGIAtlasParams encodes that ready flag as 0.0 (pending)
+        // or 1.0 (consumers should read sparse SSBOs).
+        if (_ddgiAtlas != null &&
+            _ddgiAtlas.TryGetProbeVolume(
+                out Vector3 origin,
+                out Vector3 extent,
+                out Engine.RenderGraph.Vector3I baseGrid))
+        {
+            var (irradSlot, visSlot) =
+                _ddgiAtlas.GetAtlasBindlessSlots();
+            int packedGrid =
+                baseGrid.X * baseGrid.Y * baseGrid.Z;
+            pbrPush.DDGIAtlasParams = new Vector4(
+                irradSlot,
+                visSlot,
+                (float)packedGrid,
+                _ddgiAtlas.IsSparseLayoutReady ? 1f : 0f);
+            pbrPush.DDGIOriginAndCountZ = new Vector4(
+                origin.X,
+                origin.Y,
+                origin.Z,
+                baseGrid.Z);
+            pbrPush.DDGIExtentAndFlags = new Vector4(
+                extent.X,
+                extent.Y,
+                _ddgiAtlas.RaysPerProbe,
+                _ddgiAtlas.MaxProbesPerFrame);
+        }
+        else
+        {
+            pbrPush.DDGIAtlasParams = Vector4.Zero;
+            pbrPush.DDGIOriginAndCountZ = Vector4.Zero;
+            pbrPush.DDGIExtentAndFlags = Vector4.Zero;
         }
     }
 
