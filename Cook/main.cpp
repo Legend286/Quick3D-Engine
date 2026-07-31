@@ -126,8 +126,7 @@ static std::string ResolveBasisuPath(const char* self_argv0, const std::string& 
     return "";
 }
 
-std::string ExecuteBasisu(const std::string& input_img, const std::string& out_dir, bool is_normal, bool is_linear, int width, int height, int channels, const std::string& type_name) {
-    std::string tex_out_dir = (fs::path(out_dir) / "textures").string();
+std::string ExecuteBasisu(const std::string& input_img, const std::string& tex_out_dir, bool is_normal, bool is_linear, int width, int height, int channels, const std::string& type_name) {
     fs::create_directories(tex_out_dir);
     // basisu defaults to ETC1S+BasisLZ (scheme=1, vkFormat=0), which the
     // runtime Ktx2Loader cannot decode (Basis Universal transcoder is not
@@ -196,7 +195,7 @@ std::string ExecuteBasisu(const std::string& input_img, const std::string& out_d
     tex_meta.close();
 
     // Return the relative filename for serialization in materials (only on success)
-    return "../../../textures/" + base_name + ".ktx2";
+    return "textures/" + base_name + ".ktx2";
 }
 
 int main(int argc, char** argv) {
@@ -245,10 +244,11 @@ int main(int argc, char** argv) {
     
     std::string base_name = in_path.stem().string();
     fs::path model_output_dir =
-        fs::path(out_dir) / "models" / base_name;
+        fs::path(out_dir) / base_name;
     fs::create_directories(model_output_dir);
     fs::create_directories(model_output_dir / "materials");
-    fs::create_directories(fs::path(out_dir) / "textures");
+    fs::path tex_out_dir = model_output_dir / "materials" / "textures";
+    fs::create_directories(tex_out_dir);
 
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
@@ -380,7 +380,7 @@ int main(int argc, char** argv) {
                 
                 std::string out_ktx2;
                 try {
-                    out_ktx2 = ExecuteBasisu(input_img, out_dir, is_normal, is_linear, w, h, comp, type_name);
+                    out_ktx2 = ExecuteBasisu(input_img, tex_out_dir.string(), is_normal, is_linear, w, h, comp, type_name);
                     // Delete temp png if we extracted it
                     if (input_img == temp_png) {
                         std::error_code ec;
@@ -538,22 +538,6 @@ int main(int argc, char** argv) {
     };
 
     const tinygltf::Scene& scene = model.scenes[defaultScene];
-
-    fs::create_directories(fs::path(out_dir) / "scenes");
-    std::string scene_path = (fs::path(out_dir) / "scenes" / (base_name + ".scene.json")).string();
-    std::ofstream scene_file(scene_path);
-    scene_file << "{\n  \"version\": 1,\n";
-    scene_file << "  \"passes\": [\n";
-    scene_file << "    {\n";
-    scene_file << "      \"name\": \"PbrPass\",\n";
-    scene_file << "      \"shader_vs\": \"shaders/pbr.slang\",\n";
-    scene_file << "      \"shader_fs\": \"shaders/pbr.slang\",\n";
-    scene_file << "      \"entry\": \"main\",\n";
-    scene_file << "      \"clear_color\": [0.05, 0.06, 0.09, 1.0],\n";
-    scene_file << "      \"draws\": []\n";
-    scene_file << "    }\n";
-    scene_file << "  ],\n";
-    scene_file << "  \"models\": [\n";
 
     bool first_entity = true;
 
@@ -852,23 +836,8 @@ int main(int argc, char** argv) {
         mdl_file << "    \"max\": [" << (total_max_x - pivot_x) << ", " << (total_max_y - pivot_y) << ", " << (total_max_z - pivot_z) << "]\n";
         mdl_file << "  },\n  \"triangle_count\": " << (total_indices.load(std::memory_order_relaxed) / 3) << "\n}\n";
 
-        if (!first_entity) scene_file << ",\n";
-        first_entity = false;
-        scene_file << "    {\n";
-        scene_file << "      \"name\": \"" << obj_name << "\",\n";
-        scene_file << "      \"source\": \""
-                   << "models/" << base_name << "/"
-                   << obj_name + ".mdl" << "\",\n";
-        scene_file << "      \"position\": [" << pivot_x << ", " << pivot_y << ", " << pivot_z << "],\n";
-        scene_file << "      \"rotation\": [0, 0, 0, 1],\n";
-        scene_file << "      \"scale\": [1, 1, 1]\n";
-        scene_file << "    }\n";
-        
         std::cout << "Cooked object: " << obj_name << " (" << extracted.size() << " parts)\n";
     }
-
-    scene_file << "  ]\n}\n";
-    scene_file.close();
 
     return 0;
 }

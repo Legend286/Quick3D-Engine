@@ -10,7 +10,7 @@ using Engine.Scene.Components;
 using Engine.CBindings;
 using Engine.Assets;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 public sealed class OutlineMaskPass : RenderPass, IDisposable
 {
@@ -58,8 +58,8 @@ public sealed class OutlineMaskPass : RenderPass, IDisposable
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        builder.Write(Engine.Game.Renderer.OutlineMaskHandle, ResourceState.RenderTarget);
-        builder.Read(Engine.Game.Renderer.DepthBufferHandle, ResourceState.DepthStencil); // Read depth, do not write
+        builder.Write(RenderGraphResources.OutlineMaskHandle, ResourceState.RenderTarget);
+        builder.Read(RenderGraphResources.DepthBufferHandle, ResourceState.DepthStencil); // Read depth, do not write
     }
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext context)
@@ -68,7 +68,7 @@ public sealed class OutlineMaskPass : RenderPass, IDisposable
         if (selectedId == 0)
         {
             // Even if not drawn, we must clear the mask!
-            if (context.TryGetTexture(Engine.Game.Renderer.OutlineMaskHandle, out RhiTexture emptyMask))
+            if (context.TryGetTexture(RenderGraphResources.OutlineMaskHandle, out RhiTexture emptyMask))
             {
                 sink.BeginRenderPass(emptyMask, Engine.CBindings.RhiNative.LoadOp.Clear, Engine.CBindings.RhiNative.StoreOp.Store);
                 sink.EndPass();
@@ -76,8 +76,8 @@ public sealed class OutlineMaskPass : RenderPass, IDisposable
             return;
         }
 
-        if (!context.TryGetTexture(Engine.Game.Renderer.OutlineMaskHandle, out RhiTexture maskTarget)) return;
-        if (!context.TryGetTexture(Engine.Game.Renderer.DepthBufferHandle, out RhiTexture depthTarget)) return;
+        if (!context.TryGetTexture(RenderGraphResources.OutlineMaskHandle, out RhiTexture maskTarget)) return;
+        if (!context.TryGetTexture(RenderGraphResources.DepthBufferHandle, out RhiTexture depthTarget)) return;
 
         uint w = context.Width > 0 ? context.Width : 1280;
         uint h = context.Height > 0 ? context.Height : 720;

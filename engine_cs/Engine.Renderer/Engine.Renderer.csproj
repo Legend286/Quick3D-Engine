@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Engine.Renderer</RootNamespace>
+    <AssemblyName>Engine.Renderer</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Engine.RHI\Engine.RHI.csproj" />
+    <ProjectReference Include="..\Engine.RenderGraph\Engine.RenderGraph.csproj" />
+    <ProjectReference Include="..\Engine.Scene\Engine.Scene.csproj" />
+    <ProjectReference Include="..\Engine.Assets\Engine.Assets.csproj" />
+    <ProjectReference Include="..\Engine.Plugins\Engine.Plugins.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Twizzle.ImGui-Bundle.NET" Version="1.91.5.2" />
+  </ItemGroup>
+</Project>

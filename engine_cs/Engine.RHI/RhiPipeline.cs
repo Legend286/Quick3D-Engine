@@ -74,6 +74,28 @@ public sealed class RhiPipeline : IDisposable
         GC.SuppressFinalize(this);
     }
 
+    private string? _debugName;
+    private string _debugCategory = "Pipeline";
+
+    /// <summary>Setter pair with <see cref="RhiBuffer.SetDebugName"/>.
+    /// Records the label in managed-side storage keyed by this
+    /// instance's <see cref="Handle"/> so renderer diagnostics can
+    /// surface pipeline provenance (probe updates, shadow cascades,
+    /// blit passes) without the C RHI round-trip the buffer/texture
+    /// paths perform via <c>GpuResourceRegistry</c>.</summary>
+    public void SetDebugName(string name, string category = "Pipeline")
+    {
+        _debugName = name ?? throw new ArgumentNullException(nameof(name));
+        _debugCategory = category ?? "Pipeline";
+    }
+
+    /// <summary>Gets the most-recent label assigned via
+    /// <see cref="SetDebugName"/>, or <c>null</c> if no label was set.</summary>
+    public string? DebugName => _debugName;
+
+    /// <summary>Gets the diagnostic category assigned alongside the label.</summary>
+    public string DebugCategory => _debugCategory;
+
     /// <summary>Safety net: see <see cref="RhiBuffer"/>.</summary>
     ~RhiPipeline() => Dispose();
 }

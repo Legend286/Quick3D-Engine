@@ -4,7 +4,7 @@ using System.Numerics;
 using Engine.RHI;
 using Engine.Scene.Components;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 internal static class ViewportCameraProjection
 {

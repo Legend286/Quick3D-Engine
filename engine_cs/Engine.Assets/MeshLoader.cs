@@ -15,7 +15,7 @@ public struct Vertex
     public float tx, ty, tz, tw;
 }
 
-public class Mesh
+public class Mesh : IDisposable
 {
     public RhiBuffer VertexBuffer;
     public RhiBuffer IndexBuffer;
@@ -44,6 +44,13 @@ public class Mesh
         IndexFormat = ifmt;
         BoundsSphereCenter = boundsSphereCenter;
         BoundsSphereRadius = boundsSphereRadius;
+    }
+
+    public void Dispose()
+    {
+        VertexBuffer?.Dispose();
+        IndexBuffer?.Dispose();
+        Blas?.Dispose();
     }
 }
 
@@ -145,7 +152,14 @@ public static class MeshLoader
 
     public static void ClearCache() 
     {
-        lock (_lock) _cache.Clear();
+        lock (_lock)
+        {
+            foreach (var mesh in _cache.Values)
+            {
+                mesh.Dispose();
+            }
+            _cache.Clear();
+        }
     }
 
     public static unsafe Mesh LoadMsh(RhiDevice device, string path)

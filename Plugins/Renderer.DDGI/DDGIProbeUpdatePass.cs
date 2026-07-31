@@ -33,9 +33,11 @@ public sealed class DDGIProbeUpdatePass : RenderPass
     private readonly RhiPipeline _pipeline;
     private readonly DDGIAtlasResources _atlas;
     private readonly RaytracingSceneCache _sceneCache;
-    private readonly IReadOnlyList<int> _probeIndices;
-    private readonly Vector3 _cameraPosition;
-    private readonly long _frameNumber;
+    private readonly DDGIRendererPlugin _plugin;
+    private readonly Engine.RenderGraph.GpuWorkScheduler _scheduler;
+    private IReadOnlyList<int> _probeIndices = Array.Empty<int>();
+    private Vector3 _cameraPosition;
+    private long _frameNumber;
     private RhiAccelStruct? _sceneTlas;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -70,21 +72,20 @@ public sealed class DDGIProbeUpdatePass : RenderPass
         IReadOnlyList<string>? includeDirs,
         IReadOnlyList<string>? cliArgs,
         DDGIAtlasResources atlas,
-        IReadOnlyList<int> probeIndices,
-        Vector3 cameraPosition,
-        long frameNumber,
+        DDGIRendererPlugin plugin,
+        Engine.RenderGraph.GpuWorkScheduler scheduler,
         ShaderCompileCache? compileCache = null)
     {
         if (atlas == null) throw new ArgumentNullException(nameof(atlas));
-        if (probeIndices == null) throw new ArgumentNullException(nameof(probeIndices));
+        if (plugin == null) throw new ArgumentNullException(nameof(plugin));
+        if (scheduler == null) throw new ArgumentNullException(nameof(scheduler));
         if (world == null) throw new ArgumentNullException(nameof(world));
 
         _device = device;
         _atlas = atlas;
         _sceneCache = new RaytracingSceneCache(device, world);
-        _probeIndices = probeIndices;
-        _cameraPosition = cameraPosition;
-        _frameNumber = frameNumber;
+        _plugin = plugin;
+        _scheduler = scheduler;
 
         Name = "DDGI Probe Update";
         Queue = RhiNative.QueueType.Compute;
@@ -117,11 +118,13 @@ public sealed class DDGIProbeUpdatePass : RenderPass
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.RenderTarget);
+        builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.UnorderedAccess);
     }
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext context)
     {
+        _probeIndices = _plugin.EvaluateFrameUpdates(_scheduler, out _cameraPosition, out _frameNumber);
+        
         if (_atlas == null || _probeIndices.Count == 0) return;
 
         RaytracingSceneCache.TlasUpdateResult tlasInfo =

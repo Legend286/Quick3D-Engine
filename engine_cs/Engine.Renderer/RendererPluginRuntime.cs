@@ -8,8 +8,9 @@ using System.Runtime.Loader;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Engine.Plugins;
+using Engine.RenderGraph;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 internal sealed class RendererPluginRuntime :
     IEnginePluginHost,
@@ -44,6 +45,9 @@ internal sealed class RendererPluginRuntime :
             if (assemblyName.Name == "Engine.Assets")
                 return typeof(
                     Engine.Assets.AssetRegistry).Assembly;
+            if (assemblyName.Name == "Engine.Renderer")
+                return typeof(
+                    Engine.Renderer.Renderer).Assembly;
             return null;
         }
     }
@@ -178,6 +182,52 @@ internal sealed class RendererPluginRuntime :
     public void InvalidatePluginShaders(
         string pluginId)
     {
+    }
+
+    /// <inheritdoc />
+    /// <remarks>Forwards to <see cref="Engine.Renderer.Renderer.TryGetActiveCameraData"/>
+    /// and re-marshals the host-side <c>CameraData</c> struct into the
+    /// neutral <see cref="System.Numerics.Vector3"/> + matrix shape the
+    /// plugin contract expects. Returns false when the host has no
+    /// active camera so plugin passes can fall back to identity.
+
+    public bool TryGetActiveCameraData(
+        uint width, uint height,
+        out System.Numerics.Vector3 cameraPosition,
+        out System.Numerics.Matrix4x4 viewProjection,
+        out System.Numerics.Matrix4x4 inverseViewProjection)
+    {
+        cameraPosition = System.Numerics.Vector3.Zero;
+        viewProjection = System.Numerics.Matrix4x4.Identity;
+        inverseViewProjection = System.Numerics.Matrix4x4.Identity;
+
+        var renderer = Renderer.ActiveInstance;
+        if (renderer == null)
+        {
+            return false;
+        }
+
+        if (!renderer.TryGetActiveCameraData(
+                width, height,
+                out _, out _,
+                out CameraData cameraData))
+        {
+            return false;
+        }
+        if (cameraData.CameraPosition is { } streamCamPos)
+        {
+            cameraPosition = new System.Numerics.Vector3(
+                streamCamPos.X,
+                streamCamPos.Y,
+                streamCamPos.Z);
+        }
+        else
+        {
+            cameraPosition = System.Numerics.Vector3.Zero;
+        }
+        viewProjection = cameraData.ViewProj;
+        inverseViewProjection = cameraData.InvViewProj;
+        return true;
     }
 
     private string? FindManifest(string pluginId)

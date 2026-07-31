@@ -123,7 +123,10 @@ public static partial class RhiNative
                                     // length comes from SourceLen.
         public uint SourceLen;
         public IntPtr EntryPoint;   // char*; "main0" or similar.
-        public IntPtr IncludePath;  // char*; optional base include path.
+        public IntPtr IncludePath;  // char*; one or more include dirs joined with RHI_SHADER_INCLUDE_PATH_SEPARATOR.
+                                    // Backends MUST split and emit one "-I path" pair per entry.
+        public IntPtr CliArgs;      // char*; optional whitespace-tokenized Slang CLI args appended after positional tokens.
+                                    // Null or empty => no extras.
     }
 
     public enum PrimitiveTopology : uint

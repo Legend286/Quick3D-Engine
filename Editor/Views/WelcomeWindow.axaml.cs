@@ -123,7 +123,7 @@ public partial class WelcomeWindow : Window
         // 1. Create directories
         Directory.CreateDirectory(Path.Combine(newProjectPath, ".eeproj"));
         Directory.CreateDirectory(Path.Combine(newProjectPath, "Content"));
-        Directory.CreateDirectory(Path.Combine(newProjectPath, "Content", "scenes"));
+        Directory.CreateDirectory(Path.Combine(newProjectPath, "Content"));
         Directory.CreateDirectory(Path.Combine(newProjectPath, "Content", "shaders"));
         Directory.CreateDirectory(Path.Combine(newProjectPath, "Content", "models"));
         Directory.CreateDirectory(Path.Combine(newProjectPath, "Content", "materials"));
@@ -259,6 +259,8 @@ obj/
             string graphCsproj = Path.Combine(App.EngineSourceRoot, "engine_cs", "Engine.RenderGraph", "Engine.RenderGraph.csproj");
             string sceneCsproj = Path.Combine(App.EngineSourceRoot, "engine_cs", "Engine.Scene", "Engine.Scene.csproj");
             string assetsCsproj = Path.Combine(App.EngineSourceRoot, "engine_cs", "Engine.Assets", "Engine.Assets.csproj");
+            string pluginsCsproj = Path.Combine(App.EngineSourceRoot, "engine_cs", "Engine.Plugins", "Engine.Plugins.csproj");
+            string rendererCsproj = Path.Combine(App.EngineSourceRoot, "engine_cs", "Engine.Renderer", "Engine.Renderer.csproj");
             string cbindingsCsproj = Path.Combine(App.EngineSourceRoot, "OutOfBand", "Engine.CBindings", "Engine.CBindings.csproj");
 
             string csprojContent =
@@ -279,6 +281,8 @@ $@"<Project Sdk=""Microsoft.NET.Sdk"">
     <ProjectReference Include=""{graphCsproj}"" />
     <ProjectReference Include=""{sceneCsproj}"" />
     <ProjectReference Include=""{assetsCsproj}"" />
+    <ProjectReference Include=""{pluginsCsproj}"" />
+    <ProjectReference Include=""{rendererCsproj}"" />
     <ProjectReference Include=""{cbindingsCsproj}"" />
   </ItemGroup>
 

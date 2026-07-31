@@ -104,6 +104,19 @@ public interface IEnginePluginHost
 
     /// <summary>Requests recreation of pipelines owned by a plugin.</summary>
     void InvalidatePluginShaders(string pluginId);
+
+    /// <summary>Reads the active camera's world position + view /
+    /// inverse-view matrices at the given viewport size. Plugin
+    /// implementations call this so they obtain the camera pose
+    /// without naming any host-renderer type. Returning false means
+    /// no active Camera entity is set on the host's scene world;
+    /// plugin passes should fall back to identity matrices and
+    /// log a once-per-streak diagnostic.</summary>
+    bool TryGetActiveCameraData(
+        uint width, uint height,
+        out System.Numerics.Vector3 cameraPosition,
+        out System.Numerics.Matrix4x4 viewProjection,
+        out System.Numerics.Matrix4x4 inverseViewProjection);
 }
 
 /// <summary>Defines the lifecycle of a hot-reloadable managed plugin.</summary>

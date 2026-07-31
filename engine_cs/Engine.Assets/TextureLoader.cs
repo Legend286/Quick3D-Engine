@@ -21,7 +21,14 @@ public static class TextureLoader
 
     public static void ClearCache() 
     {
-        lock (_lock) _cache.Clear();
+        lock (_lock)
+        {
+            foreach (var texture in _cache.Values)
+            {
+                texture.Dispose();
+            }
+            _cache.Clear();
+        }
     }
 
     public static RhiTexture? LoadTexture(RhiDevice device, string path)

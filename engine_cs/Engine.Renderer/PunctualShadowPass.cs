@@ -9,7 +9,7 @@ using Engine.CBindings;
 using Engine.RHI;
 using Engine.RenderGraph;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 internal sealed class PunctualShadowState : IDisposable
 {
@@ -552,7 +552,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         for (int pageIndex = 4; pageIndex < 24; ++pageIndex)
         {
             builder.Write(
-                Renderer.GetShadowPageHandle(pageIndex),
+                RenderGraphResources.GetShadowPageHandle(pageIndex),
                 ResourceState.DepthStencil);
         }
     }
@@ -964,7 +964,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         }
     }
 
-    internal static ulong GetDrawCommandOffset(
+    public static ulong GetDrawCommandOffset(
         int jobIndex,
         int partCount)
         => checked(
@@ -1025,7 +1025,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         return rightScore.CompareTo(leftScore);
     }
 
-    internal static float GetSchedulingScore(
+    public static float GetSchedulingScore(
         float priority,
         float urgency)
     {
@@ -1092,7 +1092,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         return faceCount;
     }
 
-    internal static int GetMaximumLightsPerBatch(int facesPerLight)
+    public static int GetMaximumLightsPerBatch(int facesPerLight)
     {
         if (facesPerLight <= 0)
             throw new ArgumentOutOfRangeException(nameof(facesPerLight));
@@ -1181,7 +1181,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         return candidates;
     }
 
-    internal static int GetUpdateIntervalFrames(
+    public static int GetUpdateIntervalFrames(
         float projectedScreenRadius,
         float distanceToLight)
     {
@@ -1221,7 +1221,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             combinedPriority);
     }
 
-    internal static int GetPreferredSubdivision(
+    public static int GetPreferredSubdivision(
         int faceCount,
         float visualPriority)
     {

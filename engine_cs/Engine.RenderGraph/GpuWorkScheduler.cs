@@ -2,13 +2,23 @@
 
 using System;
 
-namespace Engine.Game;
+namespace Engine.RenderGraph;
 
+/// <summary>
+/// Per-frame GPU work domains admitted by <see cref="GpuWorkScheduler"/>.
+/// Add new domains BEFORE <see cref="Count"/> so the
+/// <c>_domains[(int)domain]</c> indexing stays stable across reloads.
+/// </summary>
 public enum GpuWorkDomain
 {
     Shadows,
     PunctualShadows,
     BackgroundCompute,
+    /// <summary>Dynamic Diffuse Global Illumination — probe
+    /// gather / SH2 projection / atlas update. Hard 2.0 ms ceiling
+    /// per frame; per-probe ray count + camera-first priority
+    /// rotate work across frames. See <c>docs/renderer/ddgi.md</c>.</summary>
+    Gi,
     Count,
 }
 
@@ -70,6 +80,22 @@ public sealed class GpuWorkScheduler
             BudgetMilliseconds = 1.5,
             EstimatedUnitMilliseconds = 0.25,
             MaximumUnits = 4,
+        },
+        // DDGI per-frame ceiling — keeps the probe update pass under
+        // 2 ms. Per-probe cost is tracked via RecordCompletedWork so
+        // the scheduler can clamp admission if hardware RT costs
+        // exceed the budget under heavier SH projection loads.
+        // MaximumUnits = 8 matches the time-driven cap
+        // (8 admits × 0.25 ms = 2.0 ms ceiling); raise the
+        // MaximumUnits ONLY in tandem with BudgetMilliseconds so the
+        // TryAdmit time-floor remains consistent. See
+        // docs/renderer/ddgi.md.
+        new()
+        {
+            Name = "Global Illumination",
+            BudgetMilliseconds = 2.0,
+            EstimatedUnitMilliseconds = 0.25,
+            MaximumUnits = 8,
         },
     };
 

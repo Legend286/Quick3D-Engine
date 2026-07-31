@@ -4,7 +4,7 @@
 // exercised without requiring a native ABI library to be loaded.
 
 using System;
-using Engine.Renderer;
+using Engine.RenderGraph.Shaders;
 using Xunit;
 
 namespace Engine.Game.Tests;

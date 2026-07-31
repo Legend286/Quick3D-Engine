@@ -69,6 +69,8 @@ public partial class ContentAsset : ObservableObject
         => OnPropertyChanged(nameof(ExpansionGlyph));
 }
 
+public record BreadcrumbItem(string Name, ContentFolder Folder);
+
 public partial class ContentBrowserViewModel : ObservableObject, IDisposable
 {
     private const int HoverPreviewDelayMs = 180;
@@ -77,6 +79,7 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
     [ObservableProperty] private ObservableCollection<ContentFolder> _rootFolders = new();
     [ObservableProperty] private ContentFolder? _selectedFolder;
     [ObservableProperty] private ObservableCollection<ContentAsset> _currentAssets = new();
+    [ObservableProperty] private ObservableCollection<BreadcrumbItem> _breadcrumbs = new();
     [ObservableProperty] private Bitmap? _hoverPreviewBitmap;
     [ObservableProperty] private bool _hoverPreviewVisible;
     [ObservableProperty] private bool _hoverPreviewShowImage;
@@ -205,7 +208,59 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
     partial void OnSelectedFolderChanged(ContentFolder? oldValue, ContentFolder? newValue)
     {
         EndAssetHover();
+        UpdateBreadcrumbs(newValue);
         LoadAssetsForFolder(newValue);
+    }
+
+    private void UpdateBreadcrumbs(ContentFolder? folder)
+    {
+        Breadcrumbs.Clear();
+        if (folder == null) return;
+        
+        var path = new List<ContentFolder>();
+        FindFolderPath(RootFolders, folder, path);
+        
+        foreach (var f in path)
+        {
+            Breadcrumbs.Add(new BreadcrumbItem(f.Name, f));
+        }
+    }
+
+    private bool FindFolderPath(IEnumerable<ContentFolder> folders, ContentFolder target, List<ContentFolder> currentPath)
+    {
+        foreach (var folder in folders)
+        {
+            currentPath.Add(folder);
+            if (folder == target)
+                return true;
+            
+            if (FindFolderPath(folder.SubFolders, target, currentPath))
+                return true;
+                
+            currentPath.RemoveAt(currentPath.Count - 1);
+        }
+        return false;
+    }
+
+    public void SelectFolderByPath(string path)
+    {
+        var folder = FindFolderByPath(RootFolders, path);
+        if (folder != null)
+            SelectedFolder = folder;
+    }
+
+    private ContentFolder? FindFolderByPath(IEnumerable<ContentFolder> folders, string path)
+    {
+        foreach (var folder in folders)
+        {
+            if (string.Equals(folder.FullPath, path, StringComparison.OrdinalIgnoreCase))
+                return folder;
+            
+            var found = FindFolderByPath(folder.SubFolders, path);
+            if (found != null)
+                return found;
+        }
+        return null;
     }
 
     public void ToggleModelExpansion(ContentAsset asset)
@@ -232,6 +287,13 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
 
         try
         {
+            var dirs = Directory.GetDirectories(folder.FullPath);
+            foreach (var dir in dirs)
+            {
+                var dirName = Path.GetFileName(dir);
+                CurrentAssets.Add(new ContentAsset(dirName, dir, "Folder", "\uE2C7")); // Folder icon
+            }
+
             var files = Directory.GetFiles(folder.FullPath);
             foreach (var file in files)
             {
@@ -369,6 +431,11 @@ public partial class ContentBrowserViewModel : ObservableObject, IDisposable
                     () => asset.ThumbnailBitmap = bitmap);
             }
         });
+    }
+
+    public void RefreshCurrentFolder()
+    {
+        Dispatcher.UIThread.Post(() => LoadAssetsForFolder(SelectedFolder));
     }
 
     private FileSystemWatcher? _contentWatcher;

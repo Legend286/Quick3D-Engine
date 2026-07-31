@@ -29,6 +29,9 @@ public sealed class AssetImportService : ObservableObject
     /// <summary>Gets the process-wide editor import service.</summary>
     public static AssetImportService Shared { get; } = new();
 
+    /// <summary>Fired on the UI thread after an import (including thumbnails) completes successfully.</summary>
+    public event Action? ImportCompleted;
+
     /// <summary>Gets whether an import is currently active.</summary>
     public bool IsActive
     {
@@ -66,6 +69,7 @@ public sealed class AssetImportService : ObservableObject
 
     internal bool TryStart(
         string sourceFile,
+        string targetDirectory,
         string assetType,
         float scaleX,
         float scaleY,
@@ -78,6 +82,7 @@ public sealed class AssetImportService : ObservableObject
         _ = Task.Run(
             () => RunImportAsync(
                 sourceFile,
+                targetDirectory,
                 assetType,
                 scaleX,
                 scaleY,
@@ -87,6 +92,7 @@ public sealed class AssetImportService : ObservableObject
 
     private async Task RunImportAsync(
         string sourceFile,
+        string targetDirectory,
         string assetType,
         float scaleX,
         float scaleY,
@@ -94,9 +100,7 @@ public sealed class AssetImportService : ObservableObject
     {
         try
         {
-            string contentDirectory =
-                Path.Combine(App.ProjectRoot, "Content");
-            Directory.CreateDirectory(contentDirectory);
+            Directory.CreateDirectory(targetDirectory);
 
             string cookExecutable = FindCookExecutable()
                 ?? throw new FileNotFoundException(
@@ -112,7 +116,7 @@ public sealed class AssetImportService : ObservableObject
             {
                 FileName = cookExecutable,
                 Arguments =
-                    $"\"{sourceFile}\" \"{contentDirectory}\" " +
+                    $"\"{sourceFile}\" \"{targetDirectory}\" " +
                     $"-scale {scaleX.ToString(CultureInfo.InvariantCulture)} " +
                     $"{scaleY.ToString(CultureInfo.InvariantCulture)} " +
                     $"{scaleZ.ToString(CultureInfo.InvariantCulture)}" +
@@ -160,11 +164,12 @@ public sealed class AssetImportService : ObservableObject
             {
                 await GenerateModelThumbnailsAsync(
                     sourceFile,
-                    contentDirectory).ConfigureAwait(false);
+                    targetDirectory).ConfigureAwait(false);
             }
 
             Info($"Import succeeded:\n{output}", "Editor");
             SetProgress("Import complete", 1, 1, false);
+            Dispatcher.UIThread.Post(() => ImportCompleted?.Invoke());
         }
         catch (Exception ex)
         {
@@ -235,17 +240,11 @@ public sealed class AssetImportService : ObservableObject
         string sourceFile,
         string contentDirectory)
     {
-        string modelName = Path.GetFileNameWithoutExtension(sourceFile);
-        string importDirectory =
-            Path.Combine(contentDirectory, "models", modelName);
-        string[] modelPaths = Directory.Exists(importDirectory)
-            ? Directory
-                .EnumerateFiles(
-                    importDirectory,
-                    "*.mdl",
-                    SearchOption.TopDirectoryOnly)
-                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                .ToArray()
+        var recentCutoff = DateTime.Now.Subtract(TimeSpan.FromMinutes(2));
+        string[] modelPaths = Directory.Exists(contentDirectory)
+            ? Directory.EnumerateFiles(contentDirectory, "*.mdl", SearchOption.AllDirectories)
+                .Where(path => new FileInfo(path).LastWriteTime >= recentCutoff || new FileInfo(path).CreationTime >= recentCutoff)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray()
             : [];
         if (modelPaths.Length == 0)
             return;
@@ -257,47 +256,53 @@ public sealed class AssetImportService : ObservableObject
                     Path: path,
                     Definition: ModelLoader.ReadDefinition(path)))
                 .ToArray();
-            int thumbnailCount = models.Sum(
-                model => model.Definition.Parts.Length + 1);
+            int thumbnailCount = models.Length + models.Sum(m => m.Definition.Parts.Length);
             int completed = 0;
             SetProgress(
-                $"Generating thumbnails (1 of {thumbnailCount})",
+                $"Generating thumbnails (0 of {thumbnailCount})",
                 0,
                 thumbnailCount,
                 false);
 
+            var tasks = new List<Task>();
+
             foreach (var model in models)
             {
-                await ThumbnailGenerator
-                    .GetOrGenerateThumbnailAsync(model.Path, "Model")
-                    .ConfigureAwait(false);
-                completed++;
-                SetProgress(
-                    $"Generating thumbnails " +
-                    $"({completed} of {thumbnailCount})",
-                    completed,
-                    thumbnailCount,
-                    false);
-
-                for (int partIndex = 0;
-                     partIndex < model.Definition.Parts.Length;
-                     ++partIndex)
+                tasks.Add(Task.Run(async () => 
                 {
                     await ThumbnailGenerator
-                        .GetOrGenerateThumbnailAsync(
-                            model.Path,
-                            "Model",
-                            modelPartIndex: partIndex)
+                        .GetOrGenerateThumbnailAsync(model.Path, "Model")
                         .ConfigureAwait(false);
-                    completed++;
+                    int c = Interlocked.Increment(ref completed);
                     SetProgress(
-                        $"Generating thumbnails " +
-                        $"({completed} of {thumbnailCount})",
-                        completed,
+                        $"Generating thumbnails ({c} of {thumbnailCount})",
+                        c,
                         thumbnailCount,
                         false);
+                }));
+
+                for (int i = 0; i < model.Definition.Parts.Length; ++i)
+                {
+                    int partIndex = i;
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        await ThumbnailGenerator
+                            .GetOrGenerateThumbnailAsync(
+                                model.Path,
+                                "Model",
+                                modelPartIndex: partIndex)
+                            .ConfigureAwait(false);
+                        int c = Interlocked.Increment(ref completed);
+                        SetProgress(
+                            $"Generating thumbnails ({c} of {thumbnailCount})",
+                            c,
+                            thumbnailCount,
+                            false);
+                    }));
                 }
             }
+            
+            await Task.WhenAll(tasks).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

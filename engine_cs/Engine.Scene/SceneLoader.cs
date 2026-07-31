@@ -22,13 +22,17 @@ public sealed class SceneLoader
     {
         if (_cache.TryGetValue(sceneName, out var hit)) return hit;
         
-        string path = Path.Combine(_contentRoot, "scenes", sceneName + ".scene.json");
-        if (!File.Exists(path))
+        string path = Path.IsPathRooted(sceneName)
+            ? sceneName
+            : Path.Combine(_contentRoot, sceneName);
+            
+        if (!File.Exists(path) && !path.EndsWith(".scene.json", System.StringComparison.OrdinalIgnoreCase))
         {
-            path = Path.Combine(_contentRoot, "assets", sceneName + ".scene.json");
-            if (!File.Exists(path))
-                throw new FileNotFoundException($"Scene not found in scenes/ or assets/: {sceneName}.scene.json");
+            path += ".scene.json";
         }
+
+        if (!File.Exists(path))
+            throw new FileNotFoundException($"Scene not found: {path}");
             
         string json = File.ReadAllText(path);
         var opts = new JsonSerializerOptions

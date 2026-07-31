@@ -26,7 +26,7 @@ using System.Text;
 using Engine.RHI;
 using Engine.CBindings;
 
-namespace Engine.Renderer;
+namespace Engine.RenderGraph.Shaders;
 
 public sealed class ShaderCompileCache : IDisposable
 {

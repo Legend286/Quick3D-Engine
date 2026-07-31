@@ -3,7 +3,7 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 /// <summary>
 /// Generates procedural UV sphere and plane meshes at runtime and writes them

@@ -8,7 +8,7 @@ using Engine.RenderGraph;
 using Engine.CBindings;
 using ImGuiNET; // Twizzle.ImGui wrapper usually exposes ImGuiNET namespace
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 public sealed class ImGuiRenderer : IDisposable
 {
@@ -51,7 +51,9 @@ public sealed class ImGuiRenderer : IDisposable
         CreateFontTexture();
     }
 
-    public void BeginFrame(InputState input, uint width, uint height, System.Collections.Generic.IReadOnlyList<NativeInput.EngineInputEvent>? events, ref bool frameStarted)
+    public bool IsFrameStarted { get; private set; }
+
+    public void BeginFrame(InputState input, uint width, uint height, System.Collections.Generic.IReadOnlyList<NativeInput.EngineInputEvent>? events)
     {
         lock (ContextLock)
         {
@@ -66,27 +68,27 @@ public sealed class ImGuiRenderer : IDisposable
                 }
             }
 
-            if (frameStarted)
+            if (IsFrameStarted)
             {
                 ImGui.EndFrame();
             }
 
             ImGui.NewFrame();
-            frameStarted = true;
+            IsFrameStarted = true;
             DrawViewportOverlay?.Invoke(input, width, height);
         }
     }
 
-    public void CancelFrame(ref bool frameStarted)
+    public void CancelFrame()
     {
         lock (ContextLock)
         {
             ImGui.SetCurrentContext(_context);
-            if (!frameStarted)
+            if (!IsFrameStarted)
                 return;
 
             ImGui.EndFrame();
-            frameStarted = false;
+            IsFrameStarted = false;
         }
     }
 
@@ -284,7 +286,9 @@ public sealed class ImGuiRenderer : IDisposable
         lock (ContextLock)
         {
         ImGui.SetCurrentContext(_context);
+        if (!IsFrameStarted) return;
         ImGui.Render();
+        IsFrameStarted = false;
         var drawData = ImGui.GetDrawData();
         if (drawData.CmdListsCount == 0) return;
 

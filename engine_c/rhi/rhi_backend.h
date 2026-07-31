@@ -53,6 +53,8 @@ typedef struct RhiBackend {
     void (*destroy_fence)(RhiFence *f);
     void (*destroy_timestamp_query_pool)(RhiTimestampQueryPool *pool);
     int32_t (*buffer_upload)(RhiBuffer *buf, const void *data, uint64_t size);
+    int32_t (*buffer_readback)(RhiBuffer *buf, uint64_t offset_bytes,
+                                void *out_bytes, uint64_t out_size);
     int32_t (*texture_readback)(RhiTexture *tex, void *out, uint64_t out_size, uint32_t stride);
     int32_t (*texture_upload)(RhiTexture *tex, const void *data, uint64_t size, uint32_t stride);
     int32_t (*texture_upload_mip)(RhiTexture *tex, uint32_t mip_level,

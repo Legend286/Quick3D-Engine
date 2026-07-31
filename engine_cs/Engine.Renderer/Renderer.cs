@@ -773,21 +773,26 @@ public sealed class Renderer : IDisposable
                 ShaderIncludeDirs = _activeShaderIncludeDirs,
                 SharedShaderCache = _compileCache
             };
-        RendererPluginPlan pluginPlan =
-            plugin.BuildPlan(pluginContext);
-        passes.AddRange(pluginPlan.Passes);
-
         // Renderer-extension plugins compose into the same active
         // plan. RenderGraphCompiler orders passes from resource
         // read/write declarations, so the extension passes
         // self-flow where they need to run (DDGI's probe-update
         // compute pass runs before the PBR pass reads the atlas).
+        // NOTE: Since RenderGraphCompiler preserves insertion order for MVP1,
+        // we add extension passes BEFORE the main plugin passes to ensure
+        // DDGI computes the atlas before PbrPass reads it.
+        var extPasses = new List<RenderPass>();
         foreach (var ext in _extensionPlugins)
         {
             RendererPluginPlan extPlan =
                 ext.BuildPlan(pluginContext);
-            passes.AddRange(extPlan.Passes);
+            extPasses.AddRange(extPlan.Passes);
         }
+        passes.AddRange(extPasses);
+
+        RendererPluginPlan pluginPlan =
+            plugin.BuildPlan(pluginContext);
+        passes.AddRange(pluginPlan.Passes);
 
         if (!usePathTracer &&
             pluginPlan.RasterSceneCache == null)

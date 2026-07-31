@@ -125,7 +125,7 @@ public sealed class DDGIProbePlacementPass : RenderPass, IDisposable
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.RenderTarget);
+        builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.UnorderedAccess);
     }
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext context)

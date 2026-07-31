@@ -153,7 +153,25 @@ public sealed class CommandRecorder : IDisposable
                 CmdList,
                 pool.Handle,
                 startSampleIndex) == 0;
-        _timestampScopeActive = started;
+        if (started)
+        {
+            // Defensive companion to the Metal C RHI fix: prime the
+            // paired end-sample slot so cli->timing_end_index reads
+            // as (startSampleIndex + 1) at every encoder-open, even
+            // on Vulkan/desktop backends that don't auto-pair
+            // themselves. RhiCmdWriteTimestamp with index+1 configures
+            // timing_end_index + timing_end_requested on the
+            // underlying command list with the same semantics as
+            // EndTimestampScope's pre-encoder hint. EndTimestampScope
+            // later rewrites the same slot post-pass, so Metal's
+            // stage sampling records end-of-fragment-stage at the
+            // canonical pair rather than the previous pass's stale slot.
+            RhiNative.RhiCmdWriteTimestamp(
+                CmdList,
+                pool.Handle,
+                (uint)(startSampleIndex + 1));
+            _timestampScopeActive = true;
+        }
         return started;
     }
 

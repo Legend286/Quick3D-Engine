@@ -9,7 +9,7 @@ using Engine.Scene;
 using Engine.Scene.Components;
 using Engine.CBindings;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 internal sealed class SceneFrameData
 {

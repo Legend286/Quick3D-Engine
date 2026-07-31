@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 
+using Engine.RenderGraph;
+using Engine.Renderer;
 using Xunit;
 
 namespace Engine.Game.Tests;

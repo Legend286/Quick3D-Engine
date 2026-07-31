@@ -99,6 +99,16 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
     public override unsafe void Execute(
         ICommandSink sink, RenderGraphContext context)
     {
+        // Defensive: the editor can flip the DDGI Probes overlay on
+        // before the GPU placement kernel has populated the sparse
+        // layout (e.g. first frame after plugin enable). ProbeCount
+        // is the safest non-throwing initialization gate; rendering
+        // nothing is preferable to NRE-ing the render thread.
+        if (!_volume.IsInitialized || _volume.ProbeCount <= 0)
+            return;
+        if (_probePositionsBuffer == null)
+            return;
+
         if (!context.TryGetTexture(
             RenderGraphResources.BackBufferHandle,
             out RhiTexture colorTarget))
@@ -106,9 +116,13 @@ public sealed class DDGIDebugPass : RenderPass, IDisposable
 
         if (_uploadedFrame != context.FrameNumber)
         {
-            var positions = new Vector3[_volume.ProbeCount];
+            int probeCount = _volume.ProbeCount;
+            var positions = new Vector3[probeCount];
             for (int i = 0; i < positions.Length; ++i)
-                positions[i] = _volume.PositionAt(i);
+            {
+                try { positions[i] = _volume.PositionAt(i); }
+                catch { positions[i] = Vector3.Zero; }
+            }
             _probePositionsBuffer.Upload(new ReadOnlySpan<Vector3>(positions));
             _uploadedFrame = context.FrameNumber;
         }

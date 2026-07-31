@@ -29,7 +29,7 @@ extern "C" {
 #  endif
 #endif
 
-#define ENGINE_ABI_VERSION_RHI 11
+#define ENGINE_ABI_VERSION_RHI 12
 
 typedef struct RhiDevice         RhiDevice;
 typedef struct RhiSwapchain      RhiSwapchain;
@@ -152,6 +152,7 @@ typedef struct RhiShaderDesc {
     uint32_t          source_len;
     const char*       entry_point;
     const char*       include_path;
+    const char*       cli_args;   /* whitespace-separated; appended to Slang args[] after positional tokens */
 } RhiShaderDesc;
 
 typedef struct RhiGraphicsPipelineDesc {
@@ -240,6 +241,18 @@ typedef struct RhiAccelStructDesc {
 #define RHI_HEAP_USAGE_RENDER_TARGET (1u << 0)
 #define RHI_HEAP_USAGE_SHADER_READ    (1u << 1)
 #define RHI_HEAP_USAGE_STORAGE        (1u << 2)
+
+/**
+ * Sentinel used by the host to pack multiple Slang `-I` include directories
+ * into the single `RhiShaderDesc.include_path` string without bumping the
+ * C ABI. The host (engine_cs/Engine.RHI/RhiShader.cs) joins paths with this
+ * separator; backends MUST split on it and emit one `-I` flag per entry.
+ *
+ * Chosen for low collision risk against plausible filesystem paths. The
+ * matching authoritative token on the managed side is
+ * `Engine.RHI.RhiShader.MultiPathSeparator`.
+ */
+#define RHI_SHADER_INCLUDE_PATH_SEPARATOR ";;--;;"
 
 /* ----- Render-pass attachment + barrier descriptors ----- */
 
@@ -448,6 +461,13 @@ ENGINE_API uint64_t rhi_get_buffer_device_address(RhiBuffer* buf);
 
 /* ----- Data transfer ----- */
 ENGINE_API int32_t  rhi_buffer_upload(RhiBuffer* buf, const void* data, uint64_t size);
+
+/** Read a buffer region back to CPU bytes. Synchronous: issues a
+ * GPU-side blit copy from the source storage-mode-private buffer into
+ * a shared-mode staging buffer, commits + waits, then memcpys into the
+ * caller's output. Used by DDGI's sparse-layout readback. */
+ENGINE_API int32_t  rhi_buffer_readback(RhiBuffer* buf, uint64_t offset_bytes,
+                                         void* out_bytes, uint64_t out_size);
 
 /** Read a texture back to CPU bytes. Used for Avalonia viewport display. */
 ENGINE_API int32_t  rhi_texture_readback(RhiTexture* tex,

@@ -5,7 +5,7 @@ using System.Collections;
 using System.Collections.Generic;
 using Engine.RHI;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 internal readonly record struct ShadowAtlasAllocation(
     int PageIndex,

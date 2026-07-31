@@ -16,6 +16,7 @@
     <ProjectReference Include="..\engine_cs\Engine.Scene\Engine.Scene.csproj" />
     <ProjectReference Include="..\engine_cs\Engine.Assets\Engine.Assets.csproj" />
     <ProjectReference Include="..\engine_cs\Engine.Plugins\Engine.Plugins.csproj" />
+    <ProjectReference Include="..\engine_cs\Engine.Renderer\Engine.Renderer.csproj" />
   </ItemGroup>
 
   <ItemGroup>

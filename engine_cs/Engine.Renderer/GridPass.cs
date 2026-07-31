@@ -10,7 +10,7 @@ using Engine.Scene.Components;
 using Engine.CBindings;
 using Camera = Engine.Scene.Components.Camera;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 public sealed class GridPass : RenderPass, IDisposable
 {
@@ -91,13 +91,13 @@ public sealed class GridPass : RenderPass, IDisposable
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        builder.Write(Renderer.BackBufferHandle, ResourceState.RenderTarget);
-        builder.Write(Renderer.DepthBufferHandle, ResourceState.DepthStencil);
+        builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.RenderTarget);
+        builder.Write(RenderGraphResources.DepthBufferHandle, ResourceState.DepthStencil);
     }
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext context)
     {
-        if (!context.TryGetTexture(Renderer.BackBufferHandle, out RhiTexture colorTarget)) return;
+        if (!context.TryGetTexture(RenderGraphResources.BackBufferHandle, out RhiTexture colorTarget)) return;
 
         uint w = context.Width > 0 ? context.Width : 1280;
         uint h = context.Height > 0 ? context.Height : 720;
@@ -135,7 +135,7 @@ public sealed class GridPass : RenderPass, IDisposable
         };
 
         var loadOp = _clearScreen ? RhiNative.LoadOp.Clear : RhiNative.LoadOp.Load;
-        context.TryGetTexture(Renderer.DepthBufferHandle, out RhiTexture depthTarget);
+        context.TryGetTexture(RenderGraphResources.DepthBufferHandle, out RhiTexture depthTarget);
         if (_pipeline != null && _vertexBuffer != null)
         {
             var depthLoad = _clearScreen ? RhiNative.LoadOp.Clear : RhiNative.LoadOp.Load;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 using Engine.Plugins;
 using Engine.Renderer;
+using Engine.RenderGraph;
 using Engine.RHI;
 
 namespace Engine.Plugin.Renderer.Clustered;
@@ -36,43 +37,70 @@ public sealed class ClusteredRendererPlugin :
         var result = new RendererPluginPlan();
         var cliArgs = context.ShaderCliArgs;
         var includeDirs = context.ShaderIncludeDirs;
-        result.RasterSceneCache =
+        // Single cast at the BuildPlan entry point. Future plugins
+        // that need the renderer surface adopt the same pattern;
+        // self-contained plugins (DDGI, future authoring tools)
+        // dereference the renderer-free fields instead.
+        var renderer = (Engine.Renderer.Renderer)context.Renderer!;
+
+        // Build the raster cache eagerly as a typed local so every
+        // downstream pass ctor carries the strongly-typed reference.
+        // The plan's RasterSceneCache slot stays `object?` to keep
+        // Engine.RenderGraph free of any forward-reference to
+        // Engine.Renderer; the assignment is an implicit upcast that
+        // boxes the reference into the plan slot.
+        var rasterCache =
             new RasterSceneGpuCache(
                 context.Device,
                 context.World,
                 context.Scene,
                 context.BindlessHeap,
-                context.Renderer);
+                renderer);
+        result.RasterSceneCache = rasterCache;
+
+        DirectionalShadowState? dirShadowState = null;
+        DirectionalShadowPass? dirShadowPass = null;
+        PunctualShadowState? punctualShadowState = null;
+        PunctualShadowPass? punctualShadowPass = null;
 
         if (context.RenderShadows &&
             context.Scene.Passes.Count > 0)
         {
-            result.DirectionalShadowState =
+            dirShadowState =
                 new DirectionalShadowState(
                     context.Device,
                     context.BindlessHeap);
-            result.DirectionalShadowPass =
+            result.DirectionalShadowState = dirShadowState;
+
+            dirShadowPass =
                 new DirectionalShadowPass(
                     context.Device,
                     context.ContentRoot,
-                    result.RasterSceneCache,
-                    result.DirectionalShadowState,
+                    rasterCache,
+                    dirShadowState,
                     context.GpuWorkScheduler);
-            result.PunctualShadowState =
+            result.DirectionalShadowPass = dirShadowPass;
+
+            punctualShadowState =
                 new PunctualShadowState(
                     context.Device,
-                    result.DirectionalShadowState.Atlas,
+                    dirShadowState.Atlas,
                     context.BindlessHeap);
-            result.PunctualShadowPass =
+            result.PunctualShadowState = punctualShadowState;
+
+            punctualShadowPass =
                 new PunctualShadowPass(
                     context.Device,
                     context.ContentRoot,
-                    result.RasterSceneCache,
-                    result.PunctualShadowState,
+                    rasterCache,
+                    punctualShadowState,
                     context.GpuWorkScheduler);
+            result.PunctualShadowPass = punctualShadowPass;
         }
 
         var pbrPasses = new List<PbrPass>();
+        Engine.RenderGraph.IDDGIAtlasProvider? ddgiProvider =
+            Engine.RenderGraph.DDGIAtlasProviderRegistry.Active;
         foreach (var scenePass in
                  context.Scene.Passes)
         {
@@ -82,46 +110,29 @@ public sealed class ClusteredRendererPlugin :
                     scenePass,
                     context.ContentRoot,
                     context.BindlessHeap,
-                    result.RasterSceneCache,
-                    result.DirectionalShadowState,
-                    result.PunctualShadowState,
+                    rasterCache,
+                    dirShadowState,
+                    punctualShadowState,
                     context.RenderSky,
                     cliArgs,
                     includeDirs,
-                    context.Renderer.ShaderCompileCache));
+                    context.SharedShaderCache,
+                    ddgiProvider));
         }
-
-        foreach (PbrPass pass in pbrPasses)
-            result.Passes.Add(pass.CreateComputePass());
-        if (result.DirectionalShadowPass != null)
-            result.Passes.Add(
-                result.DirectionalShadowPass);
-        if (result.PunctualShadowPass != null)
-            result.Passes.Add(
-                result.PunctualShadowPass);
+        if (dirShadowPass != null)
+            result.AddPass(dirShadowPass);
+        if (punctualShadowPass != null)
+            result.AddPass(punctualShadowPass);
         result.Passes.AddRange(pbrPasses);
 
-        // Plugin-shared debug overlays run AFTER Pbr so probes are
-        // overlay-drawn on the populated scene rather than wiped by
-        // Pbr's `BeginRenderPass(LoadOp.Clear)`. The DDGI plugin owns
-        // the `ShowProbes` toggle on its static registry; the
-        // canonical clustered plan only consults it here so the host
-        // `ViewportDebugView` enum stays plugin-feature-free.
-        Engine.DDGI.DDGIProbeVolume? ddgiVolume =
-            Engine.DDGI.DDGIVolumeRegistry.ActiveVolume;
-        if (ddgiVolume != null &&
-            Engine.DDGI.DDGIVolumeRegistry.ShowProbes)
-        {
-            result.Passes.Add(
-                new Engine.DDGI.DDGIDebugPass(
-                    context.Device,
-                    ddgiVolume,
-                    context.Renderer,
-                    context.ContentRoot,
-                    cliArgs,
-                    includeDirs,
-                    context.Renderer.ShaderCompileCache));
-        }
+        // DDGI probe overlay is editor-UI territory — the
+        // ClusteredRendererPlugin doesn't own an IEnginePluginHost
+        // (active when the editor wires renderer plugins into its
+        // catalog at boot), so injecting the DDGIDebugPass here
+        // would tie the runtime render path back to editor
+        // services. The editor's PluginsWindow Show Probes
+        // toggle wires the overlay via a sibling path; see
+        // docs/editor/tools.md for the wiring contract.
         return result;
     }
 }

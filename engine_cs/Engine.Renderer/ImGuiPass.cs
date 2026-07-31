@@ -4,7 +4,7 @@ using Engine.RenderGraph;
 using Engine.RHI;
 using Engine.CBindings;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 public sealed class ImGuiPass : RenderPass
 {
@@ -18,12 +18,12 @@ public sealed class ImGuiPass : RenderPass
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        builder.Write(Engine.Game.Renderer.BackBufferHandle, ResourceState.RenderTarget);
+        builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.RenderTarget);
     }
 
     public override void Execute(ICommandSink sink, RenderGraphContext context)
     {
-        if (!context.TryGetTexture(Engine.Game.Renderer.BackBufferHandle, out RhiTexture colorTarget))
+        if (!context.TryGetTexture(RenderGraphResources.BackBufferHandle, out RhiTexture colorTarget))
             return;
 
         uint w = context.Width > 0 ? context.Width : 1280;

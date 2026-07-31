@@ -82,14 +82,19 @@
                         HorizontalContentAlignment="Center"
                         ToolTip.Tip="Transform coordinate space" />
             </Border>
-            <ToggleButton Content="Snap"
-                          IsChecked="{Binding IsGizmoSnapping}"
-                          Height="22"
-                          Padding="8,0"
-                          ToolTip.Tip="Toggle transform snapping" />
             <Border Classes="ViewportPill">
-              <Button Content="{Binding SelectedProjectionMode}"
-                      Width="112"
+              <ToggleButton IsChecked="{Binding IsGizmoSnapping}"
+                            Width="32"
+                            Height="22"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            HorizontalContentAlignment="Center"
+                            ToolTip.Tip="Toggle transform snapping">
+                <TextBlock Text="&#xE8F6;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" Foreground="#AEB9C8" FontSize="14" VerticalAlignment="Center" HorizontalAlignment="Center" />
+              </ToggleButton>
+            </Border>
+            <Border Classes="ViewportPill">
+              <Button MinWidth="112"
                       Height="22"
                       Padding="7,0"
                       Background="Transparent"
@@ -98,6 +103,10 @@
                       FontSize="10"
                       FontWeight="SemiBold"
                       HorizontalContentAlignment="Center">
+                <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Center">
+                  <TextBlock Text="&#xE42A;" FontFamily="avares://Engine.Editor/Assets/MaterialIcons-Regular.ttf#Material Icons" VerticalAlignment="Center" FontSize="14" />
+                  <TextBlock Text="{Binding SelectedProjectionMode}" VerticalAlignment="Center" />
+                </StackPanel>
                 <Button.Flyout>
                   <Flyout Placement="BottomEdgeAlignedRight">
                     <Border Width="286"

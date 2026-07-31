@@ -405,7 +405,12 @@ public partial class ContentBrowserView : UserControl
     {
         if (sender is Control control && control.DataContext is ContentAsset asset)
         {
-            if (asset.AssetType == "Material")
+            if (asset.AssetType == "Folder")
+            {
+                (DataContext as ContentBrowserViewModel)
+                    ?.SelectFolderByPath(asset.FullPath);
+            }
+            else if (asset.AssetType == "Material")
             {
                 var window = new MaterialEditorWindow(asset.FullPath);
                 window.Show();
@@ -433,6 +438,30 @@ public partial class ContentBrowserView : UserControl
             (DataContext as ContentBrowserViewModel)
                 ?.ToggleModelExpansion(asset);
             e.Handled = true;
+        }
+    }
+
+    private async void OnImportContextMenuItemClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is not ContentBrowserViewModel vm || vm.SelectedFolder == null)
+            return;
+
+        var importVm = new ViewModels.AssetImportViewModel
+        {
+            TargetDirectory = vm.SelectedFolder.FullPath
+        };
+        var importWindow = new Views.AssetImportWindow
+        {
+            DataContext = importVm
+        };
+
+        if (TopLevel.GetTopLevel(this) is Window parentWindow)
+        {
+            await importWindow.ShowDialog(parentWindow);
+        }
+        else
+        {
+            importWindow.Show();
         }
     }
 }

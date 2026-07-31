@@ -657,19 +657,69 @@ static int32_t metal_create_shader(RhiDevice* d, const RhiShaderDesc* desc, RhiS
         fwrite(desc->source, 1, strlen(desc->source), fp);
         fclose(fp);
 
-        const char* args[16];
+        const int kMaxArgs = 128;
+        const char* args[kMaxArgs];
         int arg_count = 0;
         args[arg_count++] = "/tmp/temp.slang";
         args[arg_count++] = "-target"; args[arg_count++] = "metal";
         args[arg_count++] = "-entry"; args[arg_count++] = desc->entry_point;
         args[arg_count++] = "-stage"; args[arg_count++] = stage_str;
         args[arg_count++] = "-matrix-layout-column-major";
-        
+
+        std::vector<std::string> include_dirs;
         if (desc->include_path && strlen(desc->include_path) > 0) {
-            args[arg_count++] = "-I";
-            args[arg_count++] = desc->include_path;
+            std::string joined(desc->include_path);
+            const std::string sep(RHI_SHADER_INCLUDE_PATH_SEPARATOR);
+            size_t scan = 0;
+            while (scan <= joined.size()) {
+                size_t end = joined.find(sep, scan);
+                std::string one = joined.substr(
+                    scan,
+                    end == std::string::npos ? std::string::npos : (end - scan));
+                if (!one.empty()) include_dirs.push_back(one);
+                if (end == std::string::npos) break;
+                scan = end + sep.size();
+            }
         }
-        
+        size_t include_dirs_emitted = 0;
+        for (const std::string& dir : include_dirs) {
+            if (arg_count + 2 > kMaxArgs) break;
+            args[arg_count++] = "-I";
+            args[arg_count++] = dir.c_str();
+            ++include_dirs_emitted;
+        }
+        if (include_dirs_emitted < include_dirs.size()) {
+            ENGINE_LOG_WARN("rhi_metal",
+                            "include path overflow: requested %zu dirs, emitted %zu (kMaxArgs=%d)",
+                            include_dirs.size(), include_dirs_emitted, kMaxArgs);
+        }
+
+        std::vector<std::string> cli_tokens;
+        if (desc->cli_args && strlen(desc->cli_args) > 0) {
+            std::string joined(desc->cli_args);
+            size_t scan = 0;
+            while (scan <= joined.size()) {
+                size_t start = joined.find_first_not_of(" \t\n\r", scan);
+                if (start == std::string::npos) break;
+                size_t end = joined.find_first_of(" \t\n\r", start);
+                if (end == std::string::npos) end = joined.size();
+                std::string tok = joined.substr(start, end - start);
+                if (!tok.empty()) cli_tokens.push_back(tok);
+                scan = end;
+            }
+        }
+        size_t cli_tokens_emitted = 0;
+        for (const std::string& tok : cli_tokens) {
+            if (arg_count + 1 > kMaxArgs) break;
+            args[arg_count++] = tok.c_str();
+            ++cli_tokens_emitted;
+        }
+        if (cli_tokens_emitted < cli_tokens.size()) {
+            ENGINE_LOG_WARN("rhi_metal",
+                            "cli_args overflow: requested %zu tokens, emitted %zu (kMaxArgs=%d)",
+                            cli_tokens.size(), cli_tokens_emitted, kMaxArgs);
+        }
+
         SlangResult argsRes = spProcessCommandLineArguments(request, args, arg_count);
         if (SLANG_FAILED(argsRes)) {
             metal_dump_slang_diag("arg-process", spGetDiagnosticOutput(request));
@@ -1575,10 +1625,23 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
                         cli->timing_start_index] = 1;
                     cli->timing_started = true;
                 }
+                // Pin end-of-fragment to (start_index + 1). cli->timing_end_index
+                // at encoder-open time still carries the previous pass's
+                // value (the C# EndTimestampScope has not flushed yet, so
+                // its write to cli->timing_end_index arrives AFTER this
+                // encoder-open call), which means trusting cli->timing_end_index
+                // here would record pass A's end-of-fragment into pass
+                // (i-1)'s end slot. Then read_durations would fetch identical
+                // (begin, end) pairs for lightweight passes (ImGui,
+                // OutlineMask, OutlineComposite) because every encoder
+                // overwrites its predecessor's end slot.
+                uint32_t paired_end_index =
+                    cli->timing_start_index + 1;
+                cli->timing_end_index = paired_end_index;
                 attachment.endOfFragmentSampleIndex =
-                    cli->timing_end_index;
+                    paired_end_index;
                 cli->timing_pool->sampled[
-                    cli->timing_end_index] = 1;
+                    paired_end_index] = 1;
             }
         }
         id<MTLRenderCommandEncoder> enc = [cli->buf renderCommandEncoderWithDescriptor:pd];
@@ -1629,10 +1692,19 @@ static RhiEncoder* metal_begin_compute_pass(RhiCommandList* cl, const char* name
                         cli->timing_start_index] = 1;
                     cli->timing_started = true;
                 }
+                // Mirror fix from metal_begin_render_pass: pin end-of-encoder
+                // to (start_index + 1) so compute-pass GPU durations read
+                // back as the canonical begin/end pair instead of colliding
+                // with the prior encoder's end slot. Same root cause: the
+                // C# deferred-end mechanism hasn't refreshed cli->timing_end_index
+                // between encoders.
+                uint32_t paired_end_index =
+                    cli->timing_start_index + 1;
+                cli->timing_end_index = paired_end_index;
                 attachment.endOfEncoderSampleIndex =
-                    cli->timing_end_index;
+                    paired_end_index;
                 cli->timing_pool->sampled[
-                    cli->timing_end_index] = 1;
+                    paired_end_index] = 1;
             }
         }
         id<MTLComputeCommandEncoder> enc =

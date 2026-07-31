@@ -4,6 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsPackable>false</IsPackable>
     <RootNamespace>Engine.RenderGraph</RootNamespace>
   </PropertyGroup>
@@ -18,5 +19,37 @@
       exposed by the .NET Core P/Invoke library.
     -->
     <ProjectReference Include="..\..\OutOfBand\Engine.CBindings\Engine.CBindings.csproj" />
+    <!--
+      Engine.Plugins is referenced because ShaderIncludeResolver
+      (moved here from Engine.Renderer/Shaders per the DDGI-plugin
+      decoupling refactor) reads EnginePluginManifest to compute the
+      plugin-supplied include-path list. Engine.Plugins is a
+      dependency-free manifest contract surface so this stays a
+      one-way dependency.
+    -->
+    <ProjectReference Include="..\Engine.Plugins\Engine.Plugins.csproj" />
+    <!--
+      Engine.Scene + Engine.Assets are acyclic w.r.t. Engine.RenderGraph.
+      They have no edge back to us; we depend on them because
+      RaytracingSceneCache + the moved GpuWorkScheduler type
+      access scene graph + asset registry types. Engine.Renderer
+      also re-exports these via forwarded aliases but the direct
+      ProjectReference is the typed-decl contract.
+    -->
+    <ProjectReference Include="..\Engine.Scene\Engine.Scene.csproj" />
+    <ProjectReference Include="..\Engine.Assets\Engine.Assets.csproj" />
+    <!--
+      Engine.Renderer is intentionally NOT referenced here to keep
+      the project graph acyclic. Engine.Renderer depends on
+      Engine.RenderGraph (it consumes RenderPass, RenderGraphBuilder,
+      IRendererPlanPlugin + the executor types), but the inverse
+      direction is forbidden — it shows up at restore time as
+      MSB4006 `_GenerateRestoreProjectPathWalk`. The optional
+      renderer-host slot on RendererPluginContext is therefore
+      typed as `object?` so plugins can dereference it via a
+      single explicit cast when they actually need renderer-side
+      services (PathTracer, Clustered); self-contained plugins
+      (DDGI, future authoring tools) leave it null.
+    -->
   </ItemGroup>
 </Project>

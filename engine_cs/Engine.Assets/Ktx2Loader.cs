@@ -51,6 +51,7 @@ namespace Engine.Assets;
 public static class Ktx2Loader
 {
     private static bool _transcoderInitialized = false;
+    private static readonly object _transcoderLock = new();
 
     [System.Runtime.InteropServices.DllImport("EngineC")]
     private static extern void engine_transcoder_init();
@@ -139,8 +140,14 @@ public static class Ktx2Loader
             isUastc = true;
             if (!_transcoderInitialized)
             {
-                engine_transcoder_init();
-                _transcoderInitialized = true;
+                lock (_transcoderLock)
+                {
+                    if (!_transcoderInitialized)
+                    {
+                        engine_transcoder_init();
+                        _transcoderInitialized = true;
+                    }
+                }
             }
         }
 

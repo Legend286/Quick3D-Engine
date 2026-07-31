@@ -193,6 +193,11 @@ uint64_t rhi_get_buffer_device_address(RhiBuffer* buf) {
 int32_t rhi_buffer_upload(RhiBuffer* b, const void* data, uint64_t size) {
     return g_backends[g_active].buffer_upload(b, data, size);
 }
+int32_t rhi_buffer_readback(RhiBuffer* b, uint64_t offset_bytes,
+                              void* out_bytes, uint64_t out_size) {
+    if (g_active < 0 || !g_backends[g_active].buffer_readback) return -1;
+    return g_backends[g_active].buffer_readback(b, offset_bytes, out_bytes, out_size);
+}
 int32_t rhi_texture_readback(RhiTexture* t, void* out, uint64_t out_size, uint32_t stride) {
     return g_backends[g_active].texture_readback(t, out, out_size, stride);
 }

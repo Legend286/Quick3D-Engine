@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 using Engine.Plugins;
-using Engine.Game;
 using Engine.RenderGraph;
+using Engine.Renderer;
 using Engine.Scene;
 
 namespace Engine.Plugin.Renderer.PathTracing;
@@ -35,6 +35,7 @@ public sealed class PathTracingRendererPlugin :
         RendererPluginContext context)
     {
         var result = new RendererPluginPlan();
+        var renderer = (Engine.Renderer.Renderer)context.Renderer!;
         foreach (ScenePass scenePass in
                  context.Scene.Passes)
         {
@@ -46,7 +47,7 @@ public sealed class PathTracingRendererPlugin :
                     scenePass,
                     context.ContentRoot,
                     context.BindlessHeap,
-                    context.Renderer));
+                    renderer));
         }
         return result;
     }

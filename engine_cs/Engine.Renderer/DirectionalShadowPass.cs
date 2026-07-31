@@ -8,7 +8,7 @@ using Engine.CBindings;
 using Engine.RHI;
 using Engine.RenderGraph;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 internal sealed class DirectionalShadowState
 {

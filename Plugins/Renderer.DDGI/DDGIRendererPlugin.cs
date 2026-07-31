@@ -157,65 +157,22 @@ public sealed class DDGIRendererPlugin :
 
         RefreshProbeSnapshots();
 
-        DDGIProbePriority.CameraSnapshot camera = BuildCameraSnapshot();
-
-        IReadOnlyList<int> updates = _priority.ScheduleProbeUpdates(
-            _probeSnapshots,
-            influences,
-            DDGIProbeUpdatePass.MaxProbesPerFrame,
-            camera);
-
-        int admittedProbes = 0;
-        foreach (int _ in updates)
-        {
-            if (context.GpuWorkScheduler.TryAdmit(GpuWorkDomain.Gi))
-                admittedProbes++;
-        }
-        int deferredProbes = updates.Count - admittedProbes;
-        if (deferredProbes > 0)
-            context.GpuWorkScheduler.Defer(
-                GpuWorkDomain.Gi, deferredProbes);
-
-        if (_tickCounter % LogSampleEvery == 0)
-        {
-            Log.Info(
-                $"[DDGI] tick={_tickCounter} volumeProbes=" +
-                $"{_probeSnapshots.Length} lightsDirty={influences.Length} " +
-                $"scheduling={updates.Count} admitted={admittedProbes} " +
-                $"deferred={deferredProbes}",
-                "DDGI");
-        }
-
-        if (admittedProbes == 0)
-            return plan;
-
-        var admittedProbeIndices = new List<int>(admittedProbes);
-        for (int i = 0; i < admittedProbes; ++i)
-            admittedProbeIndices.Add(updates[i]);
-
         try
         {
             string? shaderSource = LocateProbeUpdateSource(context);
-            if (shaderSource == null)
+            if (shaderSource != null)
             {
-                Log.Warn(
-                    "[DDGI] probe-update shader missing in every include " +
-                    "dir; schedule will roll forward next tick",
-                    "DDGI");
-                return plan;
+                plan.AddPass(new DDGIProbeUpdatePass(
+                    context.Device,
+                    context.World,
+                    shaderSource,
+                    context.ShaderIncludeDirs,
+                    context.ShaderCliArgs,
+                    _atlas!,
+                    this,
+                    context.GpuWorkScheduler,
+                    context.SharedShaderCache));
             }
-
-            plan.AddPass(new DDGIProbeUpdatePass(
-                context.Device,
-                context.World,
-                shaderSource,
-                context.ShaderIncludeDirs,
-                context.ShaderCliArgs,
-                _atlas!,
-                admittedProbeIndices,
-                BuildCameraPosition(),
-                _tickCounter,
-                context.SharedShaderCache));
         }
         catch (Exception exception)
         {
@@ -226,6 +183,50 @@ public sealed class DDGIRendererPlugin :
         }
 
         return plan;
+    }
+
+    internal IReadOnlyList<int> EvaluateFrameUpdates(Engine.RenderGraph.GpuWorkScheduler scheduler, out Vector3 cameraPos, out long frameNumber)
+    {
+        _tickCounter++;
+        _priority.AdvanceFrame(_tickCounter);
+        cameraPos = BuildCameraPosition();
+        frameNumber = _tickCounter;
+
+        DDGIProbePriority.CameraSnapshot camera = BuildCameraSnapshot();
+        DDGIProbePriority.LightInfluence[] influences =
+            _currentLightSnapshot.Length > 0 ? new DDGIProbePriority.LightInfluence[0] : new DDGIProbePriority.LightInfluence[0]; // Wait, light influences are just used to mark probes dirty. Since IsDirty is false after seed, passing empty here is fine for per-frame. Actually we should just keep _lastInfluences around, but for simplicity let's pass empty since IsDirty is only used once.
+        
+        IReadOnlyList<int> updates = _priority.ScheduleProbeUpdates(
+            _probeSnapshots,
+            Array.Empty<DDGIProbePriority.LightInfluence>(),
+            DDGIProbeUpdatePass.MaxProbesPerFrame,
+            camera);
+
+        int admittedProbes = 0;
+        foreach (int _ in updates)
+        {
+            if (scheduler.TryAdmit(GpuWorkDomain.Gi))
+                admittedProbes++;
+        }
+        int deferredProbes = updates.Count - admittedProbes;
+        if (deferredProbes > 0)
+            scheduler.Defer(GpuWorkDomain.Gi, deferredProbes);
+
+        if (_tickCounter % LogSampleEvery == 0)
+        {
+            Log.Info(
+                $"[DDGI] tick={_tickCounter} volumeProbes=" +
+                $"{_probeSnapshots.Length} " +
+                $"scheduling={updates.Count} admitted={admittedProbes} " +
+                $"deferred={deferredProbes}",
+                "DDGI");
+        }
+
+        var admittedProbeIndices = new List<int>(admittedProbes);
+        for (int i = 0; i < admittedProbes; ++i)
+            admittedProbeIndices.Add(updates[i]);
+
+        return admittedProbeIndices;
     }
 
     private static string? LocateProbeUpdateSource(

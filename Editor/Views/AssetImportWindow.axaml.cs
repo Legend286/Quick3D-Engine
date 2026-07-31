@@ -59,6 +59,7 @@ public partial class AssetImportWindow : Window
 
         if (!Services.AssetImportService.Shared.TryStart(
                 vm.SourceFile,
+                vm.TargetDirectory,
                 vm.AssetType,
                 vm.ScaleX,
                 vm.ScaleY,

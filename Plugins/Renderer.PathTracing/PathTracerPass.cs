@@ -2,7 +2,6 @@
 using System;
 using System.IO;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using System.Collections.Generic;
 using Engine.RHI;
 using Engine.RenderGraph;
@@ -11,7 +10,7 @@ using Engine.Scene.Components;
 using Engine.Assets;
 using Engine.CBindings;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 public class PathTracerPass : RenderPass
 {
@@ -27,9 +26,8 @@ public class PathTracerPass : RenderPass
 
     private RhiTexture _accumulationBuffer;
     private RhiTexture _outputBuffer;
-    private RhiAccelStruct _tlas;
+    private RhiAccelStruct? _tlas;
     private uint _frameCount;
-    private int _lastInstanceHash;
     private int _lastMaterialHash;
     private Matrix4x4 _lastViewProj;
 
@@ -37,7 +35,8 @@ public class PathTracerPass : RenderPass
     private readonly IEntityStore _world;
     private readonly SceneGraph _scene;
     private readonly string _contentRoot;
-    private readonly Engine.Game.Renderer _renderer;
+    private readonly Renderer _renderer;
+    private readonly RaytracingSceneCache _sceneCache;
 
     private uint _lastWidth = 0;
     private uint _lastHeight = 0;
@@ -56,7 +55,7 @@ public class PathTracerPass : RenderPass
 
     private RhiBindlessHeap _bindlessHeap;
 
-    public unsafe PathTracerPass(RhiDevice device, IEntityStore world, SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap, Engine.Game.Renderer renderer)
+    public unsafe PathTracerPass(RhiDevice device, IEntityStore world, SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap, Renderer renderer)
     {
         Name = string.IsNullOrWhiteSpace(scenePass.Name) ||
             scenePass.Name.Equals("PbrPass", StringComparison.OrdinalIgnoreCase)
@@ -66,8 +65,9 @@ public class PathTracerPass : RenderPass
         _world = world;
         _scene = scene;
         _contentRoot = contentRoot;
-        _bindlessHeap = sharedHeap;
         _renderer = renderer;
+        _bindlessHeap = sharedHeap;
+        _sceneCache = new RaytracingSceneCache(device, world);
 
         string shaderDir = Path.Combine(_contentRoot, "shaders");
 
@@ -102,13 +102,13 @@ public class PathTracerPass : RenderPass
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        builder.Write(Engine.Game.Renderer.BackBufferHandle, ResourceState.RenderTarget);
-        builder.Write(Engine.Game.Renderer.DepthBufferHandle, ResourceState.DepthStencil);
+        builder.Write(Renderer.BackBufferHandle, ResourceState.RenderTarget);
+        builder.Write(Renderer.DepthBufferHandle, ResourceState.DepthStencil);
     }
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext ctx)
     {
-        if (!ctx.TryGetTexture(Engine.Game.Renderer.BackBufferHandle, out RhiTexture colorTarget))
+        if (!ctx.TryGetTexture(Renderer.BackBufferHandle, out RhiTexture colorTarget))
             return;
 
         uint w = ctx.Width > 0 ? ctx.Width : 1280;
@@ -169,7 +169,7 @@ public class PathTracerPass : RenderPass
         int currentMatHash = 0;
         foreach (var m in _materials)
         {
-            currentMatHash = HashCode.Combine(currentMatHash, 
+            currentMatHash = HashCode.Combine(currentMatHash,
                 m.BaseColor.GetHashCode(), m.Metallic.GetHashCode(), m.Roughness.GetHashCode(), m.Subsurface.GetHashCode(), m.SubsurfaceColor.GetHashCode(), m.SubsurfaceRadius.GetHashCode());
         }
         if (currentMatHash != _lastMaterialHash)
@@ -178,7 +178,17 @@ public class PathTracerPass : RenderPass
             _frameCount = 0;
         }
 
-        bool hasGeometry = UpdateTlas(sink);
+        // Shared scene-mesh raytracing cache rebuilds BLAS on first
+        // touch of a mesh and the TLAS only when instance hash drifts.
+        // The raster pipeline never enters this code-path; pure pass
+        // gating is enforced by the plugin host (no consumer = no cache).
+        RaytracingSceneCache.TlasUpdateResult tlasInfo =
+            _sceneCache.TryUpdateTlas(sink);
+        _tlas = tlasInfo.SceneTlas;
+        bool hasGeometry = tlasInfo.HasGeometry;
+        if (tlasInfo.TopologyChanged)
+            _frameCount = 0;
+
         pushData.FrameCount = _frameCount;
         pushData.HasGeometry = hasGeometry ? 1u : 0u;
 
@@ -211,7 +221,7 @@ public class PathTracerPass : RenderPass
         sink.Dispatch((w + 63) / 64, h, 1, 64, 1, 1);
         sink.EndComputePass();
 
-        ctx.TryGetTexture(Engine.Game.Renderer.DepthBufferHandle, out RhiTexture depthTarget);
+        ctx.TryGetTexture(Renderer.DepthBufferHandle, out RhiTexture depthTarget);
         sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store,
                               depthTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store);
         sink.SetViewport(0, 0, w, h);
@@ -229,131 +239,6 @@ public class PathTracerPass : RenderPass
         sink.EndPass();
     }
 
-    private Queue<RhiAccelStruct> _oldTlasQueue = new Queue<RhiAccelStruct>();
-
-    private unsafe bool UpdateTlas(ICommandSink sink)
-    {
-        var instances = new List<RhiNative.TlasInstanceDesc>();
-        var blasesToBuild = new List<RhiAccelStruct>();
-
-        uint instanceId = 0;
-        int hash = 0;
-
-        var validEntities = new List<ulong>(_world.Entities);
-        validEntities.Sort();
-
-        foreach (var id in validEntities)
-        {
-            if (_world.TryGet<ModelComponent>(id, out var mc))
-            {
-                var tc = _world.TryGet<Transform>(id, out var t) ? t : Transform.Default;
-
-                var model = AssetRegistry.GetModel(mc.ModelId);
-                if (model == null || model.Parts == null) continue;
-
-                foreach (var p in model.Parts)
-                {
-                    var mesh = AssetRegistry.GetMesh(p.MeshId);
-                    if (mesh == null) continue;
-
-                    if (mesh.Blas == null)
-                    {
-                        var geom = new RhiNative.BlasGeometryDesc
-                        {
-                            VertexBuffer = mesh.VertexBuffer.Handle,
-                            VertexBufferOffset = 0,
-                            VertexStride = (uint)sizeof(Engine.Assets.Vertex),
-                            VertexCount = mesh.VertexCount,
-                            VertexFormat = RhiNative.VertexFormat.Float3,
-                            IndexBuffer = mesh.IndexBuffer.Handle,
-                            IndexBufferOffset = 0,
-                            IndexCount = mesh.IndexCount,
-                            Is32BitIndex = mesh.IndexFormat == 32 ? 1 : 0
-                        };
-
-                        var bDesc = new RhiNative.AccelStructDesc
-                        {
-                            Abi = 6,
-                            Type = RhiNative.AccelStructType.Blas,
-                            Geometries = (IntPtr)(&geom),
-                            GeometryCount = 1
-                        };
-
-                        mesh.Blas = RhiAccelStruct.Create(_device, in bDesc);
-                        blasesToBuild.Add(mesh.Blas);
-                        Log.Info($"[PathTracer] BLAS built: mesh={mesh.VertexCount}v/{mesh.IndexCount}i 32bit={mesh.IndexFormat == 32}", "PT");
-                    }
-
-                    var modelMat =
-                        Matrix4x4.CreateTranslation(
-                            p.LocalOffset) *
-                        Matrix4x4.CreateScale(tc.Scale) *
-                        Matrix4x4.CreateFromQuaternion(
-                            tc.Rotation) *
-                        Matrix4x4.CreateTranslation(
-                            tc.Position);
-
-                    var inst = new RhiNative.TlasInstanceDesc
-                    {
-                        InstanceId = instanceId,
-                        Mask = 0xFF,
-                        InstanceOffset = 0,
-                        Flags = 5u,
-                        Blas = mesh.Blas.Handle
-                    };
-
-                    inst.Transform[0] = modelMat.M11; inst.Transform[1] = modelMat.M21; inst.Transform[2] = modelMat.M31; inst.Transform[3] = modelMat.M41;
-                    inst.Transform[4] = modelMat.M12; inst.Transform[5] = modelMat.M22; inst.Transform[6] = modelMat.M32; inst.Transform[7] = modelMat.M42;
-                    inst.Transform[8] = modelMat.M13; inst.Transform[9] = modelMat.M23; inst.Transform[10] = modelMat.M33; inst.Transform[11] = modelMat.M43;
-
-                    instances.Add(inst);
-                    instanceId++;
-                }
-            }
-        }
-
-        if (blasesToBuild.Count > 0)
-        {
-            Log.Info($"[PathTracer] Building {blasesToBuild.Count} BLAS(es)", "PT");
-            var span = CollectionsMarshal.AsSpan(blasesToBuild);
-            sink.BuildAccelStructs(span);
-        }
-
-        foreach (var inst in instances)
-        {
-            hash = HashCode.Combine(hash, inst.InstanceId, inst.Blas.GetHashCode());
-            for (int i = 0; i < 12; i++)
-                hash = HashCode.Combine(hash, inst.Transform[i].GetHashCode());
-        }
-
-        bool hasAny = instances.Count > 0;
-        if (hash == _lastInstanceHash && _tlas != null)
-        {
-            if (_oldTlasQueue.Count > 3) _oldTlasQueue.Dequeue().Dispose();
-            return hasAny;
-        }
-
-        _lastInstanceHash = hash;
-        _frameCount = 0;
-
-        if (_tlas != null)
-        {
-            _oldTlasQueue.Enqueue(_tlas);
-            if (_oldTlasQueue.Count > 3) _oldTlasQueue.Dequeue().Dispose();
-            _tlas = null;
-        }
-
-        if (hasAny)
-        {
-            Log.Info($"[PathTracer] TLAS: {instances.Count} instances", "PT");
-            var instArr = instances.ToArray();
-            _tlas = RhiAccelStruct.CreateTlas(_device, new ReadOnlySpan<RhiNative.TlasInstanceDesc>(instArr));
-            var tlasArr = new RhiAccelStruct[] { _tlas };
-            sink.BuildAccelStructs(new ReadOnlySpan<RhiAccelStruct>(tlasArr));
-        }
-        return hasAny;
-    }
-
     public void Dispose()
     {
         _computePipeline?.Dispose();
@@ -366,11 +251,11 @@ public class PathTracerPass : RenderPass
         _computeSampler?.Dispose();
         _accumulationBuffer?.Dispose();
         _outputBuffer?.Dispose();
-        _tlas?.Dispose();
         _instanceBuffer?.Dispose();
         _partBuffer?.Dispose();
         _materialBuffer?.Dispose();
         _cameraBuffer?.Dispose();
         _lightBuffer?.Dispose();
+        _sceneCache?.Dispose();
     }
 }

@@ -12,4 +12,8 @@
     <ProjectReference Include="..\..\Game\Engine.Game.csproj" />
     <ProjectReference Include="..\Renderer.DDGI\Engine.Plugin.Renderer.DDGI.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="plugin.json" />
+  </ItemGroup>
 </Project>

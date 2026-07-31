@@ -39,4 +39,7 @@ public partial class AssetImportViewModel : ObservableObject
 
     [ObservableProperty]
     private string _statusMessage = "Ready";
+
+    [ObservableProperty]
+    private string _targetDirectory = string.Empty;
 }

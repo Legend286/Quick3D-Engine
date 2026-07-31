@@ -113,6 +113,9 @@ public partial class MainWindowViewModel : ObservableObject
                 }
             };
         }
+
+        AssetImport.ImportCompleted +=
+            () => ContentBrowserVm.RefreshCurrentFolder();
     }
 
     /// <summary>Records an entity that was created by an editor action.</summary>

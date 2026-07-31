@@ -5,6 +5,7 @@ using System.IO;
 using System.Numerics;
 using Engine.Assets;
 using Engine.RHI;
+using Engine.Renderer;
 using Engine.Scene;
 using Engine.Scene.Components;
 

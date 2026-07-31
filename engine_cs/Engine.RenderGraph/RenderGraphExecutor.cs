@@ -406,6 +406,29 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                     RecordGpuFrameDuration(
                         activeGraphicsMilliseconds);
             }
+            return;
+        }
+
+        // No graphics pool produced a fresh read this frame. Reset the
+        // per-slot timing vector so the next Execute() doesn't publish
+        // stale-uniform values from a previous command buffer whose
+        // individual pass deltas have since escaped the pool's resolved
+        // buffer. Without this, the render-graph explorer can show
+        // identical GPU costs across every pass when only some pools
+        // produced fresh data — the un-touched slots would otherwise
+        // carry forward whatever the prior frame happened to embed.
+        if (_lastGpuTimingFrameNumber >= 0 &&
+            _lastRawGpuFrameMilliseconds.HasValue)
+        {
+            for (int passIndex = 0;
+                 passIndex < _lastGpuPassMilliseconds.Length;
+                 ++passIndex)
+            {
+                _lastGpuPassMilliseconds[passIndex] = null;
+            }
+            _lastGpuTimingFrameNumber = -1;
+            _lastRawGpuFrameMilliseconds = null;
+            _lastGpuFrameMilliseconds = null;
         }
     }
 

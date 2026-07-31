@@ -11,7 +11,7 @@ using Engine.Scene.Components;
 using Engine.Assets;
 using Engine.CBindings;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 public class IdPickingPass : RenderPass, IDisposable
 {

@@ -4,7 +4,7 @@ using Engine.CBindings;
 using Engine.RHI;
 using Engine.RenderGraph;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 public sealed class TextureThumbnailPass : RenderPass, System.IDisposable
 {
@@ -33,12 +33,12 @@ public sealed class TextureThumbnailPass : RenderPass, System.IDisposable
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        builder.Write(Renderer.BackBufferHandle, ResourceState.RenderTarget);
+        builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.RenderTarget);
     }
 
     public override void Execute(ICommandSink sink, RenderGraphContext context)
     {
-        if (!context.TryGetTexture(Renderer.BackBufferHandle, out var backBuffer))
+        if (!context.TryGetTexture(RenderGraphResources.BackBufferHandle, out var backBuffer))
             return;
 
         uint w = context.Width > 0 ? context.Width : 256;

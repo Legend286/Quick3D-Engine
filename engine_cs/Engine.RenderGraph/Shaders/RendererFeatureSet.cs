@@ -5,7 +5,7 @@ using System;
 using System.Collections.Generic;
 using Engine.Plugins;
 
-namespace Engine.Renderer;
+namespace Engine.RenderGraph.Shaders;
 
 /// <summary>
 /// Resolves the active set of plugin-declared shader preprocessor feature

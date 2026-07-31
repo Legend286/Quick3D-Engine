@@ -9,6 +9,7 @@ using Engine.RHI;
 using Engine.RenderGraph;
 using Engine.Scene;
 using Engine.Game;
+using Engine.Renderer;
 
 internal static class Program
 {

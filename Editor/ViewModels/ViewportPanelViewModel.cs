@@ -73,7 +73,12 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     public string[] ProjectionModes { get; } =
         ["Perspective", "Orthographic"];
 
-    /// <summary>Gets visualization choices displayed in viewport chrome.</summary>
+    /// <summary>Gets visualization choices displayed in viewport chrome.
+    /// "DDGI Probes" is appended as the last entry; selecting it (and
+    /// "Lighting Only") auto-toggles <see cref="ShowDDGIProbes"/> in
+    /// <see cref="OnSelectedDebugViewChanged"/>. The DDGIDebugPass's
+    /// own Volume gate keeps rendering safe if the DDGI plugin isn't
+    /// actually loaded.</summary>
     public string[] DebugViews { get; } =
     [
         "Lit",
@@ -88,7 +93,8 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         "Emissive",
         "UV",
         "Tangent",
-        "Bitangent"
+        "Bitangent",
+        "DDGI Probes"
     ];
 
     /// <summary>Gets transform gizmo operations displayed in viewport chrome.</summary>
@@ -177,6 +183,13 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
 
     partial void OnSelectedDebugViewChanged(string value)
     {
+        // Auto-toggle the DDGI probe overlay for two debug-view entries:
+        //   1. "DDGI Probes" — explicit user request for the marker overlay.
+        //   2. "Lighting Only" — GI contribution becomes visible against the
+        //      unlit baseline, so the marker overlay is useful as a
+        //      cross-reference of where indirect-diffuse samples are drawn.
+        if (value == "DDGI Probes" || value == "Lighting Only")
+            ShowDDGIProbes = true;
         ApplyViewportModes();
     }
 
@@ -660,6 +673,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 "UV" => ViewportDebugView.Uv,
                 "Tangent" => ViewportDebugView.Tangent,
                 "Bitangent" => ViewportDebugView.Bitangent,
+                "DDGI Probes" => ViewportDebugView.Lit,
                 _ => ViewportDebugView.Lit
             };
         _gameLoop.CameraFieldOfViewDegrees =

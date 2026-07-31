@@ -55,7 +55,7 @@ public static class ThumbnailGenerator
                 return;
             }
 
-            int workerCount = 1;
+            int workerCount = Math.Max(2, Environment.ProcessorCount / 2);
             _workerSemaphore = new SemaphoreSlim(workerCount, workerCount);
 
             for (int i = 0; i < workerCount; i++)
@@ -203,14 +203,17 @@ public static class ThumbnailGenerator
 
                 var bytes = target.Readback((uint)size, (uint)size, (uint)(size * 4));
 
-                using var wb = new WriteableBitmap(new PixelSize(size, size), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Premul);
-                using (var fb = wb.Lock())
+                return await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
                 {
-                    System.Runtime.InteropServices.Marshal.Copy(bytes, 0, fb.Address, bytes.Length);
-                }
+                    using var wb = new WriteableBitmap(new PixelSize(size, size), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Premul);
+                    using (var fb = wb.Lock())
+                    {
+                        System.Runtime.InteropServices.Marshal.Copy(bytes, 0, fb.Address, bytes.Length);
+                    }
 
-                wb.Save(cacheFile);
-                return new Bitmap(cacheFile);
+                    wb.Save(cacheFile);
+                    return new Bitmap(cacheFile);
+                });
             }
             finally
             {

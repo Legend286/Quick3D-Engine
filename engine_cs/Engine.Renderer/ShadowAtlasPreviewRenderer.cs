@@ -6,7 +6,7 @@ using System.Numerics;
 using Engine.CBindings;
 using Engine.RHI;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 internal sealed class ShadowAtlasPreviewRenderer : IDisposable
 {

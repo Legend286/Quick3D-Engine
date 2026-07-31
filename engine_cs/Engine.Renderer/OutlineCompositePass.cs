@@ -5,7 +5,7 @@ using Engine.CBindings;
 using Engine.RHI;
 using Engine.RenderGraph;
 
-namespace Engine.Game;
+namespace Engine.Renderer;
 
 public sealed class OutlineCompositePass : RenderPass, IDisposable
 {
@@ -49,8 +49,8 @@ public sealed class OutlineCompositePass : RenderPass, IDisposable
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        builder.Read(Engine.Game.Renderer.OutlineMaskHandle, ResourceState.ShaderRead);
-        builder.Write(Engine.Game.Renderer.BackBufferHandle, ResourceState.RenderTarget);
+        builder.Read(RenderGraphResources.OutlineMaskHandle, ResourceState.ShaderRead);
+        builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.RenderTarget);
     }
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext context)
@@ -58,8 +58,8 @@ public sealed class OutlineCompositePass : RenderPass, IDisposable
         ulong selectedId = _renderer.SelectedEntity;
         if (selectedId == 0) return; // Nothing selected
 
-        if (!context.TryGetTexture(Engine.Game.Renderer.BackBufferHandle, out RhiTexture backBuffer)) return;
-        if (!context.TryGetTexture(Engine.Game.Renderer.OutlineMaskHandle, out RhiTexture maskTexture)) return;
+        if (!context.TryGetTexture(RenderGraphResources.BackBufferHandle, out RhiTexture backBuffer)) return;
+        if (!context.TryGetTexture(RenderGraphResources.OutlineMaskHandle, out RhiTexture maskTexture)) return;
 
         uint w = context.Width > 0 ? context.Width : 1280;
         uint h = context.Height > 0 ? context.Height : 720;
