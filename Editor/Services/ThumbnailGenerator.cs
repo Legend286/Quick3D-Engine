@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 using System;
 using System.Collections.Concurrent;
 using System.IO;
@@ -23,85 +25,70 @@ public static class ThumbnailGenerator
 
     private sealed class ThumbnailWorker : IDisposable
     {
+        public required string ProjectRoot { get; init; }
         public required RhiDevice Device { get; init; }
         public required RhiSwapchain DummySwap { get; init; }
+        public required EcsWorld World { get; init; }
         public required IGameLoop Loop { get; init; }
+        public required GameAssemblyLoadContext LoadContext { get; init; }
 
         public void Dispose()
         {
             Loop.Dispose();
+            World.Dispose();
             DummySwap.Dispose();
             Device.Dispose();
+            LoadContext.Unload();
         }
     }
 
-    private static readonly object _initLock = new();
-    private static readonly ConcurrentQueue<ThumbnailWorker> _availableWorkers = new();
+    private sealed class ThumbnailRequest
+    {
+        public required string ProjectRoot { get; init; }
+        public required string AssetPath { get; init; }
+        public required string AssetType { get; init; }
+        public required int Size { get; init; }
+        public required int ModelPartIndex { get; init; }
+        public required TaskCompletionSource<byte[]?> Completion { get; init; }
+    }
+
+    private static readonly object _workerLock = new();
+    private static readonly BlockingCollection<ThumbnailRequest> _requests =
+        new();
     private static readonly ConcurrentDictionary<string, Task<Bitmap?>> _inFlight = new();
-    private static SemaphoreSlim? _workerSemaphore;
-    private static bool _initialized = false;
+    private static Thread? _workerThread;
 
-    private static void EnsureInitialized()
+    private static void EnsureWorkerStarted()
     {
-        if (_initialized) return;
-        lock (_initLock)
+        lock (_workerLock)
         {
-            if (_initialized) return;
-
-            var dllPath = ResolveGameDllPath();
-            if (!File.Exists(dllPath))
-            {
-                _initialized = true;
+            if (_workerThread is { IsAlive: true })
                 return;
-            }
-
-            int workerCount = Math.Max(2, Environment.ProcessorCount / 2);
-            _workerSemaphore = new SemaphoreSlim(workerCount, workerCount);
-
-            for (int i = 0; i < workerCount; i++)
+            _workerThread = new Thread(WorkerMain)
             {
-                RhiNative.RhiInit(out var rhiDevicePtr);
-                var device = new RhiDevice(rhiDevicePtr, ownsHandle: true);
-                var dummySwap = new RhiSwapchain(device, IntPtr.Zero, ownsHandle: true);
-
-                var loadContext = new GameAssemblyLoadContext(dllPath);
-                var assembly = loadContext.LoadFromAssemblyName(new AssemblyName("Engine.Game"));
-                var loopType = assembly.GetTypes().First(t => typeof(IGameLoop).IsAssignableFrom(t) && !t.IsInterface);
-                var loop = (IGameLoop)Activator.CreateInstance(loopType, false)!;
-                loop.Init(
-                    device.Handle,
-                    dummySwap.Handle,
-                    null!,
-                    enableImGui: false);
-
-                _availableWorkers.Enqueue(new ThumbnailWorker
-                {
-                    Device = device,
-                    DummySwap = dummySwap,
-                    Loop = loop
-                });
-            }
-
-            _initialized = true;
+                IsBackground = true,
+                Name = "Quick3D Thumbnail Renderer"
+            };
+            _workerThread.Start();
         }
     }
 
-    private static string ResolveGameDllPath()
+    private static string ResolveGameDllPath(string projectRoot)
     {
-        if (!string.IsNullOrEmpty(App.ProjectRoot))
+        if (!string.IsNullOrEmpty(projectRoot))
         {
             var searchPaths = new[]
             {
-                Path.Combine(App.ProjectRoot, "Game", "bin", "Release", "net8.0", "osx-arm64", "Engine.Game.dll"),
-                Path.Combine(App.ProjectRoot, "Game", "bin", "Debug", "net8.0", "osx-arm64", "Engine.Game.dll"),
-                Path.Combine(App.ProjectRoot, "Game", "bin", "Release", "net8.0", "Engine.Game.dll"),
-                Path.Combine(App.ProjectRoot, "Game", "bin", "Debug", "net8.0", "Engine.Game.dll"),
+                Path.Combine(projectRoot, "Game", "bin", "Release", "net8.0", "osx-arm64", "Engine.Game.dll"),
+                Path.Combine(projectRoot, "Game", "bin", "Debug", "net8.0", "osx-arm64", "Engine.Game.dll"),
+                Path.Combine(projectRoot, "Game", "bin", "Release", "net8.0", "Engine.Game.dll"),
+                Path.Combine(projectRoot, "Game", "bin", "Debug", "net8.0", "Engine.Game.dll"),
             };
             foreach (var path in searchPaths)
             {
                 if (File.Exists(path)) return path;
             }
-            return Path.Combine(App.ProjectRoot, "Game", "bin", "Release", "net8.0", "Engine.Game.dll");
+            return Path.Combine(projectRoot, "Game", "bin", "Release", "net8.0", "Engine.Game.dll");
         }
         return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Engine.Game.dll");
     }
@@ -176,56 +163,185 @@ public static class ThumbnailGenerator
             var fileInfo = new FileInfo(assetPath);
             if (!fileInfo.Exists)
                 return null;
-
-            EnsureInitialized();
-            if (_workerSemaphore == null)
+            byte[]? bytes = await RenderThumbnailAsync(
+                App.ProjectRoot,
+                assetPath,
+                assetType,
+                size,
+                modelPartIndex).ConfigureAwait(false);
+            if (bytes == null)
                 return null;
-
-            await _workerSemaphore.WaitAsync().ConfigureAwait(false);
-            if (!_availableWorkers.TryDequeue(out var worker))
-            {
-                _workerSemaphore.Release();
-                return null;
-            }
-
-            try
-            {
-                using var target = RhiTexture.CreateRenderTarget(worker.Device, (uint)size, (uint)size, RhiNative.TextureFormat.Bgra8Unorm);
-                string contentRoot = Path.Combine(App.ProjectRoot, "Content");
-                worker.Loop.RenderThumbnail(
-                    contentRoot,
-                    assetPath,
-                    assetType,
-                    target,
-                    (uint)size,
-                    (uint)size,
-                    modelPartIndex: modelPartIndex);
-
-                var bytes = target.Readback((uint)size, (uint)size, (uint)(size * 4));
-
-                return await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
-                {
-                    using var wb = new WriteableBitmap(new PixelSize(size, size), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Premul);
-                    using (var fb = wb.Lock())
-                    {
-                        System.Runtime.InteropServices.Marshal.Copy(bytes, 0, fb.Address, bytes.Length);
-                    }
-
-                    wb.Save(cacheFile);
-                    return new Bitmap(cacheFile);
-                });
-            }
-            finally
-            {
-                _availableWorkers.Enqueue(worker);
-                _workerSemaphore.Release();
-            }
+            return await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(
+                () => CreateBitmap(
+                    bytes,
+                    cacheFile,
+                    size),
+                Avalonia.Threading.DispatcherPriority.Background);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[ThumbnailGenerator] Error generating thumbnail for {assetPath}: {ex}");
             return null;
         }
+    }
+
+    private static Task<byte[]?> RenderThumbnailAsync(
+        string projectRoot,
+        string assetPath,
+        string assetType,
+        int size,
+        int modelPartIndex)
+    {
+        EnsureWorkerStarted();
+        var completion = new TaskCompletionSource<byte[]?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _requests.Add(new ThumbnailRequest
+        {
+            ProjectRoot = projectRoot,
+            AssetPath = assetPath,
+            AssetType = assetType,
+            Size = size,
+            ModelPartIndex = modelPartIndex,
+            Completion = completion
+        });
+        return completion.Task;
+    }
+
+    private static void WorkerMain()
+    {
+        ThumbnailWorker? worker = null;
+        try
+        {
+            foreach (ThumbnailRequest request in _requests.GetConsumingEnumerable())
+            {
+                try
+                {
+                    if (worker == null ||
+                        !string.Equals(
+                            worker.ProjectRoot,
+                            request.ProjectRoot,
+                            StringComparison.Ordinal))
+                    {
+                        worker?.Dispose();
+                        worker = null;
+                        worker = CreateWorker(request.ProjectRoot);
+                    }
+                    request.Completion.TrySetResult(
+                        RenderThumbnailBytes(worker, request));
+                }
+                catch (Exception exception)
+                {
+                    Console.WriteLine(
+                        $"[ThumbnailGenerator] Error generating thumbnail " +
+                        $"for {request.AssetPath}: {exception}");
+                    request.Completion.TrySetResult(null);
+                }
+            }
+        }
+        finally
+        {
+            worker?.Dispose();
+        }
+    }
+
+    private static ThumbnailWorker CreateWorker(string projectRoot)
+    {
+        string dllPath = ResolveGameDllPath(projectRoot);
+        if (!File.Exists(dllPath))
+            throw new FileNotFoundException("Game DLL not found.", dllPath);
+
+        RhiDevice? device = null;
+        RhiSwapchain? dummySwap = null;
+        EcsWorld? world = null;
+        GameAssemblyLoadContext? loadContext = null;
+        IGameLoop? loop = null;
+        try
+        {
+            RhiNative.RhiInit(out IntPtr devicePointer);
+            device = new RhiDevice(devicePointer, ownsHandle: true);
+            dummySwap = new RhiSwapchain(
+                device,
+                IntPtr.Zero,
+                ownsHandle: true);
+            world = new EcsWorld();
+            loadContext = new GameAssemblyLoadContext(dllPath);
+            var assembly = loadContext.LoadFromAssemblyName(
+                new AssemblyName("Engine.Game"));
+            Type loopType = assembly.GetTypes().First(
+                type => typeof(IGameLoop).IsAssignableFrom(type) &&
+                    !type.IsInterface);
+            loop = (IGameLoop)Activator.CreateInstance(
+                loopType,
+                false)!;
+            loop.Init(
+                device.Handle,
+                dummySwap.Handle,
+                world,
+                enableImGui: false);
+            return new ThumbnailWorker
+            {
+                ProjectRoot = projectRoot,
+                Device = device,
+                DummySwap = dummySwap,
+                World = world,
+                Loop = loop,
+                LoadContext = loadContext
+            };
+        }
+        catch
+        {
+            loop?.Dispose();
+            world?.Dispose();
+            dummySwap?.Dispose();
+            device?.Dispose();
+            loadContext?.Unload();
+            throw;
+        }
+    }
+
+    private static byte[] RenderThumbnailBytes(
+        ThumbnailWorker worker,
+        ThumbnailRequest request)
+    {
+        using var target = RhiTexture.CreateRenderTarget(
+            worker.Device,
+            (uint)request.Size,
+            (uint)request.Size,
+            RhiNative.TextureFormat.Bgra8Unorm);
+        worker.Loop.RenderThumbnail(
+            Path.Combine(request.ProjectRoot, "Content"),
+            request.AssetPath,
+            request.AssetType,
+            target,
+            (uint)request.Size,
+            (uint)request.Size,
+            modelPartIndex: request.ModelPartIndex);
+        return target.Readback(
+            (uint)request.Size,
+            (uint)request.Size,
+            (uint)(request.Size * 4));
+    }
+
+    private static Bitmap CreateBitmap(
+        byte[] bytes,
+        string cacheFile,
+        int size)
+    {
+        using var bitmap = new WriteableBitmap(
+            new PixelSize(size, size),
+            new Vector(96, 96),
+            PixelFormat.Bgra8888,
+            AlphaFormat.Premul);
+        using (var framebuffer = bitmap.Lock())
+        {
+            System.Runtime.InteropServices.Marshal.Copy(
+                bytes,
+                0,
+                framebuffer.Address,
+                bytes.Length);
+        }
+        bitmap.Save(cacheFile);
+        return new Bitmap(cacheFile);
     }
 
     private static bool TryLoadBitmap(string cacheFile, out Bitmap? bitmap)

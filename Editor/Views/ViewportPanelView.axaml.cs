@@ -233,6 +233,16 @@ public partial class ViewportPanelView : UserControl
         }
     }
 
+    private void OnDebugViewSelectionChanged(
+        object? sender,
+        SelectionChangedEventArgs e)
+    {
+        if (e.AddedItems.Count == 0)
+            return;
+        this.FindControl<Button>("DebugViewButton")?.Flyout?.Hide();
+        Focus();
+    }
+
     private void OnPointerWheelChanged(object? sender, Avalonia.Input.PointerWheelEventArgs e)
     {
         if (_metalHost is not null &&

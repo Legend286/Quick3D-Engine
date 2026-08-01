@@ -24,8 +24,21 @@ The popup keeps one external RHI render target and synchronization primitive
 for its lifetime. Model and material changes rebuild only the preview scene;
 they do not repeatedly export and import GPU resources through the compositor.
 
-Offscreen thumbnail workers initialize `IGameLoop` with ImGui disabled.
-Dear ImGui owns process-global font-atlas state that cannot be built safely
-from a thumbnail thread while the interactive viewport is rendering.
+The offscreen thumbnail renderer initializes `IGameLoop` with ImGui disabled.
+CPU-side import and discovery may run in parallel, while thumbnail GPU work is
+serialized on one dedicated background render-owner thread. That thread owns
+its RHI device, game loop, ECS world, command submission, readback, and
+destruction for their complete lifetimes. Only the short bitmap copy and cache
+publication return to Avalonia's dispatcher. A folder containing many uncached
+model parts therefore cannot monopolize the UI thread and prevent viewport
+camera, asset-drop, or scene-edit frames from being submitted.
+
+Thumbnail renderers remain isolated from process-wide viewport extensions.
+They neither replace the active interactive renderer nor bind its DDGI atlas,
+which may belong to a different RHI device. `RendererPluginContext` exposes
+`EnableGlobalExtensions`; the clustered plan resolves the process-wide DDGI
+provider only when that flag is true. Each static thumbnail worker also owns a
+separate ECS world for its preview entities; it never receives a null world or
+mutates the interactive scene.
 
 It is registered as a dockable panel in the main editor window layout.

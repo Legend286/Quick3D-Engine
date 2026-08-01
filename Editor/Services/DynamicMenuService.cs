@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 
 namespace Engine.Editor.Services;
 
@@ -17,6 +18,8 @@ public sealed class DynamicMenuService
     private readonly Dictionary<string, List<Action>> _imguiOverlays = new();
     private readonly Dictionary<string, List<object>> _toolPanels = new();
     private readonly Dictionary<string, List<DebugViewRegistration>> _debugViews = new();
+    private readonly Dictionary<string, List<DebugViewToggleRegistration>> _debugViewToggles = new();
+    private string _activeDebugView = "Lit";
 
     /// <summary>Fired on the UI thread whenever a plugin adds or removes a menu action.</summary>
     public event Action? OnMenusChanged;
@@ -26,6 +29,8 @@ public sealed class DynamicMenuService
     public event Action? OnToolPanelsChanged;
     /// <summary>Fired on the UI thread whenever a plugin adds or removes a debug view.</summary>
     public event Action? OnDebugViewsChanged;
+    /// <summary>Fired whenever a plugin adds or removes a debug-view toggle.</summary>
+    public event Action? OnDebugViewTogglesChanged;
 
     /// <summary>One menu action registered by an editor-kind plugin.</summary>
     public sealed record MenuActionRegistration(string MenuPath, string ItemName, Action OnExecute);
@@ -67,6 +72,50 @@ public sealed class DynamicMenuService
         string ViewName,
         Action<bool> OnToggle);
 
+    /// <summary>One checkbox attached to a plugin-owned debug view.</summary>
+    public sealed class DebugViewToggleRegistration : INotifyPropertyChanged
+    {
+        private readonly Action<bool> _onToggle;
+        private bool _isChecked;
+
+        internal DebugViewToggleRegistration(
+            string viewName,
+            string toggleName,
+            bool initialValue,
+            Action<bool> onToggle)
+        {
+            ViewName = viewName;
+            ToggleName = toggleName;
+            _isChecked = initialValue;
+            _onToggle = onToggle;
+        }
+
+        /// <summary>Gets the debug view that owns this toggle.</summary>
+        public string ViewName { get; }
+
+        /// <summary>Gets the checkbox label.</summary>
+        public string ToggleName { get; }
+
+        /// <summary>Gets or sets the checkbox state.</summary>
+        public bool IsChecked
+        {
+            get => _isChecked;
+            set
+            {
+                if (_isChecked == value)
+                    return;
+                _isChecked = value;
+                _onToggle(value);
+                PropertyChanged?.Invoke(
+                    this,
+                    new PropertyChangedEventArgs(nameof(IsChecked)));
+            }
+        }
+
+        /// <inheritdoc />
+        public event PropertyChangedEventHandler? PropertyChanged;
+    }
+
     /// <summary>Registers a debug view (viewport visualization dropdown
     /// entry) owned by the named plugin.</summary>
     public void RegisterDebugView(
@@ -79,7 +128,51 @@ public sealed class DynamicMenuService
 
         _debugViews[pluginId].Add(
             new DebugViewRegistration(viewName, onToggle));
+        onToggle(string.Equals(
+            _activeDebugView,
+            viewName,
+            StringComparison.Ordinal));
         OnDebugViewsChanged?.Invoke();
+    }
+
+    /// <summary>Updates the active viewport visualization and synchronizes
+    /// every plugin callback, including registrations recreated by reload.</summary>
+    public void SetActiveDebugView(string viewName)
+    {
+        if (string.IsNullOrWhiteSpace(viewName))
+            return;
+        _activeDebugView = viewName;
+        foreach (DebugViewRegistration view in EnumerateDebugViews())
+        {
+            view.OnToggle(string.Equals(
+                viewName,
+                view.ViewName,
+                StringComparison.Ordinal));
+        }
+    }
+
+    /// <summary>Registers a checkbox displayed for a named debug view.</summary>
+    public void RegisterDebugViewToggle(
+        string pluginId,
+        string viewName,
+        string toggleName,
+        bool initialValue,
+        Action<bool> onToggle)
+    {
+        if (!_debugViewToggles.ContainsKey(pluginId))
+            _debugViewToggles[pluginId] = new();
+
+        _debugViewToggles[pluginId].Add(
+            new DebugViewToggleRegistration(
+                viewName,
+                toggleName,
+                initialValue,
+                value =>
+                {
+                    onToggle(value);
+                    OnDebugViewTogglesChanged?.Invoke();
+                }));
+        OnDebugViewTogglesChanged?.Invoke();
     }
 
     /// <summary>Enumerates every debug-view registration, in registration order.</summary>
@@ -94,6 +187,16 @@ public sealed class DynamicMenuService
         }
     }
 
+    /// <summary>Enumerates every checkbox registered for a debug view.</summary>
+    public IEnumerable<DebugViewToggleRegistration> EnumerateDebugViewToggles()
+    {
+        foreach (var pluginToggles in _debugViewToggles.Values)
+        {
+            foreach (var toggle in pluginToggles)
+                yield return toggle;
+        }
+    }
+
     /// <summary>Removes every registration owned by the named plugin.</summary>
     public void UnregisterPlugin(string pluginId)
     {
@@ -101,11 +204,13 @@ public sealed class DynamicMenuService
         bool changedImGui = _imguiOverlays.Remove(pluginId);
         bool changedPanels = _toolPanels.Remove(pluginId);
         bool changedViews = _debugViews.Remove(pluginId);
+        bool changedViewToggles = _debugViewToggles.Remove(pluginId);
 
         if (changedMenus) OnMenusChanged?.Invoke();
         if (changedImGui) OnImGuiOverlaysChanged?.Invoke();
         if (changedPanels) OnToolPanelsChanged?.Invoke();
         if (changedViews) OnDebugViewsChanged?.Invoke();
+        if (changedViewToggles) OnDebugViewTogglesChanged?.Invoke();
     }
 
     /// <summary>Enumerates every menu-action registration, in registration order.</summary>

@@ -50,23 +50,28 @@ internal static class EngineLogBootstrap
     public static void InitFromProject(string projectRoot)
     {
         App.ProjectRoot = projectRoot;
+        try
+        {
+            Directory.SetCurrentDirectory(projectRoot);
+            Console.WriteLine($"[AppBootstrap] Set CurrentDirectory to: '{projectRoot}'");
+            string logDirectory = Path.Combine(projectRoot, "out", "logs");
+            Directory.CreateDirectory(logDirectory);
+            string slangDiagnostics =
+                Path.Combine(logDirectory, "slang_diagnostics.txt");
+            if (File.Exists(slangDiagnostics))
+                File.Delete(slangDiagnostics);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[AppBootstrap] Failed to set directory or create logs: {ex.Message}");
+        }
+
         Services.PluginCatalogService.Shared.SetProjectRoot(projectRoot);
         App.EngineSourceRoot = ResolveEngineSourceRoot();
         Services.EditorSettingsStore.RememberProject(projectRoot);
         Console.WriteLine($"[AppBootstrap] Resolved ProjectRoot: '{projectRoot}'");
         Console.WriteLine($"[AppBootstrap] Resolved EngineSourceRoot: '{App.EngineSourceRoot}'");
         Console.WriteLine($"[AppBootstrap] AppDomain BaseDirectory: '{AppDomain.CurrentDomain.BaseDirectory}'");
-
-        try
-        {
-            Directory.SetCurrentDirectory(projectRoot);
-            Console.WriteLine($"[AppBootstrap] Set CurrentDirectory to: '{projectRoot}'");
-            Directory.CreateDirectory(Path.Combine(projectRoot, "out", "logs"));
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[AppBootstrap] Failed to set directory or create logs: {ex.Message}");
-        }
 
         var logging = ModulesJsonLoggingReader.Read(projectRoot);
 

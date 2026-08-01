@@ -102,9 +102,10 @@ main scene renderer defaults:
 4. The editor preserves already loaded thumbnail bitmaps across asset-list
    refreshes and reuses on-disk cache files immediately, so icons no longer
    disappear while unrelated thumbnails are being generated.
-5. Thumbnail generation now runs through a single preview worker. The asset
-   loaders and registry still use shared global caches, so serializing icon
-   renders avoids GPU and asset-cache races when browsing heavy model folders.
+5. Thumbnail generation now runs through one renderer on a dedicated serial
+   render-owner thread. GPU creation, submission, readback, and destruction are
+   isolated there, avoiding device and asset-cache races without allowing
+   thumbnail work to pre-empt viewport input.
 
 Imported `.mdl` tiles expose an expansion control when parts are present.
 Expanding inserts one `PART` tile per stable source index. Each child has its
@@ -114,11 +115,11 @@ model, while dropping a child instantiates only that part. The part index is
 stored in scene JSON so save and reload preserve the choice.
 
 Pressing Import validates the request, enqueues it with the editor-wide asset
-import service, and closes the import window immediately. Cooking and model
-thumbnail generation run away from the UI thread. The main editor status bar
-shows the active cook or thumbnail stage at bottom right. Completion never
-loads a generated scene or instantiates the imported model into the active
-scene.
+import service, and closes the import window immediately. Cooking, asset
+discovery, and thumbnail GPU work run away from the UI thread. The main editor
+status bar shows the active cook or thumbnail stage at bottom right. Completion
+never loads a generated scene or instantiates the imported model into the
+active scene.
 
 Model import finishes with a separate `Generating thumbnails` progress stage.
 It renders the whole-model icon and every stable part icon before reporting
@@ -165,14 +166,27 @@ The Realtime toggle controls viewport presentation rather than simulation.
 Realtime mode continuously acquires, renders, and presents swapchain images.
 With Realtime disabled, the editor leaves the last frame resident and requests
 short render bursts for camera input, selection, scene edits, resize, renderer
-changes, projection transitions, and debug-view changes. This avoids continuous
-GPU presentation while inspecting a static scene on battery-powered systems.
+changes, projection transitions, and debug-view changes. Renderer-owned
+background work can keep requesting frames through
+`IGameLoop.HasPendingRenderWork`; DDGI uses this while an initial or
+geometry-revision scene bake is active. This avoids continuous GPU presentation
+while still allowing bounded caches to converge on battery-powered systems.
 
 The debug selector is shared by PBR and path tracing. It currently exposes Lit,
 Wireframe, Depth, Vertex Normal, Pixel Normal, Albedo, RMA, Lighting Only,
-World Position, Emissive, UV, Tangent, and Bitangent. These modes are frame
-state and do not rebuild the render graph. Path-traced debug changes reset
-accumulation so samples from different visualizations cannot mix.
+World Position, Emissive, UV, Tangent, Bitangent, and plugin-registered views.
+Debug modes are mutually exclusive: selecting a
+built-in surface view disables probe overlays, and selecting a plugin overlay
+returns the surface view to Lit. The renderer and debug selectors do not retain
+keyboard focus, so camera movement keys cannot cycle their values after pointer
+selection. These modes are frame state and do not rebuild the render graph.
+Path-traced debug changes reset accumulation so samples from different
+visualizations cannot mix.
+
+The DDGI plugin injects both **DDGI Indirect** and **DDGI Probes**. Plugin views
+can append checkboxes inside the debug picker. **DDGI Probes** provides
+**Probe status colours**: enabled by default for a clearly visible lifecycle
+diagnostic; disabling it shows reconstructed irradiance on each probe face.
 
 ## Asset Hover Preview
 

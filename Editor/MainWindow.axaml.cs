@@ -491,7 +491,6 @@ public partial class MainWindow : Window
         // PluginCatalogService, otherwise the next OnMenusChanged fire
         // would touch a disposed control tree.
         DynamicMenuService.Shared.OnMenusChanged -= RebuildDynamicToolsMenu;
-        // Release the Metal swapchain + device before tearing down the logger.
         if (DataContext is MainWindowViewModel vm)
         {
             vm.RenderGraphVm?.Dispose();
@@ -499,7 +498,6 @@ public partial class MainWindow : Window
             vm.ConsoleVm?.DisposeOnClose();
         }
         Services.PluginCatalogService.Shared.Dispose();
-        EngineLog.EngineLogShutdown();
         base.OnClosed(e);
     }
 }

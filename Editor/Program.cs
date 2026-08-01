@@ -46,14 +46,16 @@ internal static class Program
 
         try
         {
-            var result = BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
-            Engine.CBindings.EngineLog.EngineLogShutdown();
-            return result;
+            return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }
         catch (Exception ex)
         {
             File.WriteAllText("/tmp/editor_crash.txt", ex.ToString());
             return 1;
+        }
+        finally
+        {
+            Engine.CBindings.EngineLog.EngineLogShutdown();
         }
     }
 

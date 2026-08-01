@@ -204,13 +204,6 @@ public sealed class PluginCatalogService :
                 UnloadPlugin(plugin.Id);
 
             plugin.SetEnabledSilently(shouldEnable);
-
-            if (shouldEnable)
-            {
-                LoadPlugin(plugin);
-                if (ResolveAssemblyPath(plugin) == null)
-                    _ = BuildPluginAsync(plugin);
-            }
         }
 
         // Handle non-renderer plugins: only toggle if state actually changed.
@@ -227,6 +220,22 @@ public sealed class PluginCatalogService :
                 LoadPlugin(plugin);
             else
                 UnloadPlugin(plugin.Id);
+        }
+
+        PublishActiveShaderContext();
+
+        foreach (var plugin in Plugins)
+        {
+            if (plugin.Manifest.Required ||
+                plugin.Manifest.Kind != EnginePluginKind.Renderer ||
+                !plugin.IsEnabled)
+            {
+                continue;
+            }
+
+            LoadPlugin(plugin);
+            if (ResolveAssemblyPath(plugin) == null)
+                _ = BuildPluginAsync(plugin);
         }
 
         AvailabilityChanged?.Invoke();
@@ -287,6 +296,8 @@ public sealed class PluginCatalogService :
             return;
         }
 
+        PublishActiveShaderContext();
+
         if (enabled)
         {
             LoadPlugin(plugin);
@@ -306,11 +317,6 @@ public sealed class PluginCatalogService :
         Log.Info(
             $"[Plugins] Shader reload requested for {plugin.Id}",
             "Editor");
-        EditorShaderBridge.RaiseActiveShaderContextChanged(
-            Engine.RenderGraph.Shaders.RendererFeatureSet.BuildCliArgs(GetAllManifests()),
-            ShaderIncludeResolver.Resolve(
-                Path.Combine(EngineRoot, "Content"),
-                GetEnabledManifestsWithPaths()));
     }
 
     /// <inheritdoc />
@@ -376,8 +382,14 @@ public sealed class PluginCatalogService :
             }
         }
 
+        PublishActiveShaderContext();
+    }
+
+    private void PublishActiveShaderContext()
+    {
         EditorShaderBridge.RaiseActiveShaderContextChanged(
-            Engine.RenderGraph.Shaders.RendererFeatureSet.BuildCliArgs(GetAllManifests()),
+            Engine.RenderGraph.Shaders.RendererFeatureSet.BuildCliArgs(
+                GetAllManifests()),
             ShaderIncludeResolver.Resolve(
                 Path.Combine(EngineRoot, "Content"),
                 GetEnabledManifestsWithPaths()));
@@ -649,7 +661,7 @@ public sealed class PluginCatalogService :
                             timer.Dispose();
                         }
                     }
-                    callback();
+                    Avalonia.Threading.Dispatcher.UIThread.Post(callback);
                 },
                 null,
                 delayMilliseconds,
@@ -660,41 +672,77 @@ public sealed class PluginCatalogService :
     private async Task BuildPluginAsync(
         PluginEntryViewModel plugin)
     {
-        string? project = Directory
-            .EnumerateFiles(
-                plugin.DirectoryPath,
-                "*.csproj",
-                SearchOption.TopDirectoryOnly)
-            .FirstOrDefault();
-        if (project == null)
-            return;
-
         try
         {
+            if (!Directory.Exists(plugin.DirectoryPath))
+            {
+                Log.Error(
+                    $"[Plugins] Build skipped for {plugin.Name}: " +
+                    $"plugin directory does not exist: {plugin.DirectoryPath}",
+                    "Build");
+                return;
+            }
+
+            string? project = Directory
+                .EnumerateFiles(
+                    plugin.DirectoryPath,
+                    "*.csproj",
+                    SearchOption.TopDirectoryOnly)
+                .FirstOrDefault();
+            if (project == null)
+                return;
+
+            string projectDirectory =
+                Path.GetDirectoryName(Path.GetFullPath(project)) ??
+                plugin.DirectoryPath;
+            if (!Directory.Exists(projectDirectory))
+            {
+                Log.Error(
+                    $"[Plugins] Build skipped for {plugin.Name}: " +
+                    $"project directory does not exist: {projectDirectory}",
+                    "Build");
+                return;
+            }
+
+            string dotnetExe = ResolveDotnetExe();
             using var process = new Process
             {
                 StartInfo = new ProcessStartInfo
                 {
-                    FileName = "dotnet",
-                    WorkingDirectory =
-                        plugin.DirectoryPath,
+                    FileName = dotnetExe,
+                    WorkingDirectory = projectDirectory,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
-                    UseShellExecute = false
+                    UseShellExecute = false,
+                    CreateNoWindow = true
                 }
             };
+            string dotnetDirectory =
+                Path.GetDirectoryName(dotnetExe) ?? string.Empty;
+            if (!string.IsNullOrEmpty(dotnetDirectory))
+            {
+                string existingPath =
+                    process.StartInfo.Environment.TryGetValue(
+                        "PATH", out string? path)
+                        ? path ?? string.Empty
+                        : string.Empty;
+                process.StartInfo.Environment["PATH"] =
+                    string.IsNullOrEmpty(existingPath)
+                        ? dotnetDirectory
+                        : $"{dotnetDirectory}{Path.PathSeparator}{existingPath}";
+            }
             process.StartInfo.ArgumentList.Add("build");
-            process.StartInfo.ArgumentList.Add(project);
-            process.StartInfo.ArgumentList.Add(
-                "--nologo");
+            process.StartInfo.ArgumentList.Add(Path.GetFullPath(project));
+            process.StartInfo.ArgumentList.Add("--nologo");
+            process.StartInfo.ArgumentList.Add("--no-restore");
             process.Start();
-            string output =
-                await process.StandardOutput
-                    .ReadToEndAsync();
-            string error =
-                await process.StandardError
-                    .ReadToEndAsync();
+            Task<string> outputTask =
+                process.StandardOutput.ReadToEndAsync();
+            Task<string> errorTask =
+                process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
+            string output = await outputTask;
+            string error = await errorTask;
             if (process.ExitCode != 0)
             {
                 Log.Error(
@@ -708,6 +756,23 @@ public sealed class PluginCatalogService :
                 $"[Plugins] Build failed for {plugin.Name}: {exception.Message}",
                 "Build");
         }
+    }
+
+    private static string ResolveDotnetExe()
+    {
+        string[] candidates =
+        [
+            "/usr/local/share/dotnet/dotnet",
+            "/usr/local/bin/dotnet",
+            "/opt/homebrew/bin/dotnet",
+            "/opt/homebrew/share/dotnet/dotnet"
+        ];
+        foreach (string candidate in candidates)
+        {
+            if (File.Exists(candidate))
+                return candidate;
+        }
+        return "dotnet";
     }
 
     private void LoadPlugin(
@@ -778,6 +843,12 @@ public sealed class PluginCatalogService :
     private void LoadRendererExtensionPlugin(
         PluginEntryViewModel plugin)
     {
+        if (!Avalonia.Threading.Dispatcher.UIThread.CheckAccess())
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(
+                () => LoadRendererExtensionPlugin(plugin));
+            return;
+        }
         if (_runtime.ContainsKey(plugin.Id) ||
             string.IsNullOrWhiteSpace(
                 plugin.Manifest.Assembly) ||
@@ -812,42 +883,56 @@ public sealed class PluginCatalogService :
             if (instance is IEditorPlugin editorExtension)
                 editorExtension.InitializeEditor(this);
             else
-                instance.Initialize(this);            if (instance is
-                Engine.RenderGraph.IRendererPlanPlugin
-                    extension)
-            {
-                System.Threading.Tasks.Task.Run(async () =>
-                {
-                    try
-                    {
-                        Engine.Renderer.Renderer? renderer;
-                        do
-                        {
-                            await System.Threading.Tasks.Task.Delay(250);
-                            renderer = Engine.Renderer.Renderer.ActiveInstance;
-                        }
-                        while (renderer is null || !renderer.HasActiveScene);
-                        renderer.AddExtensionPlugin(extension);
-                    }
-                    catch (System.Exception bgEx)
-                    {
-                        Engine.CBindings.Log.Error(
-                            $"[Plugins] Failed to activate {plugin.Id}: {bgEx.Message}\n{bgEx.StackTrace}",
-                            "Editor");
-                    }
-                });
-            }
+                instance.Initialize(this);
             _runtime[plugin.Id] =
                 new RuntimePlugin
                 {
                     Context = context,
                     Instance = instance
                 };
+            if (instance is
+                Engine.RenderGraph.IRendererPlanPlugin extension)
+            {
+                ActivateRendererExtensionWhenReady(
+                    plugin.Id,
+                    extension);
+            }
         }
         catch (Exception exception)
         {
             Log.Error(
                 $"[Plugins] Failed to load {plugin.Name}: {exception.Message}",
+                "Editor");
+        }
+    }
+
+    private async void ActivateRendererExtensionWhenReady(
+        string pluginId,
+        Engine.RenderGraph.IRendererPlanPlugin extension)
+    {
+        try
+        {
+            while (_runtime.TryGetValue(
+                       pluginId,
+                       out RuntimePlugin? runtime) &&
+                   ReferenceEquals(runtime.Instance, extension))
+            {
+                Engine.Renderer.Renderer? renderer =
+                    Engine.Renderer.Renderer.ActiveInstance;
+                if (renderer != null)
+                {
+                    renderer.EnqueueRenderThreadAction(
+                        owner => owner.AddExtensionPlugin(extension));
+                    return;
+                }
+                await Task.Delay(250);
+            }
+        }
+        catch (Exception exception)
+        {
+            Log.Error(
+                $"[Plugins] Failed to activate {pluginId}: " +
+                $"{exception.Message}\n{exception.StackTrace}",
                 "Editor");
         }
     }
@@ -875,11 +960,20 @@ public sealed class PluginCatalogService :
                 "net8.0",
                 assemblyName)
         ];
-        return candidates.FirstOrDefault(File.Exists);
+        return candidates
+            .Where(File.Exists)
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .FirstOrDefault();
     }
 
     private void UnloadPlugin(string pluginId)
     {
+        if (!Avalonia.Threading.Dispatcher.UIThread.CheckAccess())
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(
+                () => UnloadPlugin(pluginId));
+            return;
+        }
         if (!_runtime.Remove(
                 pluginId,
                 out RuntimePlugin? runtime))
@@ -891,9 +985,41 @@ public sealed class PluginCatalogService :
                 Engine.RenderGraph.IRendererPlanPlugin
                     extensionRenderer)
         {
-            Engine.Renderer.Renderer.ActiveInstance?
-                .RemoveExtensionPlugin(extensionRenderer);
+            Engine.Renderer.Renderer? renderer =
+                Engine.Renderer.Renderer.ActiveInstance;
+            if (renderer != null)
+            {
+                renderer.EnqueueRenderThreadAction(owner =>
+                {
+                    try
+                    {
+                        owner.RemoveExtensionPlugin(extensionRenderer);
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            runtime.Instance.Shutdown();
+                        }
+                        finally
+                        {
+                            try
+                            {
+                                runtime.Instance.Dispose();
+                            }
+                            finally
+                            {
+                                Avalonia.Threading.Dispatcher.UIThread.Post(
+                                    () => runtime.Context.Unload());
+                            }
+                        }
+                    }
+                });
+                DynamicMenuService.Shared.UnregisterPlugin(pluginId);
+                return;
+            }
         }
+
         runtime.Instance.Shutdown();
         runtime.Instance.Dispose();
         runtime.Context.Unload();
@@ -977,6 +1103,18 @@ public sealed class PluginCatalogService :
         out System.Numerics.Vector3 cameraPosition,
         out System.Numerics.Matrix4x4 viewProjection,
         out System.Numerics.Matrix4x4 inverseViewProjection)
+        => TryGetViewportCameraData(
+            width,
+            height,
+            out cameraPosition,
+            out viewProjection,
+            out inverseViewProjection);
+
+    public bool TryGetViewportCameraData(
+        uint width, uint height,
+        out System.Numerics.Vector3 cameraPosition,
+        out System.Numerics.Matrix4x4 viewProjection,
+        out System.Numerics.Matrix4x4 inverseViewProjection)
     {
         cameraPosition = System.Numerics.Vector3.Zero;
         viewProjection = System.Numerics.Matrix4x4.Identity;
@@ -987,7 +1125,7 @@ public sealed class PluginCatalogService :
         // a specific host-renderer instance. Returns false when no
         // renderer is constructed yet so plugin callers fall back
         // to identity matrices + a one-time diagnostic. The host
-        // Renderer's TryGetActiveCameraData returns the raw camera
+        // Renderer.TryGetActiveCameraData returns the raw camera
         // components; this adapter flattens them to the interface's
         // (position, viewProj, invViewProj) tuple so plugin callers
         // don't need a hard ref to Engine.Scene.Components.
@@ -1029,5 +1167,20 @@ public sealed class PluginCatalogService :
     {
         DynamicMenuService.Shared.RegisterDebugView(
             pluginId, viewName, onToggle);
+    }
+
+    public void RegisterDebugViewToggle(
+        string pluginId,
+        string viewName,
+        string toggleName,
+        bool initialValue,
+        Action<bool> onToggle)
+    {
+        DynamicMenuService.Shared.RegisterDebugViewToggle(
+            pluginId,
+            viewName,
+            toggleName,
+            initialValue,
+            onToggle);
     }
 }

@@ -18,6 +18,8 @@
 // the visible region and the next-drawable cadence tracks the layout.
 
 using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Reflection;
 using Avalonia;
@@ -78,7 +80,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     /// overlay) are appended dynamically from
     /// <see cref="Services.DynamicMenuService.EnumerateDebugViews"/> so
     /// the host never names a plugin type. Selecting a plugin view (or
-    /// "Lighting Only") invokes the owning plugin's registered toggle in
+    /// a built-in view) invokes every registered toggle in
     /// <see cref="OnSelectedDebugViewChanged"/>.</summary>
     private static readonly string[] BaseDebugViews =
     [
@@ -101,20 +103,29 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     /// plugin-registered debug views in registration order. Refreshed
     /// when <see cref="Services.DynamicMenuService.OnDebugViewsChanged"/>
     /// fires.</summary>
-    public string[] DebugViews
+    public ObservableCollection<string> DebugViews { get; } =
+        new(BaseDebugViews);
+
+    /// <summary>Gets plugin-owned checkboxes for the selected debug view.</summary>
+    public IReadOnlyList<DynamicMenuService.DebugViewToggleRegistration>
+        DebugViewToggles
     {
         get
         {
-            var views = new List<string>(BaseDebugViews);
-            foreach (var view in
-                     Services.DynamicMenuService.Shared
-                         .EnumerateDebugViews())
+            var toggles = new List<
+                DynamicMenuService.DebugViewToggleRegistration>();
+            foreach (var toggle in
+                     DynamicMenuService.Shared.EnumerateDebugViewToggles())
             {
-                views.Add(view.ViewName);
+                if (toggle.ViewName == SelectedDebugView)
+                    toggles.Add(toggle);
             }
-            return views.ToArray();
+            return toggles;
         }
     }
+
+    /// <summary>Gets whether the selected debug view exposes checkboxes.</summary>
+    public bool HasDebugViewToggles => DebugViewToggles.Count > 0;
 
     /// <summary>Gets transform gizmo operations displayed in viewport chrome.</summary>
     public string[] GizmoOperations { get; } =
@@ -184,19 +195,19 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
 
     [ObservableProperty]
     private string _selectedDebugView = "Lit";
+    private string _lastValidDebugView = "Lit";
 
     partial void OnSelectedDebugViewChanged(string value)
     {
-        // Plugin debug views (e.g. DDGI Probes) toggle through the
-        // owning plugin's registered callback; host code never names a
-        // plugin type. "Lighting Only" keeps plugin overlays visible.
-        bool keepOverlays = value == "Lighting Only";
-        foreach (var view in
-                 Services.DynamicMenuService.Shared
-                     .EnumerateDebugViews())
+        if (string.IsNullOrWhiteSpace(value))
         {
-            view.OnToggle(keepOverlays || value == view.ViewName);
+            SelectedDebugView = _lastValidDebugView;
+            return;
         }
+        _lastValidDebugView = value;
+        Services.DynamicMenuService.Shared.SetActiveDebugView(value);
+        OnPropertyChanged(nameof(DebugViewToggles));
+        OnPropertyChanged(nameof(HasDebugViewToggles));
         ApplyViewportModes();
     }
 
@@ -223,7 +234,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     {
         RequestRender();
     }
-    
+
     [ObservableProperty]
     private string _currentSceneName = "New Scene";
 
@@ -259,6 +270,9 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         _timer.Tick += OnTick;
         Services.DynamicMenuService.Shared.OnDebugViewsChanged +=
             OnPluginDebugViewsChanged;
+        Services.DynamicMenuService.Shared.OnDebugViewTogglesChanged +=
+            OnPluginDebugViewTogglesChanged;
+        RefreshDebugViews();
     }
 
     /// <summary>Refreshes the debug-view dropdown when a plugin registers
@@ -268,7 +282,46 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         Dispatcher.UIThread.Post(() =>
         {
             if (_disposed) return;
-            OnPropertyChanged(nameof(DebugViews));
+            RefreshDebugViews();
+            Services.DynamicMenuService.Shared.SetActiveDebugView(
+                _lastValidDebugView);
+            _renderBurstFrames = Math.Max(_renderBurstFrames, 8);
+            RequestRender();
+        });
+    }
+
+    private void RefreshDebugViews()
+    {
+        var pluginViews = new List<string>();
+        foreach (var view in
+                 Services.DynamicMenuService.Shared.EnumerateDebugViews())
+        {
+            pluginViews.Add(view.ViewName);
+        }
+
+        for (int index = DebugViews.Count - 1;
+             index >= BaseDebugViews.Length;
+             --index)
+        {
+            if (!pluginViews.Contains(DebugViews[index]))
+                DebugViews.RemoveAt(index);
+        }
+        foreach (string viewName in pluginViews)
+        {
+            if (!DebugViews.Contains(viewName))
+                DebugViews.Add(viewName);
+        }
+    }
+
+    private void OnPluginDebugViewTogglesChanged()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_disposed) return;
+            OnPropertyChanged(nameof(DebugViewToggles));
+            OnPropertyChanged(nameof(HasDebugViewToggles));
+            _renderBurstFrames = Math.Max(_renderBurstFrames, 8);
+            RequestRender();
         });
     }
 
@@ -451,7 +504,8 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 "core.renderer.path-tracing");
         ApplyViewportModes();
 
-        _gameLoop.OnEntityPicked += (ent) => {
+        _gameLoop.OnEntityPicked += (ent) =>
+        {
             // Need a way to notify the HierarchyVm...
             // Or maybe MainWindowViewModel can subscribe directly?
             // Yes, let's expose an event on ViewportPanelViewModel.
@@ -479,6 +533,12 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         };
         _gameLoop.DebugViewChanged += mode =>
         {
+            if (Array.IndexOf(
+                    BaseDebugViews,
+                    SelectedDebugView) < 0)
+            {
+                return;
+            }
             Dispatcher.UIThread.Post(() =>
             {
                 SelectedDebugView = GetDebugViewLabel(mode);
@@ -573,7 +633,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
             : Path.Combine(_contentRoot, CurrentSceneName);
         if (!path.EndsWith(".scene.json", StringComparison.OrdinalIgnoreCase))
             path += ".scene.json";
-        
+
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         Engine.Scene.SceneSaver.Save(_world, _baseScene, path);
         IsDirty = false;
@@ -762,6 +822,8 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         _world.Set(ent, Engine.Scene.Components.Transform.Default);
 
         IsDirty = true;
+        _renderBurstFrames = Math.Max(_renderBurstFrames, 8);
+        RequestRender();
     }
 
     public ulong AddPointLight()
@@ -1088,6 +1150,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 IsRealtime ||
                 _renderRequested ||
                 _renderBurstFrames > 0 ||
+                _gameLoop.HasPendingRenderWork ||
                 cameraInput ||
                 _leftDown;
             if (!shouldRender ||
@@ -1402,6 +1465,8 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         }
         Services.DynamicMenuService.Shared.OnDebugViewsChanged -=
             OnPluginDebugViewsChanged;
+        Services.DynamicMenuService.Shared.OnDebugViewTogglesChanged -=
+            OnPluginDebugViewTogglesChanged;
         _sceneWatcher?.Dispose();
         _sceneWatcher = null;
         _scriptWatcher?.Dispose();

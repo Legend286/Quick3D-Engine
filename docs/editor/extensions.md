@@ -1,17 +1,50 @@
 # Editor Extensions
 
+Renderer-extension unload removes its passes and reconstructs the render plan
+before shutdown releases plugin-owned GPU resources. Both operations execute as
+one renderer-owner transaction, and only afterward does the editor unload the
+managed assembly context. An active pass therefore cannot retain a buffer or
+texture that plugin shutdown has already released, and a rebuilt clustered pass
+cannot capture a provider whose resources are being torn down.
+
+Renderer-extension enable registers with an existing renderer immediately,
+before shader-feature notifications rebuild cached plans. Registration does not
+require an active scene; the next scene plan includes every enabled extension.
+
 Editor extensions are managed plugins. `Editor.Services.PluginCatalogService`
 discovers them at editor start by enumerating `Plugins/*/plugin.json` and
 loading each assembly into its own `AssemblyLoadContext` per the host wiring
 in `engine_cs/Engine.Renderer.RendererPluginRuntime`. Each plugin's
 manifest `kind` selects the contract surface it implements.
 
+When loose plugin outputs exist in more than one configuration, the catalog
+loads the newest matching assembly rather than preferring Debug or Release by
+directory order. This prevents an older output from being paired with newer
+host contracts after switching build configurations.
+
+Renderer extensions are activated through the active renderer's owner-thread
+queue. File watchers and build continuations can discover binaries on workers,
+but render-plan mutation, shader and pipeline creation, GPU allocation, and
+plan disposal execute only on the thread that owns the viewport renderer. The
+queue drains before render-graph execution.
+
+The same ownership rule applies to viewport picking, scene and preview-plan
+construction, hover previews, shadow-atlas previews, and static thumbnail
+generation. The editor currently drives rendering from the Avalonia dispatcher,
+so that dispatcher is the renderer owner. Background tasks are limited to CPU,
+filesystem, process, and shader-source preparation work.
+
+Offscreen thumbnail and preview renderers do not register as the process-wide
+active viewport and do not consume renderer-extension providers. Consequently,
+creating a thumbnail cannot redirect extension activation, unload, camera
+queries, or DDGI atlas binding away from the interactive scene renderer.
+
 ## Contract surface per kind
 
 | Kind | Contract | Defined in | Host surface |
 | --- | --- | --- | --- |
 | `Editor` | `IEditorPlugin` | `engine_cs/Engine.Plugins/PluginContracts.cs` | `IEditorPluginHost.RegisterMenuAction` / `RegisterImGuiOverlay` / `RegisterToolPanel` |
-| `Renderer` | `IRendererPlanPlugin` | `engine_cs/Engine.Renderer/RendererPluginContracts.cs` | `RendererPluginContext` (Device / World / Scene / ContentRoot / BindlessHeap / Renderer / GpuWorkScheduler / RenderShadows / RenderSky) |
+| `Renderer` | `IRendererPlanPlugin` | `engine_cs/Engine.Renderer/RendererPluginContracts.cs` | `RendererPluginContext` (Device / World / Scene / ContentRoot / BindlessHeap / Renderer / GpuWorkScheduler / RenderShadows / RenderSky / EnableGlobalExtensions) |
 | `Runtime` | `IEnginePlugin` | `engine_cs/Engine.Plugins/PluginContracts.cs` | `IEnginePluginHost.{EngineRoot,ProjectRoot}` + `InvalidatePluginShaders` |
 | `AssetPipeline` | _reserved_ | _no contract yet_ | _none — flag surfaced by SurfaceAuditor below_ |
 
@@ -46,7 +79,7 @@ for the audited source list.
 
 ## Menu integration
 
-The editor plugin contract surfaces into three UI backends through the shared
+The editor plugin contract surfaces into viewport and tool UI backends through the shared
 `Editor.Services.DynamicMenuService`, which `Editor.Services.PluginCatalogService`
 writes to as the host.
 
@@ -55,6 +88,20 @@ writes to as the host.
 | `RegisterMenuAction(id, path, name, onExecute)` | Avalonia `Tools > Extensions` submenu | wired |
 | `RegisterImGuiOverlay(id, onDraw)` | viewport ImGui overlay | registered, render-pipeline wiring deferred |
 | `RegisterToolPanel(id, title, control)` | dockable panel | registered, dock wiring deferred |
+| `RegisterDebugView(id, name, onToggle)` | viewport debug picker | wired |
+| `RegisterDebugViewToggle(id, view, name, initial, onToggle)` | checkbox inside the named debug view's picker section | wired |
+
+Debug-view toggles are scoped to their owning view and disappear when another
+visualization is selected. Their state belongs to the plugin callback rather
+than the editor, so renderer extensions can expose diagnostics without the host
+naming plugin types.
+
+`DynamicMenuService` retains the active debug-view name across plugin unload and
+reload. A newly registered view immediately receives its active state, which
+keeps an already-selected renderer visualization enabled after code reload.
+The viewport keeps a stable observable view list and rejects transient empty
+selections while plugin registrations refresh, so the picker always retains a
+valid renderer mode.
 
 ### Menu actions (v1 contract)
 
