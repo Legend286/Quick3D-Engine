@@ -80,7 +80,7 @@ struct MaterialData {
     float layer2NoiseScale;
     float layer2NoiseThresholdMin;
     float layer2NoiseThresholdMax;
-    uint _pad0;
+    uint occlusionTexIndex;
 };
 
 struct LightData {

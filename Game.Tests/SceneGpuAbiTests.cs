@@ -38,6 +38,12 @@ public sealed class SceneGpuAbiTests
                 nameof(PartData.LocalOffset))
                 .ToInt32());
         Assert.Equal(128, Marshal.SizeOf<InstanceData>());
+        Assert.Equal(192, Marshal.SizeOf<MaterialData>());
+        Assert.Equal(
+            188,
+            Marshal.OffsetOf<MaterialData>(
+                nameof(MaterialData.OcclusionTexIndex))
+                .ToInt32());
         Assert.Equal(64, Marshal.SizeOf<LightData>());
         Assert.Equal(128, Marshal.SizeOf<PunctualShadowFaceData>());
         Assert.Equal(

@@ -71,7 +71,7 @@ public struct MaterialData
     public float Layer2NoiseScale;
     public float Layer2NoiseThresholdMin;
     public float Layer2NoiseThresholdMax;
-    public uint _pad0;
+    public uint OcclusionTexIndex;
 }
 
 [StructLayout(LayoutKind.Sequential)]

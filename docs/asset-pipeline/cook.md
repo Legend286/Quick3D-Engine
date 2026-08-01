@@ -37,7 +37,7 @@ engine_cook <input.glb|gltf> [out_dir] [-scale x y z] [--basisu-path <abs>]
 | 0 | Success — all textures + materials + meshes + scene written, every `.tex` sidecar verified next to its `.ktx2`. |
 | 1 | GLTF/GLB load failure (tinygltf parser error). Surviving `<out>/textures/*.tex` are scrubbed via `ScrubOrphanSidecars` so a re-run does not see lying sidecars from a previous incomplete cook. |
 | 2 | `basisu` binary not located through any of the resolution paths below. Same scrub applies. |
-| 3 | At least one per-texture `ExecuteBasisu` returned empty (basisu crashed, missing/truncated `.ktx2`, threw). The matching `albedo_texture` / `normal_texture` / `rma_texture` keys in the resulting `.mat` JSONs are omitted; surviving sidecars are inspected by `ScrubOrphanSidecars` once more so an OS-level truncation between writes (e.g. ENOSPC, SIGKILL) cannot produce a lying pair. Editor surfaces this as `Import failed (code 3): …`. |
+| 3 | At least one per-texture `ExecuteBasisu` returned empty (basisu crashed, missing/truncated `.ktx2`, threw). The matching `albedo_texture` / `normal_texture` / `rma_texture` / `occlusion_texture` keys in the resulting `.mat` JSONs are omitted; surviving sidecars are inspected by `ScrubOrphanSidecars` once more so an OS-level truncation between writes (e.g. ENOSPC, SIGKILL) cannot produce a lying pair. Editor surfaces this as `Import failed (code 3): …`. |
 
 `AssetImportWindow.axaml.cs` reads `process.ExitCode` after `WaitForExitAsync()` and surfaces any nonzero as a status banner with stderr text. The non-zero outcomes above feed the editor's console panel through `Engine.CBindings.Log.Error` so the failure reason reaches the in-app view + `engine.log` regardless of stdout/stderr capture quirks.
 
@@ -57,7 +57,28 @@ If all five fail, `engine_cook` exits with status 2 and prints the resolution la
 
 The texture phase runs `basisu`, then asserts both `std::system` returned 0 **and** the expected `.ktx2` exists at the chosen `tex_out_dir/<base>.ktx2` path with at least **80 bytes** (the Khronos KTX2 base-header size, identifier + 68 bytes of format/dimension/levelCount/etc.). Only on both checks passing is the `.tex` JSON sidecar written. This prevents a lying sidecar (e.g. `format: ktx2` next to no `.ktx2` or next to a stub identifier-only file) from materializing at the loader — which previously produced silent black material binds at runtime when basisu failed for any reason (binary missing, GLIBC mismatch, etc.).
 
-If execution fails for a texture, the matching `albedo_texture` / `normal_texture` / `rma_texture` keys in the resulting `.mat` JSON are **omitted** (rather than pointing at an empty string). The runtime `MaterialLoader` falls back to the material's base-color / default-uniform-color tint in that case so the surface is visibly untextured (a debug signal), not flat-black.
+If execution fails for a texture, the matching `albedo_texture` /
+`normal_texture` / `rma_texture` / `occlusion_texture` keys in the resulting
+`.mat` JSON are **omitted** (rather than pointing at an empty string). The
+runtime `MaterialLoader` falls back to the material's base-color or neutral AO
+in that case so the surface is visibly untextured, not flat-black.
+
+glTF metallic-roughness textures define roughness in green and metallic in
+blue; their red channel is not ambient occlusion. Cooked glTF materials
+therefore emit `"rma_contains_ao": false` and emit a separate
+`occlusion_texture` when glTF supplies one. When glTF explicitly reuses the
+same image for both roles, `rma_contains_ao` is true. Authored legacy `.mat`
+files with genuinely packed RMA textures must set this field explicitly. The
+runtime default is false so previously imported glTF metallic-roughness maps
+cannot silently suppress the fallback ambient term through an undefined red
+channel. DDGI uses probe visibility moments rather than material AO.
+
+Before setting `rma_contains_ao`, the cooker inspects the uncompressed source
+red channel. A shared RMA/occlusion image whose red channel is uniformly zero
+is treated as an unpopulated channel and emits `rma_contains_ao: false` with a
+warning. Any non-zero red value preserves the authored AO map exactly. Separate
+occlusion images are always trusted, and an intentionally uniform-black packed
+map can still be forced in an authored `.mat` by setting the flag explicitly.
 
 ## Scrub-on-exit
 

@@ -67,6 +67,12 @@ public class MaterialDefinition
     [JsonPropertyName("rma_texture")]
     public string? RmaTexture { get; set; }
 
+    [JsonPropertyName("rma_contains_ao")]
+    public bool RmaContainsAo { get; set; }
+
+    [JsonPropertyName("occlusion_texture")]
+    public string? OcclusionTexture { get; set; }
+
     [JsonPropertyName("metallic")]
     public float Metallic { get; set; } = 0.0f;
 
@@ -146,6 +152,8 @@ public class Material
     public string? NormalTexturePath { get; set; }
     public RhiTexture? RmaTexture { get; set; }
     public string? RmaTexturePath { get; set; }
+    public RhiTexture? OcclusionTexture { get; set; }
+    public string? OcclusionTexturePath { get; set; }
     public float Metallic { get; set; }
     public float Roughness { get; set; }
     public float Subsurface { get; set; } = 0.0f;
@@ -216,6 +224,7 @@ public static class MaterialLoader
             AlbedoTexturePath = def.AlbedoTexture,
             NormalTexturePath = def.NormalTexture,
             RmaTexturePath = def.RmaTexture,
+            OcclusionTexturePath = def.OcclusionTexture,
             TopMaskTexturePath = def.TopMaskTexture,
         };
 
@@ -234,6 +243,18 @@ public static class MaterialLoader
         if (!string.IsNullOrEmpty(def.RmaTexture))
         {
             mat.RmaTexture = TextureLoader.LoadTexture(device, Path.Combine(dir, def.RmaTexture));
+        }
+
+        if (!string.IsNullOrEmpty(def.OcclusionTexture))
+        {
+            mat.OcclusionTexture = TextureLoader.LoadTexture(
+                device,
+                Path.Combine(dir, def.OcclusionTexture));
+        }
+        else if (def.RmaContainsAo)
+        {
+            mat.OcclusionTexture = mat.RmaTexture;
+            mat.OcclusionTexturePath = mat.RmaTexturePath;
         }
 
         if (!string.IsNullOrEmpty(def.TopMaskTexture))
@@ -300,4 +321,3 @@ public static class MaterialLoader
         return mat;
     }
 }
-

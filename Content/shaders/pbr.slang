@@ -405,9 +405,11 @@ float4 fragmentMain(
     
     if (mat.rmaTexIndex != 0xFFFFFFFF) {
         float3 rma = bindless.textures[mat.rmaTexIndex].Sample(tex_sampler, input.uv).rgb;
-        ao = rma.r;
         roughness *= rma.g;
         metallic *= rma.b;
+    }
+    if (mat.occlusionTexIndex != 0xFFFFFFFF) {
+        ao = bindless.textures[mat.occlusionTexIndex].Sample(tex_sampler, input.uv).r;
     }
 
     // Blend Layer 2 (evaluated first under Layer 1)

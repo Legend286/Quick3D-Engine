@@ -44,6 +44,28 @@ static std::string g_basisu_path;
 // valid runtime texture.
 constexpr std::size_t kMinKtx2FileSize = 80;
 
+static bool HasNonZeroRedChannel(const tinygltf::Image& image) {
+    if (image.image.empty() || image.component <= 0) return true;
+    if (image.bits <= 0 || image.bits > 32) return true;
+    std::size_t bytes_per_channel =
+        static_cast<std::size_t>((image.bits + 7) / 8);
+    std::size_t pixel_stride =
+        bytes_per_channel * static_cast<std::size_t>(image.component);
+    if (pixel_stride == 0 || image.image.size() < bytes_per_channel)
+        return true;
+    for (std::size_t pixel_offset = 0;
+         pixel_offset + bytes_per_channel <= image.image.size();
+         pixel_offset += pixel_stride) {
+        for (std::size_t byte_index = 0;
+             byte_index < bytes_per_channel;
+             ++byte_index) {
+            if (image.image[pixel_offset + byte_index] != 0)
+                return true;
+        }
+    }
+    return false;
+}
+
 // Walk `<tex_out_dir>/*.tex` and remove any sidecar whose `.ktx2` neighbour is
 // missing or truncated. Used by the early-exit paths in main() to scrub stale
 // lying sidecars left over from a previously-failed cook. The texture-phase
@@ -306,7 +328,7 @@ int main(int argc, char** argv) {
         std::cout << "[PROGRESS] " << g_progress_stage << "|" << current << "|" << g_progress_total << std::endl;
     };    
     // 0. Discover texture types
-    enum class TexType { Albedo, Normal, RMA };
+    enum class TexType { Albedo, Normal, RMA, Occlusion };
     std::vector<TexType> tex_types(model.images.size(), TexType::Albedo); // Default Albedo
     for (const auto& mat : model.materials) {
         if (mat.pbrMetallicRoughness.baseColorTexture.index >= 0) {
@@ -320,6 +342,10 @@ int main(int argc, char** argv) {
         if (mat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0) {
             int tex_idx = model.textures[mat.pbrMetallicRoughness.metallicRoughnessTexture.index].source;
             if (tex_idx >= 0) tex_types[tex_idx] = TexType::RMA;
+        }
+        if (mat.occlusionTexture.index >= 0) {
+            int tex_idx = model.textures[mat.occlusionTexture.index].source;
+            if (tex_idx >= 0) tex_types[tex_idx] = TexType::Occlusion;
         }
     }
 
@@ -373,10 +399,11 @@ int main(int argc, char** argv) {
                 }
                 
                 bool is_normal = (tex_types[i] == TexType::Normal);
-                bool is_linear = (tex_types[i] == TexType::Normal || tex_types[i] == TexType::RMA);
+                bool is_linear = (tex_types[i] == TexType::Normal || tex_types[i] == TexType::RMA || tex_types[i] == TexType::Occlusion);
                 std::string type_name = "albedo";
                 if (tex_types[i] == TexType::Normal) type_name = "normal";
                 if (tex_types[i] == TexType::RMA) type_name = "rma";
+                if (tex_types[i] == TexType::Occlusion) type_name = "ao";
                 
                 std::string out_ktx2;
                 try {
@@ -455,11 +482,41 @@ int main(int argc, char** argv) {
             }
         }
 
+        int metallic_roughness_source = -1;
+        bool wrote_metallic_roughness = false;
         if (mat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0) {
-            int tex_idx = model.textures[mat.pbrMetallicRoughness.metallicRoughnessTexture.index].source;
+            metallic_roughness_source = model.textures[mat.pbrMetallicRoughness.metallicRoughnessTexture.index].source;
+            int tex_idx = metallic_roughness_source;
             if (tex_idx >= 0 && tex_idx < (int)cooked_textures.size() && !cooked_textures[tex_idx].empty()) {
                 mat_file << "  \"rma_texture\": \"" << cooked_textures[tex_idx] << "\",\n";
+                wrote_metallic_roughness = true;
             }
+        }
+        int occlusion_source = -1;
+        if (mat.occlusionTexture.index >= 0) {
+            occlusion_source = model.textures[mat.occlusionTexture.index].source;
+        }
+        bool shares_rma_occlusion_source = wrote_metallic_roughness &&
+            occlusion_source >= 0 &&
+            occlusion_source == metallic_roughness_source;
+        bool rma_contains_ao = shares_rma_occlusion_source &&
+            occlusion_source < (int)model.images.size() &&
+            HasNonZeroRedChannel(model.images[occlusion_source]);
+        if (shares_rma_occlusion_source && !rma_contains_ao) {
+            std::cerr << "WARN: material " << mat_name
+                      << " declares shared RMA occlusion but its source red "
+                      << "channel is uniformly zero; using neutral AO\n";
+        }
+        if (wrote_metallic_roughness) {
+            mat_file << "  \"rma_contains_ao\": "
+                     << (rma_contains_ao ? "true" : "false") << ",\n";
+        }
+        if (occlusion_source >= 0 &&
+            occlusion_source != metallic_roughness_source &&
+            occlusion_source < (int)cooked_textures.size() &&
+            !cooked_textures[occlusion_source].empty()) {
+            mat_file << "  \"occlusion_texture\": \""
+                     << cooked_textures[occlusion_source] << "\",\n";
         }
         mat_file << "  \"metallic\": " << mat.pbrMetallicRoughness.metallicFactor << ",\n";
 

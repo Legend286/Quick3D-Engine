@@ -276,6 +276,8 @@ internal static class SceneDataExtractor
                                 AlbedoTexIndex = GetTexIndex(material.AlbedoTexture),
                                 NormalTexIndex = GetTexIndex(material.NormalTexture),
                                 RmaTexIndex = GetTexIndex(material.RmaTexture),
+                                OcclusionTexIndex = GetTexIndex(
+                                    material.OcclusionTexture),
                                 EmissiveTexIndex = 0xFFFFFFFF,
                                 Subsurface = material.Subsurface,
                                 SubsurfaceRadius = ReadVector3(material.SubsurfaceRadius, new Vector3(1.0f, 0.2f, 0.1f)),
@@ -302,7 +304,7 @@ internal static class SceneDataExtractor
                         }
                         else
                         {
-                            materials.Add(new MaterialData { BaseColor = Vector4.One, AlbedoTexIndex = 0xFFFFFFFF, NormalTexIndex = 0xFFFFFFFF, RmaTexIndex = 0xFFFFFFFF, EmissiveTexIndex = 0xFFFFFFFF });
+                            materials.Add(new MaterialData { BaseColor = Vector4.One, AlbedoTexIndex = 0xFFFFFFFF, NormalTexIndex = 0xFFFFFFFF, RmaTexIndex = 0xFFFFFFFF, EmissiveTexIndex = 0xFFFFFFFF, OcclusionTexIndex = 0xFFFFFFFF });
                         }
 
                         parts.Add(new PartData
