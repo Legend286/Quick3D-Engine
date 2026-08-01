@@ -13,7 +13,7 @@ public sealed class SceneGpuAbiTests
     [Fact]
     public void ScenePushData_MatchesShaderLayout()
     {
-        Assert.Equal(544, Marshal.SizeOf<ScenePushData>());
+        Assert.Equal(568, Marshal.SizeOf<ScenePushData>());
         Assert.Equal(160, Marshal.OffsetOf<ScenePushData>(nameof(ScenePushData.DirectionalShadowViewProj)).ToInt32());
         Assert.Equal(224, Marshal.OffsetOf<ScenePushData>(nameof(ScenePushData.DirectionalShadowParams)).ToInt32());
         Assert.Equal(240, Marshal.OffsetOf<ScenePushData>(nameof(ScenePushData.DirectionalShadowViewProj1)).ToInt32());
@@ -26,6 +26,9 @@ public sealed class SceneGpuAbiTests
         Assert.Equal(512, Marshal.OffsetOf<ScenePushData>(nameof(ScenePushData.DDGIExtentAndFlags)).ToInt32());
         Assert.Equal(528, Marshal.OffsetOf<ScenePushData>(nameof(ScenePushData.DDGIProbePositions)).ToInt32());
         Assert.Equal(536, Marshal.OffsetOf<ScenePushData>(nameof(ScenePushData.DDGIGridToProbeIndex)).ToInt32());
+        Assert.Equal(544, Marshal.OffsetOf<ScenePushData>(nameof(ScenePushData.DDGIProbeWorldKeys)).ToInt32());
+        Assert.Equal(552, Marshal.OffsetOf<ScenePushData>(nameof(ScenePushData.DDGIWorldProbeHash)).ToInt32());
+        Assert.Equal(560, Marshal.OffsetOf<ScenePushData>(nameof(ScenePushData.DDGIVolumeState)).ToInt32());
     }
 
     [Fact]

@@ -181,10 +181,16 @@ public class PbrPass : RenderPass
                 _ddgiAtlas.ResourceHandles;
             builder.ImportBuffer(handles.ProbePositions);
             builder.ImportBuffer(handles.GridToProbeIndex);
+            builder.ImportBuffer(handles.ProbeWorldKeys);
+            builder.ImportBuffer(handles.WorldProbeHash);
+            builder.ImportBuffer(handles.VolumeState);
             builder.ImportTexture(handles.Irradiance);
             builder.ImportTexture(handles.Visibility);
             builder.Read(handles.ProbePositions, ResourceState.ShaderRead);
             builder.Read(handles.GridToProbeIndex, ResourceState.ShaderRead);
+            builder.Read(handles.ProbeWorldKeys, ResourceState.ShaderRead);
+            builder.Read(handles.WorldProbeHash, ResourceState.ShaderRead);
+            builder.Read(handles.VolumeState, ResourceState.ShaderRead);
             builder.Read(handles.Irradiance, ResourceState.ShaderRead);
             builder.Read(handles.Visibility, ResourceState.ShaderRead);
         }
@@ -324,11 +330,22 @@ public class PbrPass : RenderPass
                 _ddgiAtlas.TryGetSparseBuffers(
                     out RhiBuffer probePositions,
                     out RhiBuffer gridToProbeIndex,
-                    out RhiBuffer probeCounter) &&
+                    out _) &&
+                _ddgiAtlas.TryGetPersistentLookup(
+                    out RhiBuffer probeWorldKeys,
+                    out RhiBuffer worldProbeHash,
+                    out _) &&
+                _ddgiAtlas.TryGetGpuProbeState(
+                    out _,
+                    out _,
+                    out RhiBuffer volumeState) &&
                 _ddgiAtlas.IsSparseLayoutReady)
             {
-                sink.UseBuffer(probePositions, 5);
-                sink.UseBuffer(gridToProbeIndex, 6);
+                sink.UseBuffer(probePositions, 1);
+                sink.UseBuffer(gridToProbeIndex, 1);
+                sink.UseBuffer(probeWorldKeys, 1);
+                sink.UseBuffer(worldProbeHash, 1);
+                sink.UseBuffer(volumeState, 1);
             }
             foreach (var mesh in frameData.UniqueMeshes)
             {
@@ -396,11 +413,7 @@ public class PbrPass : RenderPass
 
         // DDGI consumer data. Zeroed when the plugin is not loaded
         // so the shader-side `DDGI_AVAILABLE` macro can fall back to
-        // no-atlas sampling without host coupling. The sparse
-        // positions / gridToProbe / counter SSBOs are bound at
-        // fixed register slots (t5/t6/u0) by the per-frame
-        // UseBuffer block inside Execute() when the plugin reports
-        // its sparse layout ready; the .w component of
+        // no-atlas sampling without host coupling. The .w component of
         // DDGIAtlasParams encodes that ready flag as 0.0 (pending)
         // or 1.0 (consumers should read sparse SSBOs).
         if (_ddgiAtlas != null &&
@@ -411,11 +424,30 @@ public class PbrPass : RenderPass
         {
             var (irradSlot, visSlot) =
                 _ddgiAtlas.GetAtlasBindlessSlots();
+            bool hasSparseBuffers =
+                _ddgiAtlas.TryGetSparseBuffers(
+                    out RhiBuffer probePositions,
+                    out RhiBuffer gridToProbeIndex,
+                    out _);
+            bool hasGpuState =
+                _ddgiAtlas.TryGetGpuProbeState(
+                    out _,
+                    out _,
+                    out RhiBuffer volumeState);
+            bool hasPersistentLookup =
+                _ddgiAtlas.TryGetPersistentLookup(
+                    out RhiBuffer probeWorldKeys,
+                    out RhiBuffer worldProbeHash,
+                    out uint worldProbeHashCapacity);
+            bool ddgiReady = _ddgiAtlas.IsSparseLayoutReady &&
+                hasSparseBuffers &&
+                hasPersistentLookup &&
+                hasGpuState;
             pbrPush.DDGIAtlasParams = new Vector4(
                 irradSlot,
                 visSlot,
-                (float)baseGrid.X,
-                _ddgiAtlas.IsSparseLayoutReady ? 1f : 0f);
+                _ddgiAtlas.ConsumerFlags,
+                ddgiReady ? 1f : 0f);
             pbrPush.DDGIOriginAndCountZ = new Vector4(
                 origin.X,
                 origin.Y,
@@ -425,16 +457,22 @@ public class PbrPass : RenderPass
                 extent.X,
                 extent.Y,
                 extent.Z,
-                _ddgiAtlas.MaxProbesPerFrame);
-            if (_ddgiAtlas.TryGetSparseBuffers(out var probePositions, out var gridToProbeIndex, out _))
+                worldProbeHashCapacity);
+            if (ddgiReady)
             {
                 pbrPush.DDGIProbePositions = probePositions.DeviceAddress;
                 pbrPush.DDGIGridToProbeIndex = gridToProbeIndex.DeviceAddress;
+                pbrPush.DDGIProbeWorldKeys = probeWorldKeys.DeviceAddress;
+                pbrPush.DDGIWorldProbeHash = worldProbeHash.DeviceAddress;
+                pbrPush.DDGIVolumeState = volumeState.DeviceAddress;
             }
             else
             {
                 pbrPush.DDGIProbePositions = 0;
                 pbrPush.DDGIGridToProbeIndex = 0;
+                pbrPush.DDGIProbeWorldKeys = 0;
+                pbrPush.DDGIWorldProbeHash = 0;
+                pbrPush.DDGIVolumeState = 0;
             }
         }
         else
@@ -444,6 +482,9 @@ public class PbrPass : RenderPass
             pbrPush.DDGIExtentAndFlags = Vector4.Zero;
             pbrPush.DDGIProbePositions = 0;
             pbrPush.DDGIGridToProbeIndex = 0;
+            pbrPush.DDGIProbeWorldKeys = 0;
+            pbrPush.DDGIWorldProbeHash = 0;
+            pbrPush.DDGIVolumeState = 0;
         }
     }
 

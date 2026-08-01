@@ -20,12 +20,63 @@
 
 using Engine.RHI;
 using Engine.Scene;
+using Engine.Plugins;
 using System;
 using Engine.Assets;
 using Engine.RenderGraph.Shaders;
 using System.Collections.Generic;
+using System.Numerics;
 
 namespace Engine.RenderGraph;
+
+/// <summary>Provides canonical per-frame GPU scene data to extension passes.</summary>
+public interface ISceneGpuDataProvider
+{
+    /// <summary>Prepares the frame's rotating GPU buffers once.</summary>
+    void PrepareSceneGpuData(long frameNumber, uint width, uint height);
+
+    /// <summary>Gets the current frame's packed light buffer.</summary>
+    RhiBuffer CurrentLightBuffer { get; }
+
+    /// <summary>Gets the number of valid lights in the current buffer.</summary>
+    uint CurrentLightCount { get; }
+
+    /// <summary>Gets the revision of the packed light set.</summary>
+    uint CurrentLightRevision { get; }
+
+    /// <summary>Gets the current renderer sky direction and sun radius.</summary>
+    Vector4 CurrentSkySunDirectionAndRadius { get; }
+
+    /// <summary>Gets the current renderer sky atmosphere parameters.</summary>
+    Vector4 CurrentSkyAtmosphereParameters { get; }
+
+    /// <summary>Gets the revision of the renderer sky parameters.</summary>
+    uint CurrentSkyRevision { get; }
+
+    /// <summary>Gets the revision of renderable scene geometry.</summary>
+    uint CurrentGeometryRevision { get; }
+
+    /// <summary>Gets the current frame's packed instance buffer.</summary>
+    RhiBuffer CurrentInstanceBuffer { get; }
+
+    /// <summary>Gets the current frame's packed mesh-part buffer.</summary>
+    RhiBuffer CurrentPartBuffer { get; }
+
+    /// <summary>Gets the material buffer prepared for the current frame.</summary>
+    RhiBuffer CurrentMaterialBuffer { get; }
+
+    /// <summary>Gets the number of valid instances in the current buffer.</summary>
+    uint CurrentInstanceCount { get; }
+
+    /// <summary>Gets the number of valid mesh parts in the current buffer.</summary>
+    uint CurrentPartCount { get; }
+
+    /// <summary>Gets the material count prepared for the current frame.</summary>
+    uint CurrentMaterialCount { get; }
+
+    /// <summary>Gets world-space bounds for current renderable geometry.</summary>
+    bool TryGetSceneBounds(out Vector3 minimum, out Vector3 maximum);
+}
 
 /// <summary>Process-wide host services exposed to a renderer plugin's
 /// <see cref="IRendererPlanPlugin.BuildPlan"/>.</summary>
@@ -45,6 +96,15 @@ public sealed class RendererPluginContext
 
     /// <summary>Gets the shared renderer bindless heap.</summary>
     public required RhiBindlessHeap BindlessHeap { get; init; }
+
+    /// <summary>Gets the camera provider for this renderer instance.
+    /// Plugins must prefer this instance-bound provider over global
+    /// renderer lookup so multiple viewport and thumbnail renderers
+    /// cannot redirect camera queries.</summary>
+    public IActiveCameraDataProvider? ActiveCameraProvider { get; init; }
+
+    /// <summary>Gets the active renderer plan's canonical GPU scene data.</summary>
+    public ISceneGpuDataProvider? SceneGpuDataProvider { get; set; }
 
     /// <summary>Optional host renderer reference. Typed as
     /// <see cref="object"/> to keep the project graph between
@@ -70,6 +130,12 @@ public sealed class RendererPluginContext
 
     /// <summary>Gets whether the sky pass is enabled.</summary>
     public required bool RenderSky { get; init; }
+
+    /// <summary>Gets whether this renderer may consume process-wide renderer
+    /// extension resources such as the active DDGI atlas. Offscreen and
+    /// thumbnail renderers leave this disabled so device-local resources are
+    /// never imported across RHI devices.</summary>
+    public bool EnableGlobalExtensions { get; init; }
 
     /// <summary>Optional ordered Slang CLI argv tokens (e.g. ["-D",
     /// "DDGI_PLUGIN=1"]) gathered from enabled plugin manifests'

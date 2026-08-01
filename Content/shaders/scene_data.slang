@@ -139,9 +139,12 @@ struct ScenePushData {
     // when a DDGI provider is active; zero otherwise so the consumer
     // shader falls back to no-atlas sampling. Field order matches
     // Engine.Renderer.ScenePushData exactly.
-    float4 DDGIAtlasParams;     // x: irradiance bindless slot, y: visibility bindless slot, z: probeGridXY, w: probeCount
+    float4 DDGIAtlasParams;     // x: irradiance bindless slot, y: visibility bindless slot, z: plugin flags, w: ready
     float4 DDGIOriginAndCountZ; // xyz: probe origin, w: probeCountZ
     float4 DDGIExtentAndFlags;  // x: extentX, y: extentY, z: raysPerProbe, w: maxProbesPerFrame
     float4* DDGIProbePositions;
     int*    DDGIGridToProbeIndex;
+    int4*   DDGIProbeWorldKeys;
+    uint*   DDGIWorldProbeHash;
+    uint*   DDGIVolumeState;
 };

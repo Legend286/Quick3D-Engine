@@ -1,7 +1,7 @@
 {
   "id": "renderer.ddgi",
   "name": "DDGI Renderer Plugin",
-  "description": "Minimal demonstration of modular shader plumbing. Overrides host pbr.slang's indirect-diffuse stub with a DDGI-tinted contribution via Slang -D + #include.",
+  "description": "GPU-driven scrolling DDGI with indirect diffuse integration and probe-state visualization.",
   "plugin_version": "0.1.0",
   "kind": "Renderer",
   "required": false,

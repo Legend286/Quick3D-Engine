@@ -28,6 +28,7 @@ public sealed class GameRenderer : IDisposable
     private const float MaterialPreviewViewportFill = 0.9f;
 
     private readonly RhiDevice _device;
+    private readonly int _renderThreadId;
     private RhiSwapchain _swap;
     private readonly IEntityStore _world;
     private readonly Renderer _renderer;
@@ -75,6 +76,7 @@ public sealed class GameRenderer : IDisposable
         get => _isPathTracingRendererAvailable;
         set
         {
+            AssertRenderThread();
             if (value)
             {
                 var plugin = _pluginRuntime.LoadPathTracing();
@@ -101,6 +103,7 @@ public sealed class GameRenderer : IDisposable
         get => _renderer.UsePathTracer ? ViewportRendererMode.PathTracing : ViewportRendererMode.Raster;
         set
         {
+            AssertRenderThread();
             if (RendererMode == value) return;
             if (value == ViewportRendererMode.PathTracing && !_isPathTracingRendererAvailable)
             {
@@ -157,8 +160,13 @@ public sealed class GameRenderer : IDisposable
     /// <summary>Forwards <see cref="Renderer.CurrentScene"/> for callers in <c>Engine.Game</c> that need scene-level metadata without a host-internals dependency.</summary>
     public SceneGraph? CurrentScene => _renderer.CurrentScene;
 
+    /// <summary>Gets whether renderer-owned background work needs another frame.</summary>
+    public bool HasPendingRenderWork =>
+        _renderer.HasPendingRenderWork;
+
     public GameRenderer(RhiDevice device, RhiSwapchain swap, IEntityStore world, bool enableImGui)
     {
+        _renderThreadId = Environment.CurrentManagedThreadId;
         _device = device;
         _swap = swap;
         _world = world;
@@ -178,8 +186,23 @@ public sealed class GameRenderer : IDisposable
             ?? throw new InvalidOperationException(
                 "Required clustered renderer plugin could not be loaded.");
 
-        _renderer = new Renderer(_device, _swap, _world, _imguiRenderer, clusteredPlugin);
+        _renderer = new Renderer(
+            _device,
+            _swap,
+            _world,
+            _imguiRenderer,
+            clusteredPlugin,
+            registerAsActive: enableImGui);
         Info("[GameRenderer] Initialized successfully", "Renderer");
+    }
+
+    private void AssertRenderThread()
+    {
+        if (Environment.CurrentManagedThreadId != _renderThreadId)
+        {
+            throw new InvalidOperationException(
+                "GameRenderer graphics work must execute on its owner thread.");
+        }
     }
 
     private static float GetSpherePreviewDistance(float radius, float aspect, float viewportFill)
@@ -360,6 +383,7 @@ public sealed class GameRenderer : IDisposable
 
     public void Update(InputState input, uint lastWidth, uint lastHeight)
     {
+        AssertRenderThread();
         EnsureCamera();
         _renderer.UpdateProjectionTransition(input.DeltaTime);
         UpdateOrbitingLights(input.DeltaTime);
@@ -436,7 +460,32 @@ public sealed class GameRenderer : IDisposable
             }
             _world.Set(entity, transform);
         }
+
+        foreach (ulong entity in _world.Entities)
+        {
+            if (!_world.TryGet<OscillatingModelComponent>(
+                    entity,
+                    out var motion) ||
+                !_world.TryGet<Transform>(entity, out var transform))
+            {
+                continue;
+            }
+
+            transform.Position = EvaluateOscillation(
+                motion,
+                _sceneAnimationTime);
+            _world.Set(entity, transform);
+        }
     }
+
+    internal static Vector3 EvaluateOscillation(
+        OscillatingModelComponent motion,
+        float time)
+        => motion.Origin +
+            motion.Axis *
+            (MathF.Sin(
+                motion.Phase + time * motion.Frequency) *
+             motion.Amplitude);
 
     private static Vector3 EvaluateOrbit(OrbitingLightComponent orbit, float time)
     {
@@ -449,6 +498,7 @@ public sealed class GameRenderer : IDisposable
 
     public void LoadScene(string contentRoot, string sceneName)
     {
+        AssertRenderThread();
         _sceneAnimationTime = 0.0f;
         _pluginRuntime.SetProjectRoot(contentRoot);
         _imguiRenderer?.LoadShaders(contentRoot, _renderer);
@@ -464,10 +514,15 @@ public sealed class GameRenderer : IDisposable
     public ulong AddSpotLight(Vector3 position, Vector3 direction, Vector3 color, float intensity, float range, float innerCone, float outerCone, float sourceRadius, bool castShadows = true)
         => _renderer.AddSpotLight(position, direction, color, intensity, range, innerCone, outerCone, sourceRadius, castShadows);
 
-    public void ReplaceSwapchain(RhiSwapchain swapchain) => _swap = swapchain;
+    public void ReplaceSwapchain(RhiSwapchain swapchain)
+    {
+        AssertRenderThread();
+        _swap = swapchain;
+    }
 
     public void RenderFrame(RhiTexture backBuffer, uint width, uint height)
     {
+        AssertRenderThread();
         try
         {
             _renderer.RenderFrame(backBuffer, width, height);
@@ -483,10 +538,23 @@ public sealed class GameRenderer : IDisposable
         => _renderer.GetRenderGraphDiagnostics();
 
     public bool RenderShadowAtlasTilePreview(ulong entityId, int faceIndex, bool dynamicTile, RhiTexture target, uint width = 512, uint height = 512, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
-        => _renderer.RenderShadowAtlasTilePreview(entityId, faceIndex, dynamicTile, target, width, height, syncFence, waitValue, signalValue);
+    {
+        AssertRenderThread();
+        return _renderer.RenderShadowAtlasTilePreview(
+            entityId,
+            faceIndex,
+            dynamicTile,
+            target,
+            width,
+            height,
+            syncFence,
+            waitValue,
+            signalValue);
+    }
 
     public void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target, uint width = 256, uint height = 256, float orbitRadians = 0.0f, int modelPartIndex = -1, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
     {
+        AssertRenderThread();
         var tempWorld = new EcsWorld();
         ulong camEnt = tempWorld.CreateEntity();
         float thumbnailAspect = height > 0 ? width / (float)height : 1.0f;
@@ -536,7 +604,12 @@ public sealed class GameRenderer : IDisposable
         }
         else if (assetType == "Texture")
         {
-            using var textureRenderer = new Renderer(_device, _swap, tempWorld, null);
+            using var textureRenderer = new Renderer(
+                _device,
+                _swap,
+                tempWorld,
+                null,
+                registerAsActive: false);
             var sourceTexture = Engine.Assets.TextureLoader.LoadTexture(_device, assetPath);
             if (sourceTexture == null) { tempWorld.Dispose(); return; }
             textureRenderer.BuildTextureThumbnailPlan(contentRoot, sourceTexture);
@@ -545,7 +618,13 @@ public sealed class GameRenderer : IDisposable
             return;
         }
 
-        using var tempRenderer = new Renderer(_device, _swap, tempWorld, null, clusteredPlugin: _renderer.ClusteredPlugin);
+        using var tempRenderer = new Renderer(
+            _device,
+            _swap,
+            tempWorld,
+            null,
+            clusteredPlugin: _renderer.ClusteredPlugin,
+            registerAsActive: false);
         tempRenderer.ActiveCameraEntity = camEnt;
         tempRenderer.BuildThumbnailPlan(contentRoot);
         try
@@ -561,6 +640,7 @@ public sealed class GameRenderer : IDisposable
 
     public void LoadModelPreview(string contentRoot, string modelPath, int modelPartIndex = -1)
     {
+        AssertRenderThread();
         _world.Clear();
         _previewAssetType = "Model";
         _previewMatId = 0;
@@ -596,6 +676,7 @@ public sealed class GameRenderer : IDisposable
 
     public void LoadMaterialPreview(string contentRoot, string materialPath, bool usePathTracer = true)
     {
+        AssertRenderThread();
         _world.Clear();
         _previewAssetType = "Material";
         _previewEntity = 0;
@@ -635,6 +716,7 @@ public sealed class GameRenderer : IDisposable
 
     public void RenderLoadedPreview(RhiTexture target, uint width = 256, uint height = 256, float orbitRadians = 0.0f, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
     {
+        AssertRenderThread();
         if (_previewCameraEntity == 0 || _previewEntity == 0) return;
         if (_world.TryGet<Transform>(_previewEntity, out var previewTransform))
         {
@@ -660,6 +742,7 @@ public sealed class GameRenderer : IDisposable
 
     public void UpdateMaterialPreview(float[] albedo, float metallic, float roughness, float subsurface, float[] subsurfaceColor, float[] subsurfaceRadius, float clearcoat, float clearcoatRoughness, float[] topColor, float topMetallic, float topRoughness, uint topMaskType, float noiseScale = 10.0f, float noiseThresholdMin = 0.3f, float noiseThresholdMax = 0.7f, float[]? layer2Color = null, float layer2Metallic = 0.0f, float layer2Roughness = 1.0f, uint layer2MaskType = 0, float layer2NoiseScale = 10.0f, float layer2NoiseMin = 0.3f, float layer2NoiseMax = 0.7f)
     {
+        AssertRenderThread();
         if (_previewMatId == 0) return;
         var mat = Engine.Assets.AssetRegistry.GetMaterial(_previewMatId);
         if (mat == null) return;
@@ -689,6 +772,7 @@ public sealed class GameRenderer : IDisposable
 
     public void ApplyMaterialToSubmesh(uint x, uint y, uint w, uint h, string materialPath)
     {
+        AssertRenderThread();
         (ulong entId, uint partIdx) = _renderer.PickSubmesh(x, y, w, h);
         if (entId != 0 && _world.TryGet<Engine.RHI.ModelComponent>(entId, out var modelComp))
         {
@@ -703,12 +787,21 @@ public sealed class GameRenderer : IDisposable
         }
     }
 
-    public void InvalidateRenderPlan() => _renderer.InvalidateRenderPlan();
+    public void InvalidateRenderPlan()
+    {
+        AssertRenderThread();
+        _renderer.InvalidateRenderPlan();
+    }
 
-    public void ReloadPluginShaders(string pluginId) => _renderer.ReloadPluginShaders(pluginId);
+    public void ReloadPluginShaders(string pluginId)
+    {
+        AssertRenderThread();
+        _renderer.ReloadPluginShaders(pluginId);
+    }
 
     public void ReloadPluginCode(string pluginId)
     {
+        AssertRenderThread();
         if (pluginId == "core.renderer.clustered")
         {
             _renderer.SetClusteredPlugin(null);
@@ -732,6 +825,7 @@ public sealed class GameRenderer : IDisposable
 
     public void Dispose()
     {
+        AssertRenderThread();
         _renderer.Dispose();
         _imguiRenderer?.Dispose();
         _pluginRuntime.Dispose();

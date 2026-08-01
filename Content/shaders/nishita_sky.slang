@@ -113,7 +113,8 @@ float3 GetSkyRadiance(float3 viewDir, float3 sunDirection, SkyParams sky) {
         // Draw the sun disc if we didn't hit the earth
         float cosTheta = dot(viewDir, sunDirection);
         float sunAngularRadius = sky.sunDirAndRadius.w;
-        if (cosTheta > cos(sunAngularRadius)) {
+        if (sunAngularRadius > 0.0 &&
+            cosTheta > cos(sunAngularRadius)) {
             float3 sunDisk = float3(sky.intensityTurbidityAlbedoPad.x) * 1000.0; // High intensity for path tracing
             skyRadiance += sunDisk * attenuation;
         }

@@ -207,6 +207,17 @@ public struct OrbitingLightComponent
     public bool AimAtCenter;
 }
 
+/// <summary>Drives a dynamic procedural model along one local axis.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct OscillatingModelComponent
+{
+    public Vector3 Origin;
+    public Vector3 Axis;
+    public float Amplitude;
+    public float Frequency;
+    public float Phase;
+}
+
 /// <summary>
 /// Marks runtime-generated entities that remain represented by scene metadata.
 /// </summary>

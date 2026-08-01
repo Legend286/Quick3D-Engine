@@ -24,6 +24,8 @@ public static class DDGIVolumeRegistry
     private static IRendererPlanPluginLite? _activePlugin;
     private static DDGIProbeVolume? _activeVolume;
     private static bool _showProbes;
+    private static bool _showProbeStatusColors = true;
+    private static bool _showIndirect;
 
     /// <summary>Active DDGIRendererPlugin instance, or null when no
     /// DDGI plugin is loaded or it has shut down.</summary>
@@ -47,6 +49,22 @@ public static class DDGIVolumeRegistry
     {
         get { lock (_gate) { return _showProbes; } }
         set { lock (_gate) { _showProbes = value; } }
+    }
+
+    /// <summary>Gets or sets whether the probe overlay uses diagnostic
+    /// lifecycle colours instead of reconstructed irradiance.</summary>
+    public static bool ShowProbeStatusColors
+    {
+        get { lock (_gate) { return _showProbeStatusColors; } }
+        set { lock (_gate) { _showProbeStatusColors = value; } }
+    }
+
+    /// <summary>Gets or sets whether clustered shading displays raw
+    /// received DDGI irradiance instead of the lit material result.</summary>
+    public static bool ShowIndirect
+    {
+        get { lock (_gate) { return _showIndirect; } }
+        set { lock (_gate) { _showIndirect = value; } }
     }
 
     public static void Register(

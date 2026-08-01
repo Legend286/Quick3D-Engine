@@ -6,8 +6,8 @@
 //   * irradiance[probeCount * 4, 1] RGBA16F — 4 components per probe
 //     hold L00, L1_-1, L10, L11 (already pre-multiplied with
 //     A.L constants per the canonical SH conv).
-//   * visibility[probeCount, 1] RGBA16F — r = mean hit distance,
-//     g = mean-of-squares (Chebychev moment 2).
+//   * visibility[probeCount * 16, 1] RGBA16F — 4x4 octahedral
+//     distance-moment tiles with mean in r and mean-of-squares in g.
 //   * probePositions[probeCount] float3 — sparse world-space probe
 //     centres. Sampled to recover a probe's true position from the
 //     coarse-grid indirection table.
@@ -35,6 +35,8 @@
 // through to `return float3(0.0)` while the seeded consumers
 // proceeded silently.
 static const uint kInvalidSlot = 0xFFFFFFFFu;
+static const uint kVisibilityTileResolution = 4u;
+static const uint kVisibilityTexelsPerProbe = 16u;
 uint FetchIrradianceSlot()
 {
     return (uint)push.DDGIAtlasParams.x;
@@ -51,40 +53,46 @@ bool SlotIsValid(uint slot)
 {
     return slot != kInvalidSlot;
 }
-// MARK: Probe-grid mapping helpers
-// Coarse-grid resolution is the per-axis count of the outer bounding
-// grid; the atlas may pack fewer sparse probes than coarse cells.
-float3 ResolveGridSpace(float3 worldPos)
+
+uint2 AtlasCoordinate(uint linearIndex)
 {
-    float3 origin = push.DDGIOriginAndCountZ.xyz;
-    float3 halfExtent = push.DDGIExtentAndFlags.xyz;
-    float gridCount = max((float)push.DDGIAtlasParams.z, 1.0);
-    float3 cellSize = (halfExtent * 2.0) / gridCount;
-    float3 gridSpace = ((worldPos - origin) / cellSize) + gridCount * 0.5;
-    return gridSpace;
+    static const uint atlasWidth = 4096u;
+    return uint2(
+        linearIndex % atlasWidth,
+        linearIndex / atlasWidth);
+}
+uint HashProbeKey(int3 worldCell, uint level)
+{
+    uint hashValue = 2166136261u;
+    hashValue = (hashValue ^ asuint(worldCell.x)) * 16777619u;
+    hashValue = (hashValue ^ asuint(worldCell.y)) * 16777619u;
+    hashValue = (hashValue ^ asuint(worldCell.z)) * 16777619u;
+    hashValue = (hashValue ^ level) * 16777619u;
+    hashValue ^= hashValue >> 16u;
+    hashValue *= 0x7feb352du;
+    hashValue ^= hashValue >> 15u;
+    return hashValue;
 }
 
-uint ProbeLinearIndex(int3 cell, uint gridCount)
+int LookupPersistentProbe(int3 worldCell, uint level)
 {
-    return (uint)(cell.z * (int)gridCount * (int)gridCount
-                 + cell.y * (int)gridCount
-                 + cell.x);
-}
-
-float3 ResolveProbeWorldPos(int3 cell, uint gridCount)
-{
-    float3 origin = push.DDGIOriginAndCountZ.xyz;
-    float3 halfExtent = push.DDGIExtentAndFlags.xyz;
-    float3 cellSize = (halfExtent * 2.0) / max((float)gridCount, 1.0);
-    float3 cellCenter = ((float3)cell + 0.5) * cellSize;
-    return origin + cellCenter - halfExtent;
-}
-
-// MARK: Sparse indirection
-int LookupSparseProbeIndex(int3 cell, uint gridCount)
-{
-    uint linear = ProbeLinearIndex(cell, gridCount);
-    return push.DDGIGridToProbeIndex[linear];
+    uint hashCapacity = (uint)push.DDGIExtentAndFlags.w;
+    if (hashCapacity == 0u)
+        return -1;
+    uint hashIndex = HashProbeKey(worldCell, level) &
+        (hashCapacity - 1u);
+    for (uint attempt = 0u; attempt < 128u; ++attempt)
+    {
+        uint entry = push.DDGIWorldProbeHash[hashIndex];
+        if (entry == 0u)
+            return -1;
+        uint probeIndex = entry - 1u;
+        int4 key = push.DDGIProbeWorldKeys[probeIndex];
+        if (all(key.xyz == worldCell) && key.w == (int)level)
+            return (int)probeIndex;
+        hashIndex = (hashIndex + 1u) & (hashCapacity - 1u);
+    }
+    return -1;
 }
 
 float3 LookupProbeWorldPos(int sparseIdx)
@@ -92,6 +100,12 @@ float3 LookupProbeWorldPos(int sparseIdx)
     if (sparseIdx < 0)
         return float3(0.0);
     return push.DDGIProbePositions[sparseIdx].xyz;
+}
+
+bool ProbeIsReady(int sparseIdx)
+{
+    return sparseIdx >= 0 &&
+        push.DDGIProbePositions[sparseIdx].w > 0.5;
 }
 
 // MARK: SH eval
@@ -115,39 +129,91 @@ float3 EvaluateTwoBandSH(
 // MARK: Visibility Chebychev
 float VisibilityWeight(float mean, float meanSq, float distanceToProbe)
 {
-    if (distanceToProbe <= mean)
+    if (distanceToProbe <= mean + 0.25)
         return 1.0;
-    float variance = max(meanSq - mean * mean, 0.0001);
+    float variance = max(meanSq - mean * mean, 0.01);
     float d = distanceToProbe - mean;
     float chebychev = variance / (variance + d * d);
-    return smoothstep(0.05, 1.0, chebychev);
+    return max(0.02, chebychev);
 }
 
-// MARK: Entry point consumed by pbr.slang
-float3 SampleIndirectDiffuse(float3 worldPosition, float3 worldNormal)
+float2 OctahedralEncode(float3 direction)
 {
-    if (!SparseLayoutReady())
-        return float3(0.0);
+    direction /= max(
+        abs(direction.x) + abs(direction.y) + abs(direction.z),
+        0.0001);
+    if (direction.z < 0.0)
+    {
+        float2 signValue = float2(
+            direction.x >= 0.0 ? 1.0 : -1.0,
+            direction.y >= 0.0 ? 1.0 : -1.0);
+        direction.xy =
+            (1.0 - abs(direction.yx)) * signValue;
+    }
+    return direction.xy * 0.5 + 0.5;
+}
 
-    uint irradSlot = FetchIrradianceSlot();
-    if (!SlotIsValid(irradSlot))
-        return float3(0.0);
+float2 LoadDirectionalVisibility(
+    Texture2D visibilityTexture,
+    uint sparseIndex,
+    float3 probeToSurface)
+{
+    float2 octahedralUv = OctahedralEncode(
+        normalize(probeToSurface));
+    float2 tilePosition = clamp(
+        octahedralUv * float(kVisibilityTileResolution) - 0.5,
+        float2(0.0),
+        float2(float(kVisibilityTileResolution - 1u)));
+    uint2 tileMinimum = (uint2)floor(tilePosition);
+    uint2 tileMaximum = min(
+        tileMinimum + uint2(1u, 1u),
+        uint2(
+            kVisibilityTileResolution - 1u,
+            kVisibilityTileResolution - 1u));
+    float2 alpha = frac(tilePosition);
+    uint visibilityBase =
+        sparseIndex * kVisibilityTexelsPerProbe;
+    uint index00 = visibilityBase +
+        tileMinimum.y * kVisibilityTileResolution + tileMinimum.x;
+    uint index10 = visibilityBase +
+        tileMinimum.y * kVisibilityTileResolution + tileMaximum.x;
+    uint index01 = visibilityBase +
+        tileMaximum.y * kVisibilityTileResolution + tileMinimum.x;
+    uint index11 = visibilityBase +
+        tileMaximum.y * kVisibilityTileResolution + tileMaximum.x;
+    float2 row0 = lerp(
+        visibilityTexture.Load(int3(AtlasCoordinate(index00), 0)).rg,
+        visibilityTexture.Load(int3(AtlasCoordinate(index10), 0)).rg,
+        alpha.x);
+    float2 row1 = lerp(
+        visibilityTexture.Load(int3(AtlasCoordinate(index01), 0)).rg,
+        visibilityTexture.Load(int3(AtlasCoordinate(index11), 0)).rg,
+        alpha.x);
+    return lerp(row0, row1, alpha.y);
+}
 
-    uint visSlot = FetchVisibilitySlot();
-    if (!SlotIsValid(visSlot))
-        return float3(0.0);
-    Texture2D irradTex = bindless.textures[irradSlot];
-    Texture2D visTex = bindless.textures[visSlot];
-
-    uint gridCount = (uint)max(push.DDGIAtlasParams.z, 1.0);
-
-    float3 gridSpace = ResolveGridSpace(worldPosition);
+bool SamplePersistentLevel(
+    Texture2D irradTex,
+    Texture2D visTex,
+    float3 worldPosition,
+    float3 worldNormal,
+    uint level,
+    out float3 irradianceValue,
+    out float sampleConfidence)
+{
+    irradianceValue = float3(0.0);
+    sampleConfidence = 0.0;
+    uint levelState = 4u + level * 8u;
+    float3 cellSize = float3(
+        asfloat(push.DDGIVolumeState[levelState + 3u]),
+        asfloat(push.DDGIVolumeState[levelState + 4u]),
+        asfloat(push.DDGIVolumeState[levelState + 5u]));
+    float3 gridSpace = worldPosition / cellSize;
     int3 baseCell = (int3)floor(gridSpace);
     float3 alpha = saturate(gridSpace - (float3)baseCell);
-
     float3 sumIrradiance = float3(0.0);
     float sumWeight = 0.0;
-
+    float readyCornerWeight = 0.0;
     [unroll]
     for (int oz = 0; oz < 2; ++oz)
     [unroll]
@@ -156,47 +222,170 @@ float3 SampleIndirectDiffuse(float3 worldPosition, float3 worldNormal)
     for (int ox = 0; ox < 2; ++ox)
     {
         int3 cell = baseCell + int3(ox, oy, oz);
-        if (any(cell < int3(0, 0, 0)) ||
-            any(cell >= int3((int)gridCount, (int)gridCount, (int)gridCount)))
+        int sparseIdx = LookupPersistentProbe(cell, level);
+        if (!ProbeIsReady(sparseIdx))
             continue;
 
-        // MARK: Sparse indirection lookup
-        int sparseIdx = LookupSparseProbeIndex(cell, gridCount);
-        if (sparseIdx < 0)
+        uint colBase = (uint)sparseIdx * 4u;
+        uint2 coordinate0 = AtlasCoordinate(colBase + 0u);
+        uint2 coordinate1 = AtlasCoordinate(colBase + 1u);
+        uint2 coordinate2 = AtlasCoordinate(colBase + 2u);
+        uint2 coordinate3 = AtlasCoordinate(colBase + 3u);
+        float3 probeIrradiance = EvaluateTwoBandSH(
+            irradTex.Load(int3(coordinate0, 0)),
+            irradTex.Load(int3(coordinate1, 0)),
+            irradTex.Load(int3(coordinate2, 0)),
+            irradTex.Load(int3(coordinate3, 0)),
+            worldNormal);
+        if (any(isnan(probeIrradiance)) ||
+            any(isinf(probeIrradiance)))
             continue;
-
-        // 4 contiguous texels along column axis carry the SH coeffs.
-        int colBase = (int)(sparseIdx * 4);
-        float4 c0 = irradTex.Load(int3(colBase + 0, 0, 0));
-        float4 c1 = irradTex.Load(int3(colBase + 1, 0, 0));
-        float4 c2 = irradTex.Load(int3(colBase + 2, 0, 0));
-        float4 c3 = irradTex.Load(int3(colBase + 3, 0, 0));
-        float3 probeIrradiance = EvaluateTwoBandSH(c0, c1, c2, c3, worldNormal);
-
-        if (any(isnan(probeIrradiance)) || any(isinf(probeIrradiance)))
-            continue;
-
-        float2 moments = visTex.Load(int3(sparseIdx, 0, 0)).rg;
 
         float3 probePos = LookupProbeWorldPos(sparseIdx);
         float distanceToProbe = length(probePos - worldPosition);
-        float visWeight = VisibilityWeight(moments.x, moments.y, distanceToProbe);
-
+        float2 moments = LoadDirectionalVisibility(
+            visTex,
+            (uint)sparseIdx,
+            worldPosition - probePos);
+        float visWeight = VisibilityWeight(
+            moments.x,
+            moments.y,
+            distanceToProbe);
         float trilinearWeight =
             lerp(1.0 - alpha.x, alpha.x, (float)ox) *
             lerp(1.0 - alpha.y, alpha.y, (float)oy) *
             lerp(1.0 - alpha.z, alpha.z, (float)oz);
-
-        // Distance falloff — quadratic is canonical DDGI weighting.
+        float normalizedDistance =
+            distanceToProbe / max(length(cellSize), 0.001);
         float distanceWeight = 1.0 /
-            (1.0 + distanceToProbe * distanceToProbe * 0.05);
-
-        float w = trilinearWeight * distanceWeight * visWeight;
-        sumIrradiance += probeIrradiance * w;
-        sumWeight += w;
+            (1.0 + normalizedDistance * normalizedDistance);
+        float weight = trilinearWeight * distanceWeight * visWeight;
+        sumIrradiance += probeIrradiance * weight;
+        sumWeight += weight;
+        readyCornerWeight += trilinearWeight;
     }
 
-    if (sumWeight > 0.0)
-        return sumIrradiance / sumWeight;
-    return float3(0.0);
+    if (sumWeight <= 0.0001)
+        return false;
+    irradianceValue = sumIrradiance / sumWeight;
+    sampleConfidence = saturate(readyCornerWeight);
+    return true;
+}
+
+float3 SampleIndirectDiffuse(
+    float3 worldPosition,
+    float3 worldNormal,
+    out float sampleConfidence)
+{
+    sampleConfidence = 0.0;
+    if (!SparseLayoutReady())
+        return float3(0.0);
+    uint irradSlot = FetchIrradianceSlot();
+    uint visSlot = FetchVisibilitySlot();
+    if (!SlotIsValid(irradSlot) || !SlotIsValid(visSlot))
+        return float3(0.0);
+    if (push.DDGIVolumeState[0] != 0x44444749u)
+        return float3(0.0);
+
+    Texture2D irradTex = bindless.textures[irradSlot];
+    Texture2D visTex = bindless.textures[visSlot];
+    uint levelCount = min(push.DDGIVolumeState[1], 3u);
+    bool hasSample = false;
+    float3 combinedSample = float3(0.0);
+    float combinedConfidence = 0.0;
+    for (uint level = 0u; level < levelCount; ++level)
+    {
+        float3 levelSample;
+        float levelConfidence;
+        if (!SamplePersistentLevel(
+                irradTex,
+                visTex,
+                worldPosition,
+                worldNormal,
+                level,
+                levelSample,
+                levelConfidence))
+            continue;
+        if (!hasSample)
+        {
+            combinedSample = levelSample;
+            combinedConfidence = levelConfidence;
+            hasSample = true;
+        }
+        else
+        {
+            combinedSample = lerp(
+                levelSample,
+                combinedSample,
+                combinedConfidence);
+            combinedConfidence +=
+                (1.0 - combinedConfidence) * levelConfidence;
+        }
+        if (combinedConfidence >= 0.999)
+        {
+            sampleConfidence = combinedConfidence;
+            return combinedSample;
+        }
+    }
+    sampleConfidence = combinedConfidence;
+    return hasSample ? combinedSample : float3(0.0);
+}
+
+struct DDGIShadingResult
+{
+    float3 irradiance;
+    float3 indirectDiffuse;
+    float sampleConfidence;
+};
+
+DDGIShadingResult EvaluateDDGIShading(
+    float3 worldPosition,
+    float3 worldNormal,
+    float3 albedo,
+    float metallic)
+{
+    DDGIShadingResult result;
+    result.irradiance = SampleIndirectDiffuse(
+        worldPosition,
+        worldNormal,
+        result.sampleConfidence);
+    if (any(isnan(result.irradiance)) ||
+        any(isinf(result.irradiance)))
+    {
+        result.irradiance = float3(0.0);
+        result.sampleConfidence = 0.0;
+    }
+    result.irradiance = clamp(
+        result.irradiance,
+        float3(0.0),
+        float3(8.0));
+    result.indirectDiffuse = clamp(
+        result.irradiance * albedo *
+            (1.0 - metallic) * 0.318309886,
+        float3(0.0),
+        float3(8.0));
+    return result;
+}
+
+float3 EvaluateDDGILightingOnly(DDGIShadingResult result)
+{
+    return result.irradiance * 0.318309886;
+}
+
+float3 ApplyDDGIAmbientPolicy(
+    float3 fallbackAmbient,
+    DDGIShadingResult result)
+{
+    return fallbackAmbient *
+        (1.0 - saturate(result.sampleConfidence));
+}
+
+float3 ApplyDDGIConsumerDebug(
+    float3 shadedColor,
+    DDGIShadingResult result)
+{
+    uint consumerFlags = (uint)push.DDGIAtlasParams.z;
+    if ((consumerFlags & 1u) != 0u)
+        return result.irradiance * 0.318309886;
+    return shadedColor;
 }

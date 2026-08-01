@@ -7,6 +7,7 @@
 // lets the editor share a single world across multiple viewports later.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Numerics;
 using System.IO;
@@ -21,8 +22,13 @@ using static Engine.CBindings.Log;
 
 namespace Engine.Renderer;
 
-public sealed class Renderer : IDisposable
+public sealed class Renderer : IDisposable, IActiveCameraDataProvider
 {
+    private readonly int _renderThreadId;
+    private readonly bool _participatesInGlobalExtensions;
+    private readonly ConcurrentQueue<Action<Renderer>>
+        _renderThreadActions = new();
+
     private sealed class CachedRenderPlan : IDisposable
     {
         public required RenderPlan Plan { get; init; }
@@ -41,14 +47,10 @@ public sealed class Renderer : IDisposable
 
     private static Renderer? s_active;
 
-    /// <summary>Gets the most-recently-constructed active
-    /// <see cref="Renderer"/> instance. Backs the
-    /// <c>RendererPluginRuntime.LocateRenderer</c> bridge so
-    /// snapshot helpers can find a renderer without taking a hard
-    /// dependency on its owning host. Editor multi-renderer
-    /// scenarios (viewport + thumbnail workers) should migrate
-    /// callers to thread the active renderer explicitly rather
-    /// than rely on this static.</summary>
+    /// <summary>Gets the renderer registered as the host viewport's active
+    /// camera provider. Temporary thumbnail renderers must opt out of this
+    /// registration so plugin camera queries cannot be redirected to a
+    /// short-lived renderer with a different world.</summary>
     public static Renderer? ActiveInstance => s_active;
 
     private readonly RhiDevice _device;
@@ -133,7 +135,7 @@ public sealed class Renderer : IDisposable
             {
                 string fallback = Path.Combine(dir, fileName);
                 if (File.Exists(fallback)) return File.ReadAllText(fallback);
-                
+
                 string parentFallback = Path.Combine(Path.GetDirectoryName(dir) ?? dir, relPath);
                 if (File.Exists(parentFallback)) return File.ReadAllText(parentFallback);
             }
@@ -205,6 +207,32 @@ public sealed class Renderer : IDisposable
             camera, transform, aspect, Vector3.UnitZ);
         return true;
     }
+    bool IActiveCameraDataProvider.TryGetViewportCameraData(
+        uint width,
+        uint height,
+        out Vector3 cameraPosition,
+        out Matrix4x4 viewProjection,
+        out Matrix4x4 inverseViewProjection)
+    {
+        cameraPosition = Vector3.Zero;
+        viewProjection = Matrix4x4.Identity;
+        inverseViewProjection = Matrix4x4.Identity;
+        if (!TryGetActiveCameraData(
+                width,
+                height,
+                out _,
+                out Transform transform,
+                out CameraData cameraData))
+        {
+            return false;
+        }
+
+        cameraPosition = transform.Position;
+        viewProjection = cameraData.ViewProj;
+        inverseViewProjection = cameraData.InvViewProj;
+        return true;
+    }
+
     internal float ProjectionBlend => _projectionBlend;
 
     /// <summary>Per-frame upstream-derived Slang <c>-D</c> argv tokens,
@@ -261,6 +289,7 @@ public sealed class Renderer : IDisposable
         get => _usePathTracer;
         set
         {
+            AssertRenderThread();
             if (_usePathTracer != value)
             {
                 _usePathTracer = value;
@@ -278,9 +307,13 @@ public sealed class Renderer : IDisposable
         IEntityStore world,
         ImGuiRenderer? imguiRenderer = null,
         IRendererPlanPlugin? clusteredPlugin = null,
-        IRendererPlanPlugin? pathTracingPlugin = null)
+        IRendererPlanPlugin? pathTracingPlugin = null,
+        bool registerAsActive = true)
     {
-        s_active = this;
+        _renderThreadId = Environment.CurrentManagedThreadId;
+        _participatesInGlobalExtensions = registerAsActive;
+        if (registerAsActive)
+            s_active = this;
         _device = device;
         _swap = swap;
         _world = world;
@@ -316,6 +349,11 @@ public sealed class Renderer : IDisposable
     /// <c>Engine.Renderer</c>'s private state.</summary>
     public SceneGraph? CurrentScene => _currentScene;
 
+    /// <summary>Gets whether renderer-owned background work needs another frame.</summary>
+    public bool HasPendingRenderWork =>
+        _participatesInGlobalExtensions &&
+        (DDGIAtlasProviderRegistry.Active?.HasPendingWork ?? false);
+
     /// <summary>True once a scene has been loaded via <see cref="LoadScene"/>
     /// and the render plan has been compiled. Used by plugin-activation
     /// background tasks to avoid calling <see cref="AddExtensionPlugin"/>
@@ -325,6 +363,12 @@ public sealed class Renderer : IDisposable
     public void SetPathTracingPlugin(
         IRendererPlanPlugin? plugin)
     {
+        if (!IsRenderThread)
+        {
+            EnqueueRenderThreadAction(
+                renderer => renderer.SetPathTracingPlugin(plugin));
+            return;
+        }
         if (ReferenceEquals(
                 _pathTracingPlugin,
                 plugin))
@@ -362,6 +406,12 @@ public sealed class Renderer : IDisposable
     public void AddExtensionPlugin(
         IRendererPlanPlugin extension)
     {
+        if (!IsRenderThread)
+        {
+            EnqueueRenderThreadAction(
+                renderer => renderer.AddExtensionPlugin(extension));
+            return;
+        }
         if (extension == null) return;
         if (_extensionPlugins.Contains(extension)) return;
         _extensionPlugins.Add(extension);
@@ -374,6 +424,12 @@ public sealed class Renderer : IDisposable
     public void RemoveExtensionPlugin(
         IRendererPlanPlugin extension)
     {
+        if (!IsRenderThread)
+        {
+            EnqueueRenderThreadAction(
+                renderer => renderer.RemoveExtensionPlugin(extension));
+            return;
+        }
         if (extension == null) return;
         if (!_extensionPlugins.Remove(extension)) return;
         InvalidateRenderPlan();
@@ -381,6 +437,12 @@ public sealed class Renderer : IDisposable
 
     public void InvalidateRenderPlan()
     {
+        if (!IsRenderThread)
+        {
+            EnqueueRenderThreadAction(
+                renderer => renderer.InvalidateRenderPlan());
+            return;
+        }
         _rasterPlan?.Dispose();
         _pathTracingPlan?.Dispose();
         _rasterPlan = null;
@@ -398,9 +460,51 @@ public sealed class Renderer : IDisposable
         _renderPlanVersion++;
     }
 
+    /// <summary>Gets whether the caller owns this renderer's RHI objects.</summary>
+    public bool IsRenderThread =>
+        Environment.CurrentManagedThreadId == _renderThreadId;
+
+    /// <summary>
+    /// Executes work on the renderer owner or queues it for the next frame.
+    /// </summary>
+    public void EnqueueRenderThreadAction(Action<Renderer> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        if (IsRenderThread)
+        {
+            action(this);
+            return;
+        }
+        _renderThreadActions.Enqueue(action);
+    }
+
+    private void DrainRenderThreadActions()
+    {
+        while (_renderThreadActions.TryDequeue(
+                   out Action<Renderer>? action))
+        {
+            action(this);
+        }
+    }
+
+    private void AssertRenderThread()
+    {
+        if (!IsRenderThread)
+        {
+            throw new InvalidOperationException(
+                "Renderer graphics work must execute on its owner thread.");
+        }
+    }
+
     public void SetClusteredPlugin(
         IRendererPlanPlugin? plugin)
     {
+        if (!IsRenderThread)
+        {
+            EnqueueRenderThreadAction(
+                renderer => renderer.SetClusteredPlugin(plugin));
+            return;
+        }
         if (ReferenceEquals(
                 _clusteredPlugin,
                 plugin))
@@ -434,6 +538,7 @@ public sealed class Renderer : IDisposable
 
     public void LoadScene(string contentRoot, string sceneName)
     {
+        AssertRenderThread();
         _contentRoot = contentRoot;
         _lastSceneName = sceneName;
         _loader = new SceneLoader(contentRoot);
@@ -540,6 +645,7 @@ public sealed class Renderer : IDisposable
 
     public void BuildThumbnailPlan(string contentRoot)
     {
+        AssertRenderThread();
         var sg = new SceneGraph();
         sg.Passes.Add(new ScenePass { ClearColor = new float[] { 0.15f, 0.15f, 0.15f, 1.0f } });
         sg.Lights.Add(new LightNode { Type = "directional", Color = new float[] { 1.0f, 0.94f, 0.9f }, Intensity = 3.6f, Position = new float[] { 2, 2, -2 }, Direction = new float[] { -0.8f, 1.0f, 0.6f }, SunRadius = 0.01f });
@@ -556,6 +662,7 @@ public sealed class Renderer : IDisposable
 
     public void BuildTextureThumbnailPlan(string contentRoot, RhiTexture sourceTexture)
     {
+        AssertRenderThread();
         _currentScene = null;
         _renderSky = false;
         _renderGrid = false;
@@ -722,6 +829,12 @@ public sealed class Renderer : IDisposable
 
     public void ReloadPluginShaders(string pluginId)
     {
+        if (!IsRenderThread)
+        {
+            EnqueueRenderThreadAction(
+                renderer => renderer.ReloadPluginShaders(pluginId));
+            return;
+        }
         if (_currentScene == null)
             return;
 
@@ -764,20 +877,6 @@ public sealed class Renderer : IDisposable
             : _rasterPlan;
         if (state == null)
         {
-            _directionalShadowPass = new DirectionalShadowPass(
-                _device,
-                contentRoot,
-                _rasterSceneCache,
-                _directionalShadowState,
-                _gpuWorkScheduler,
-                this);
-            _punctualShadowPass = new PunctualShadowPass(
-                _device,
-                contentRoot,
-                _rasterSceneCache,
-                _punctualShadowState,
-                _gpuWorkScheduler,
-                this);
             state = CompileRenderPlan(
                 scene,
                 contentRoot,
@@ -817,23 +916,23 @@ public sealed class Renderer : IDisposable
                 Scene = scene,
                 ContentRoot = contentRoot,
                 BindlessHeap = _sharedBindlessHeap,
+                ActiveCameraProvider = this,
                 Renderer = this,
                 GpuWorkScheduler =
                     _gpuWorkScheduler,
                 RenderShadows = _renderShadows,
                 RenderSky = _renderSky,
+                EnableGlobalExtensions =
+                    _participatesInGlobalExtensions,
                 ShaderCliArgs = _activeShaderCliArgs,
                 ShaderIncludeDirs = _activeShaderIncludeDirs,
                 SharedShaderCache = _compileCache
             };
-        // Renderer-extension plugins compose into the same active
-        // plan. RenderGraphCompiler orders passes from resource
-        // read/write declarations, so the extension passes
-        // self-flow where they need to run (DDGI's probe-update
-        // compute pass runs before the PBR pass reads the atlas).
-        // NOTE: Since RenderGraphCompiler preserves insertion order for MVP1,
-        // we add extension passes BEFORE the main plugin passes to ensure
-        // DDGI computes the atlas before PbrPass reads it.
+        RendererPluginPlan pluginPlan =
+            plugin.BuildPlan(pluginContext);
+        pluginContext.SceneGpuDataProvider =
+            pluginPlan.RasterSceneCache as ISceneGpuDataProvider;
+
         var extPasses = new List<RenderPass>();
         var extPostPasses = new List<RenderPass>();
         foreach (var ext in _extensionPlugins)
@@ -844,9 +943,6 @@ public sealed class Renderer : IDisposable
             extPostPasses.AddRange(extPlan.PostPasses);
         }
         passes.AddRange(extPasses);
-
-        RendererPluginPlan pluginPlan =
-            plugin.BuildPlan(pluginContext);
         passes.AddRange(pluginPlan.Passes);
 
         if (!usePathTracer &&
@@ -859,12 +955,12 @@ public sealed class Renderer : IDisposable
         passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));
         passes.Add(new OutlineCompositePass(_device, contentRoot, this));
 
-        passes.AddRange(extPostPasses);
-
         if (_renderGrid)
         {
             passes.Add(new GridPass(_device, _world, contentRoot, this, clearScreen: scene.Passes.Count == 0));
         }
+
+        passes.AddRange(extPostPasses);
 
         if (_imguiRenderer != null)
             passes.Add(new ImGuiPass(_imguiRenderer));
@@ -924,6 +1020,8 @@ public sealed class Renderer : IDisposable
 
     public void RenderFrame(RhiTexture backBuffer, uint width, uint height, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
     {
+        AssertRenderThread();
+        DrainRenderThreadActions();
         if (_plan is null) return;
 
         if (_depthTexture == null || _depthWidth != width || _depthHeight != height)
@@ -978,6 +1076,7 @@ public sealed class Renderer : IDisposable
         }
 
         BindDDGIExternalResources();
+        _gpuWorkScheduler.BeginFrame(_renderedFrameCount);
 
         try
         {
@@ -996,7 +1095,9 @@ public sealed class Renderer : IDisposable
     private void BindDDGIExternalResources()
     {
         IDDGIAtlasProvider? provider =
-            DDGIAtlasProviderRegistry.Active;
+            _participatesInGlobalExtensions
+                ? DDGIAtlasProviderRegistry.Active
+                : null;
         if (provider != null &&
             provider.TryGetExternalResources(
                 out DDGIAtlasExternalResources resources))
@@ -1007,13 +1108,19 @@ public sealed class Renderer : IDisposable
             _graphExecutor.BindExternalBuffer(
                 handles.GridToProbeIndex, resources.GridToProbeIndex);
             _graphExecutor.BindExternalBuffer(
+                handles.ProbeWorldKeys, resources.ProbeWorldKeys);
+            _graphExecutor.BindExternalBuffer(
+                handles.WorldProbeHash, resources.WorldProbeHash);
+            _graphExecutor.BindExternalBuffer(
                 handles.ProbeCounter, resources.ProbeCounter);
             _graphExecutor.BindExternalBuffer(
                 handles.ProbeDrawArgs, resources.ProbeDrawArgs);
             _graphExecutor.BindExternalBuffer(
-                handles.Lights, resources.Lights);
+                handles.ProbeStates, resources.ProbeStates);
             _graphExecutor.BindExternalBuffer(
-                handles.LightTreeNodes, resources.LightTreeNodes);
+                handles.ProbeUpdateQueue, resources.ProbeUpdateQueue);
+            _graphExecutor.BindExternalBuffer(
+                handles.VolumeState, resources.VolumeState);
             _graphExecutor.BindExternalTexture(
                 handles.Irradiance, resources.Irradiance);
             _graphExecutor.BindExternalTexture(
@@ -1026,10 +1133,13 @@ public sealed class Renderer : IDisposable
             return;
         _graphExecutor.UnbindBuffer(oldHandles.ProbePositions);
         _graphExecutor.UnbindBuffer(oldHandles.GridToProbeIndex);
+        _graphExecutor.UnbindBuffer(oldHandles.ProbeWorldKeys);
+        _graphExecutor.UnbindBuffer(oldHandles.WorldProbeHash);
         _graphExecutor.UnbindBuffer(oldHandles.ProbeCounter);
         _graphExecutor.UnbindBuffer(oldHandles.ProbeDrawArgs);
-        _graphExecutor.UnbindBuffer(oldHandles.Lights);
-        _graphExecutor.UnbindBuffer(oldHandles.LightTreeNodes);
+        _graphExecutor.UnbindBuffer(oldHandles.ProbeStates);
+        _graphExecutor.UnbindBuffer(oldHandles.ProbeUpdateQueue);
+        _graphExecutor.UnbindBuffer(oldHandles.VolumeState);
         _graphExecutor.UnbindTexture(oldHandles.Irradiance);
         _graphExecutor.UnbindTexture(oldHandles.Visibility);
         _boundDDGIHandles = null;
@@ -1092,31 +1202,18 @@ public sealed class Renderer : IDisposable
                     milliseconds,
                     unitCount);
             }
-            else if (timings[i].Name.Equals("DDGI Probe Update", StringComparison.Ordinal))
+            else if (_plan != null &&
+                i < _plan.Passes.Length &&
+                _plan.Passes[i] is IGpuWorkTimingSource timingSource &&
+                timingSource.TryGetSubmittedUnitCount(
+                    timingFrame,
+                    out int completedUnitCount) &&
+                completedUnitCount > 0)
             {
-                int giProbeCount = 0;
-                if (_plan != null)
-                {
-                    foreach (var pass in _plan.Passes)
-                    {
-                        if (pass.Name.Equals("DDGI Probe Update", StringComparison.Ordinal))
-                        {
-                            var prop = pass.GetType().GetProperty("LastAdmittedCount");
-                            if (prop != null && prop.GetValue(pass) is int count)
-                            {
-                                giProbeCount = count;
-                            }
-                            break;
-                        }
-                    }
-                }
-                if (giProbeCount > 0)
-                {
-                    _gpuWorkScheduler.RecordCompletedWork(
-                        GpuWorkDomain.Gi,
-                        milliseconds,
-                        giProbeCount);
-                }
+                _gpuWorkScheduler.RecordCompletedWork(
+                    timingSource.WorkDomain,
+                    milliseconds,
+                    completedUnitCount);
             }
         }
     }
@@ -1294,6 +1391,7 @@ public sealed class Renderer : IDisposable
         ulong waitValue,
         ulong signalValue)
     {
+        AssertRenderThread();
         if (_punctualShadowState == null ||
             !_punctualShadowState.TryGetTile(
                 entityId,
@@ -1361,6 +1459,7 @@ public sealed class Renderer : IDisposable
 
     public ulong Pick(uint x, uint y, uint w, uint h)
     {
+        AssertRenderThread();
         if (_currentScene == null) return 0;
         using var pass = new IdPickingPass(_device, _world, _contentRoot, this);
         pass.PickRequested = true;
@@ -1377,6 +1476,7 @@ public sealed class Renderer : IDisposable
 
     public (ulong EntityId, uint PartIndex) PickSubmesh(uint x, uint y, uint w, uint h)
     {
+        AssertRenderThread();
         if (_currentScene == null) return (0, 0);
         using var pass = new IdPickingPass(_device, _world, _contentRoot, this);
         pass.PickRequested = true;
@@ -1394,6 +1494,7 @@ public sealed class Renderer : IDisposable
 
     public void Dispose()
     {
+        AssertRenderThread();
         DisposeRenderPlans();
         _loader = null;
         _depthTexture?.Dispose();

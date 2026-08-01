@@ -94,8 +94,21 @@ public sealed class EnginePluginManifest
     public List<string> ShaderFeatures { get; set; } = new();
 }
 
+/// <summary>Provides active-camera data without coupling a plugin to a renderer type.</summary>
+public interface IActiveCameraDataProvider
+{
+    /// <summary>Reads the camera pose and projection for a viewport-sized render.</summary>
+    /// <returns><c>true</c> when an active camera is available; otherwise <c>false</c>.</returns>
+    bool TryGetViewportCameraData(
+        uint width,
+        uint height,
+        out System.Numerics.Vector3 cameraPosition,
+        out System.Numerics.Matrix4x4 viewProjection,
+        out System.Numerics.Matrix4x4 inverseViewProjection);
+}
+
 /// <summary>Provides stable host services to a managed engine plugin.</summary>
-public interface IEnginePluginHost
+public interface IEnginePluginHost : IActiveCameraDataProvider
 {
     /// <summary>Gets the engine installation or source root.</summary>
     string EngineRoot { get; }
@@ -106,15 +119,12 @@ public interface IEnginePluginHost
     /// <summary>Requests recreation of pipelines owned by a plugin.</summary>
     void InvalidatePluginShaders(string pluginId);
 
-    /// <summary>Reads the active camera's world position + view /
-    /// inverse-view matrices at the given viewport size. Plugin
-    /// implementations call this so they obtain the camera pose
-    /// without naming any host-renderer type. Returning false means
-    /// no active Camera entity is set on the host's scene world;
-    /// plugin passes should fall back to identity matrices and
-    /// log a once-per-streak diagnostic.</summary>
+    /// <summary>Compatibility camera query for existing plugins. New renderer
+    /// passes should use the instance-bound <see cref="IActiveCameraDataProvider"/>
+    /// supplied through <c>RendererPluginContext.ActiveCameraProvider</c>.</summary>
     bool TryGetActiveCameraData(
-        uint width, uint height,
+        uint width,
+        uint height,
         out System.Numerics.Vector3 cameraPosition,
         out System.Numerics.Matrix4x4 viewProjection,
         out System.Numerics.Matrix4x4 inverseViewProjection);
@@ -155,6 +165,15 @@ public interface IEditorPluginHost : IEnginePluginHost
     void RegisterDebugView(
         string pluginId,
         string viewName,
+        Action<bool> onToggle);
+
+    /// <summary>Registers a checkbox shown with a plugin-owned viewport
+    /// debug view.</summary>
+    void RegisterDebugViewToggle(
+        string pluginId,
+        string viewName,
+        string toggleName,
+        bool initialValue,
         Action<bool> onToggle);
 }
 

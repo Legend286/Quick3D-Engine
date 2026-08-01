@@ -34,7 +34,7 @@ public static class RenderGraphResources
 }
 
 /// <summary>Camera-pose service exposed by the host. Plugin
-/// implementations call <see cref="IEnginePluginHost.TryGetActiveCameraData"/>
+/// implementations call <see cref="IActiveCameraDataProvider.TryGetViewportCameraData"/>
 /// to obtain world-space camera position + view / inverse-view
 /// matrices without naming <c>Engine.Renderer.CameraData</c> or
 /// reaching into the host's <c>Renderer</c> type.</summary>
@@ -54,7 +54,7 @@ public static class CameraPose
             inverseViewProjection = Matrix4x4.Identity;
             return false;
         }
-        return host.TryGetActiveCameraData(
+        return host.TryGetViewportCameraData(
             width, height,
             out cameraPosition,
             out viewProjection,
@@ -71,10 +71,13 @@ public static class CameraPose
 public readonly record struct DDGIAtlasResourceHandles(
     ResourceHandle ProbePositions,
     ResourceHandle GridToProbeIndex,
+    ResourceHandle ProbeWorldKeys,
+    ResourceHandle WorldProbeHash,
     ResourceHandle ProbeCounter,
     ResourceHandle ProbeDrawArgs,
-    ResourceHandle Lights,
-    ResourceHandle LightTreeNodes,
+    ResourceHandle ProbeStates,
+    ResourceHandle ProbeUpdateQueue,
+    ResourceHandle VolumeState,
     ResourceHandle Irradiance,
     ResourceHandle Visibility);
 
@@ -83,15 +86,21 @@ public readonly record struct DDGIAtlasResourceHandles(
 public readonly record struct DDGIAtlasExternalResources(
     RhiBuffer ProbePositions,
     RhiBuffer GridToProbeIndex,
+    RhiBuffer ProbeWorldKeys,
+    RhiBuffer WorldProbeHash,
     RhiBuffer ProbeCounter,
     RhiBuffer ProbeDrawArgs,
-    RhiBuffer Lights,
-    RhiBuffer LightTreeNodes,
+    RhiBuffer ProbeStates,
+    RhiBuffer ProbeUpdateQueue,
+    RhiBuffer VolumeState,
     RhiTexture Irradiance,
     RhiTexture Visibility);
 
 public interface IDDGIAtlasProvider
 {
+    /// <summary>Gets plugin-owned flags consumed by the shader include.</summary>
+    uint ConsumerFlags { get; }
+
     /// <summary>Returns the bindless slots the plugin has assigned to
     /// its irradiance + visibility atlases, or (0u, 0u) when not loaded.
     /// Both slots are stable across frames; the plugin only reissues
@@ -111,6 +120,19 @@ public interface IDDGIAtlasProvider
         out Engine.RHI.RhiBuffer gridToProbeIndex,
         out Engine.RHI.RhiBuffer probeCounter);
 
+    /// <summary>Returns the persistent world-cell keys and hash table used
+    /// to find the finest built probe independently of clipmap residency.</summary>
+    bool TryGetPersistentLookup(
+        out Engine.RHI.RhiBuffer probeWorldKeys,
+        out Engine.RHI.RhiBuffer worldProbeHash,
+        out uint hashCapacity);
+
+    /// <summary>Returns GPU-owned scheduling and scrolling-volume buffers.</summary>
+    bool TryGetGpuProbeState(
+        out Engine.RHI.RhiBuffer probeStates,
+        out Engine.RHI.RhiBuffer probeUpdateQueue,
+        out Engine.RHI.RhiBuffer volumeState);
+
     /// <summary>Gets stable graph handles and the matching persistent RHI
     /// resources used to bind DDGI's external resources before execution.</summary>
     DDGIAtlasResourceHandles ResourceHandles { get; }
@@ -125,10 +147,12 @@ public interface IDDGIAtlasProvider
         out Vector3 extent,
         out Vector3I gridResolution);
 
-    /// <summary>Returns true if the sparse layout has been populated;
-    /// consumer shaders fall back to zero contribution until the
-    /// placement pass has written accepted probes into the SSBO.</summary>
+    /// <summary>Returns true when GPU probe resources are available.
+    /// Render-graph ordering guarantees placement completes before consumers.</summary>
     bool IsSparseLayoutReady { get; }
+
+    /// <summary>Returns true while scene-wide probe work needs more frames.</summary>
+    bool HasPendingWork { get; }
 
     /// <summary>Octahedral ray fan size per probe. Matched by the
     /// plugin's compute kernel so shader-side hardcoded values stay
@@ -140,17 +164,6 @@ public interface IDDGIAtlasProvider
     /// scheduler. Returns 0 when the plugin is not loaded.</summary>
     int MaxProbesPerFrame { get; }
 
-    /// <summary>Returns the BBV light tree SSBO + its populated node
-    /// count + the index of the root node. Returns false when the
-    /// plugin is not loaded or the tree has not been built yet
-    /// (no lights in scene). Consumers that want to do their own
-    /// light traversal can bind <paramref name="treeBuffer"/> at a
-    /// fixed shader register slot; the canonical path tracer and
-    /// DDGI plugin itself use this surface for the GI gather.</summary>
-    bool TryGetLightTree(
-        out Engine.RHI.RhiBuffer treeBuffer,
-        out uint nodeCount,
-        out uint rootIndex);
 }
 
 /// <summary>Process-wide cross-plugin lookup for the currently enabled

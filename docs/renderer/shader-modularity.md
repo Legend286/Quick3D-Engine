@@ -40,6 +40,14 @@ When this plugin is enabled, host shaders that gate behaviour on
 `DDGI_PLUGIN` (e.g. `#ifdef DDGI_PLUGIN ... #include "ddgi_sampling.slang" ... #else ... #endif`)
 pick up the plugin's override.
 
+Feature arguments and include directories are one activation unit. The editor
+publishes both before loading or attaching an enabled renderer extension, and
+publishes their removal before detaching a disabled extension. A renderer plan
+must consume only that published context; runtime resource registries do not
+synthesize feature macros independently. A delayed plugin activation can
+therefore render through the host fallback, but it cannot define a macro whose
+required include directory is absent and invalidate the scene pipeline.
+
 ### C# managed bridge
 
 - `RhiShader.FromSource(RhiDevice, string, string, ShaderStage,
@@ -118,6 +126,11 @@ To author a new plugin:
 - The Metal backend (`engine_c/rhi/rhi_metal.mm`) split-on-sentinel
   is O(file-size) on `include_path` and whitespace-tokenisation on
   `cli_args`. Negligible per compile.
+- At project startup the editor removes the previous
+  `out/logs/slang_diagnostics.txt`. Each failure during the current run appends
+  its phase, entry point, shader stage, source size, include-directory list,
+  compiler arguments, and full compiler output, preserving both vertex and
+  fragment failures instead of overwriting the first with the second.
 
 ## Cross-references
 

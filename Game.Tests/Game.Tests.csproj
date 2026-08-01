@@ -28,5 +28,6 @@
     <ProjectReference Include="..\engine_cs\Engine.RHI\Engine.RHI.csproj" />
     <ProjectReference Include="..\engine_cs\Engine.Plugins\Engine.Plugins.csproj" />
     <ProjectReference Include="..\engine_cs\Engine.Renderer\Engine.Renderer.csproj" />
+    <ProjectReference Include="..\Plugins\Renderer.DDGI\Engine.Plugin.Renderer.DDGI.csproj" />
   </ItemGroup>
 </Project>

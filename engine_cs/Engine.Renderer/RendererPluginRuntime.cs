@@ -185,13 +185,25 @@ internal sealed class RendererPluginRuntime :
     }
 
     /// <inheritdoc />
-    /// <remarks>Forwards to <see cref="Engine.Renderer.Renderer.TryGetActiveCameraData"/>
+    /// <remarks>Forwards to the owning renderer's active-camera query and
     /// and re-marshals the host-side <c>CameraData</c> struct into the
     /// neutral <see cref="System.Numerics.Vector3"/> + matrix shape the
     /// plugin contract expects. Returns false when the host has no
     /// active camera so plugin passes can fall back to identity.
 
     public bool TryGetActiveCameraData(
+        uint width, uint height,
+        out System.Numerics.Vector3 cameraPosition,
+        out System.Numerics.Matrix4x4 viewProjection,
+        out System.Numerics.Matrix4x4 inverseViewProjection)
+        => TryGetViewportCameraData(
+            width,
+            height,
+            out cameraPosition,
+            out viewProjection,
+            out inverseViewProjection);
+
+    public bool TryGetViewportCameraData(
         uint width, uint height,
         out System.Numerics.Vector3 cameraPosition,
         out System.Numerics.Matrix4x4 viewProjection,

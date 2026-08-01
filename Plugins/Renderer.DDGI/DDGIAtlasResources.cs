@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 using System;
-using System.Buffers.Binary;
 using System.Numerics;
 using System.Threading;
+using System.Runtime.InteropServices;
 using Engine.CBindings;
 using Engine.RHI;
 using Engine.RenderGraph;
@@ -10,77 +10,112 @@ using Engine.RenderGraph;
 namespace Engine.DDGI;
 
 /// <summary>
-/// Phase-3 DDGI atlas asset bundle. Plugin owns the lifetime so the
-/// plugin assembly supplies the textures as a self-contained surface
-/// that the host assemblies (Engine.Renderer, Engine.RenderGraph)
-/// only know about through the contract types declared here.
+/// Owns the fixed-memory atlas and adaptive clipmap buffers for DDGI.
 /// </summary>
 /// <remarks>
-/// Memory layout (canonical-DDGI-v1 packing, no L2):
-///   * <see cref="Irradiance"/> is a 2D RGBA16F atlas of
-///     <c>GridResolution^3 * 4</c> texels. Each probe stores 4 SH
-///     coefficients (Y00, Y1_-1, Y10, Y11) — one RGBA16F per band —
-///     packed row-major at width = GridResolution / 2 * 4, height =
-///     GridResolution * 2 etc. so probeIdx -> atlas(uv) is a single
-///     divide-and-modulo lookup. A coding pass writes the canonical
-///     formula via atomic-add in the dispatch kernel.
-///   * <see cref="Visibility"/> is a 2D R16F atlas of
-///     <c>GridResolution^3</c> texels carrying the per-probe mean
-///     hit distance so the consumer can run a Chebychev
-///     backface-test.
+/// Memory layout:
+///   * <see cref="Irradiance"/> is a 4096-wide RGBA16F atlas. Each probe
+///     stores four SH coefficients beginning at <c>probeIndex * 4</c>.
+///   * <see cref="Visibility"/> is a 4096-wide RGBA16F atlas carrying a
+///     4x4 octahedral distance-moment tile per probe.
 /// </remarks>
 public sealed class DDGIAtlasResources : IDisposable
 {
+    public const int AtlasWidth = 4096;
+    public const int VisibilityTileResolution = 4;
+    public const int VisibilityTexelsPerProbe =
+        VisibilityTileResolution * VisibilityTileResolution;
     private static int _nextGraphResourceId = 0x60000000;
 
     public RhiTexture Irradiance { get; }
     public RhiTexture Visibility { get; }
     public RhiBuffer ProbePositions { get; }
     public RhiBuffer GridToProbeIndex { get; }
-    public RhiBuffer Lights { get; }
+    public RhiBuffer ProbeWorldKeys { get; }
+    public RhiBuffer WorldProbeHash { get; }
     public RhiBuffer ProbeCounter { get; }
     public RhiBuffer ProbeDrawArgs { get; }
+    public RhiBuffer ProbeStates { get; }
+    public RhiBuffer ProbeUpdateQueue { get; }
+    public RhiBuffer VolumeState { get; }
+    public RhiBuffer ProbeRequests => _probeRequests[_requestBufferIndex];
     public uint IrradianceBindlessIndex { get; }
     public uint VisibilityBindlessIndex { get; }
-    // MARK: Sentinel-and-log helpers. The C# producer used to fall
-    // back to slot 0 via `sharedHeap?.Register(...) ?? 0u`, which
-    // was silent — the heap genuinely can allocate its first
-    // registered texture at slot 0, so the consumer-side `if
-    // (slot == 0u)` gate mis-classified a valid binding as
-    // "unbound" and surfaced the bind only via the orange debug
-    // viz fallback. We now coalesce the null sharedHeap branch to
-    // <see cref="Engine.RHI.RhiBindlessHeap.InvalidSlot"/> (=
-    // uint.MaxValue), which the shader-side consumers gate on
-    // explicitly, AND we surface one-and-done Error logs so a
-    // silent failure becomes audible in the engine log without
-    // spamming each frame.
     public Vector3I GridResolution { get; }
     public Vector3 Origin { get; }
     public Vector3 Extent { get; }
+    public Vector3 BaseCellSize { get; }
+    public int ClipmapLevelCount { get; }
+    public float ClipmapScale { get; }
     public int MaxProbesTotalBudget { get; }
+    public int WorldProbeHashCapacity { get; }
     public int CoarseGridCells { get; }
-    public int UploadedProbeCount { get; private set; }
-    // MARK: SparseLayoutReady is the consumer/sample-readiness flag.
-    // The CPU-side volume seed in DDGIRendererPlugin.EnsureVolumeLayout
-    // and the GPU placement pass both flip it true so PBR and the
-    // debug viz can sample the atlas. SparseLayoutGpuPlaced is the
-    // GPU-placement-success flag: only the GPU dispatch path (the
-    // placement pass that actually issued the kernel) sets it true.
-    // DDGIRendererPlugin.ShouldKickPlacement gates on
-    // SparseLayoutGpuPlaced rather than SparseLayoutReady so the
-    // CPU seed cannot pre-empt the GPU placement run for the
-    // current scene — see docs/renderer/ddgi.md#placement-race.
-    public bool SparseLayoutReady { get; private set; }
-    public bool SparseLayoutGpuPlaced { get; private set; }
-    public int LightSlotCount =>
-        (int)((Lights?.Size ?? 0ul) / 64ul);
-    public int UploadedLightCount { get; private set; }
-    public RhiBuffer LightTreeNodes { get; }
-    public int LightTreeNodeCapacity { get; }
-    public int TreeNodeCount { get; private set; }
-    public int TreeRootIndex { get; private set; } = -1;
     public RhiBindlessHeap SharedHeap { get; }
     public DDGIAtlasResourceHandles ResourceHandles { get; }
+    internal int ScheduledProbeCapacity { get; set; }
+    internal int RequestCount => WorldCache.RequestCount;
+    internal int AllocatedProbeCount => WorldCache.AllocatedProbeCount;
+    internal bool SceneBakeActive => WorldCache.BakeActive;
+    internal bool HasBudgetTrainingWork =>
+        WorldCache.SceneBakeRequestCount > 0 ||
+        RadianceRefreshActive;
+    internal bool RadianceRefreshActive =>
+        _radianceRefreshProbeBudget > 0;
+    internal DDGIWorldProbeCache WorldCache { get; }
+    private readonly RhiBuffer[] _probeRequests = new RhiBuffer[3];
+    private int _requestBufferIndex;
+    private bool _hasObservedRadianceRevision;
+    private uint _observedRadianceRevision;
+    private int _radianceRefreshProbeBudget;
+    private int _persistentScanCursor;
+
+    internal void TrackRadianceRevision(
+        uint radianceRevision,
+        int allocatedProbeCount)
+    {
+        if (_hasObservedRadianceRevision &&
+            _observedRadianceRevision == radianceRevision)
+        {
+            return;
+        }
+        _hasObservedRadianceRevision = true;
+        _observedRadianceRevision = radianceRevision;
+        _radianceRefreshProbeBudget = Math.Max(
+            DDGIProbeUpdatePass.MaxProbesPerFrame,
+            checked(allocatedProbeCount * 2));
+    }
+
+    internal int GetPersistentScanStart()
+        => AllocatedProbeCount == 0
+            ? 0
+            : _persistentScanCursor % AllocatedProbeCount;
+
+    internal void AdvancePersistentScan(int scannedProbeCount)
+    {
+        if (AllocatedProbeCount == 0 || scannedProbeCount <= 0)
+            return;
+        _persistentScanCursor =
+            (_persistentScanCursor + scannedProbeCount) %
+            AllocatedProbeCount;
+    }
+
+    internal static uint PackRadianceRevision(
+        uint lightRevision,
+        uint skyRevision)
+        => (lightRevision & 0xFFFFu) |
+            ((skyRevision & 0xFFFFu) << 16);
+
+    internal void ConsumeRadianceRefreshAllowance(int admittedProbeCount)
+    {
+        if (admittedProbeCount <= 0 ||
+            _radianceRefreshProbeBudget <= 0)
+        {
+            return;
+        }
+        _radianceRefreshProbeBudget = Math.Max(
+            0,
+            _radianceRefreshProbeBudget - admittedProbeCount);
+    }
 
     public DDGIAtlasResources(
         RhiDevice device,
@@ -88,7 +123,9 @@ public sealed class DDGIAtlasResources : IDisposable
         Vector3I baseGridResolution,
         Vector3 origin,
         Vector3 extent,
-        uint maxLights,
+        Vector3 baseCellSize,
+        int clipmapLevelCount,
+        float clipmapScale,
         int maxProbesTotalBudget)
     {
         if (baseGridResolution.X <= 0 || baseGridResolution.Y <= 0 ||
@@ -112,32 +149,47 @@ public sealed class DDGIAtlasResources : IDisposable
             new ResourceHandle(NextGraphResourceId()),
             new ResourceHandle(NextGraphResourceId()),
             new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()),
             new ResourceHandle(NextGraphResourceId()));
         GridResolution = baseGridResolution;
         Origin = origin;
         Extent = extent;
+        BaseCellSize = baseCellSize;
+        ClipmapLevelCount = clipmapLevelCount;
+        ClipmapScale = clipmapScale;
         MaxProbesTotalBudget = maxProbesTotalBudget;
+        WorldProbeHashCapacity = CalculateHashCapacity(
+            maxProbesTotalBudget);
         CoarseGridCells =
             baseGridResolution.X * baseGridResolution.Y *
-            baseGridResolution.Z;
+            baseGridResolution.Z * clipmapLevelCount;
+        if (CoarseGridCells > maxProbesTotalBudget)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxProbesTotalBudget),
+                "Probe budget must cover every clipmap cell.");
+        }
 
+        int irradianceTexelCount = checked(maxProbesTotalBudget * 4);
         Irradiance = RhiTexture.CreateStorage(
             device,
-            (uint)Math.Max(1, maxProbesTotalBudget * 4),
-            1,
+            AtlasWidth,
+            (uint)Math.Max(
+                1,
+                (irradianceTexelCount + AtlasWidth - 1) / AtlasWidth),
             RhiNative.TextureFormat.Rgba16Float);
         Irradiance.SetDebugName("DDGI Irradiance Atlas", "DDGI");
 
         Visibility = RhiTexture.CreateStorage(
             device,
-            (uint)Math.Max(1, maxProbesTotalBudget),
-            1,
-            // TODO(ddgi): when RhiNative.TextureFormat.R16Float lands in the
-        // C-backing enum + Metal MTLPixelFormatR16Float switch case,
-        // switch the visibility atlas back to R16F to reclaim the
-        // 4x bandwidth/storage penalty RGBA16F pays for an
-        // effectively-single-channel visibility score.
-        RhiNative.TextureFormat.Rgba16Float);
+            AtlasWidth,
+            (uint)Math.Max(
+                1,
+                (maxProbesTotalBudget * VisibilityTexelsPerProbe +
+                    AtlasWidth - 1) / AtlasWidth),
+            RhiNative.TextureFormat.Rgba16Float);
         Visibility.SetDebugName("DDGI Visibility Atlas", "DDGI");
 
         ProbePositions = RhiBuffer.Create(
@@ -153,9 +205,25 @@ public sealed class DDGIAtlasResources : IDisposable
         GridToProbeIndex.SetDebugName(
             "DDGI Coarse Grid → Sparse Probe Index", "DDGI");
 
+        ProbeWorldKeys = RhiBuffer.Create(
+            device,
+            (ulong)maxProbesTotalBudget * 16ul,
+            RhiNative.BufferUsage.Storage);
+        ProbeWorldKeys.SetDebugName(
+            "DDGI Persistent World Probe Keys", "DDGI");
+
+        WorldProbeHash = RhiBuffer.Create(
+            device,
+            (ulong)WorldProbeHashCapacity * sizeof(uint),
+            RhiNative.BufferUsage.Storage);
+        WorldProbeHash.SetDebugName(
+            "DDGI Persistent World Probe Hash", "DDGI");
+        WorldProbeHash.Upload(
+            new uint[WorldProbeHashCapacity]);
+
         ProbeCounter = RhiBuffer.Create(
             device,
-            sizeof(uint),
+            16ul,
             RhiNative.BufferUsage.Storage);
         ProbeCounter.SetDebugName(
             "DDGI Placement Probe Counter", "DDGI");
@@ -167,26 +235,45 @@ public sealed class DDGIAtlasResources : IDisposable
         ProbeDrawArgs.SetDebugName(
             "DDGI GPU Probe Draw Args", "DDGI");
 
-        // DDGILightSnapshot is 4 x Vector4 = 64 bytes (position w=range,
-        // direction w=type, color w=intensity, shapeParams). Structurally
-        // identical to the host LightData so the shader reads the same
-        // fields without plugin-side indirection.
-        Lights = RhiBuffer.Create(
+        ProbeStates = RhiBuffer.Create(
             device,
-            (ulong)maxLights * 64ul,
+            (ulong)maxProbesTotalBudget * 16ul,
             RhiNative.BufferUsage.Storage);
-        Lights.SetDebugName("DDGI Light Snapshot", "DDGI");
+        ProbeStates.SetDebugName("DDGI GPU Probe States", "DDGI");
 
-        // BBV node capacity = next power-of-two above 2 * maxLights,
-        // ensures every split + leaf has a node wrapper. 32 bytes per
-        // node keeps SSBOs aligned to GPU cachelines.
-        int treeCapacity = Math.Max(64, NextPow2((int)maxLights * 2 + 8));
-        LightTreeNodeCapacity = treeCapacity;
-        LightTreeNodes = RhiBuffer.Create(
+        ProbeUpdateQueue = RhiBuffer.Create(
             device,
-            (ulong)treeCapacity * 32ul,
+            (ulong)DDGIProbeUpdatePass.MaxProbesPerFrame * sizeof(uint),
             RhiNative.BufferUsage.Storage);
-        LightTreeNodes.SetDebugName("DDGI Light Tree Nodes", "DDGI");
+        ProbeUpdateQueue.SetDebugName("DDGI GPU Update Queue", "DDGI");
+
+        VolumeState = RhiBuffer.Create(
+            device,
+            128ul,
+            RhiNative.BufferUsage.Storage);
+        VolumeState.SetDebugName("DDGI Scrolling Volume State", "DDGI");
+
+        int requestCapacity = checked(
+            CoarseGridCells +
+            DDGIWorldProbeCache.MaxSceneBakeRequestsPerFrame);
+        for (int index = 0; index < _probeRequests.Length; ++index)
+        {
+            _probeRequests[index] = RhiBuffer.Create(
+                device,
+                (ulong)requestCapacity *
+                    (ulong)Marshal.SizeOf<DDGIProbeRequest>(),
+                RhiNative.BufferUsage.Storage);
+            _probeRequests[index].SetDebugName(
+                $"DDGI Probe Requests [{index}]",
+                "DDGI");
+        }
+
+        WorldCache = new DDGIWorldProbeCache(
+            maxProbesTotalBudget,
+            baseGridResolution.X,
+            clipmapLevelCount,
+            baseCellSize,
+            clipmapScale);
 
         // Sentinel value used when the shared heap is null -
         // shader-side consumers gate on the same uint.MaxValue
@@ -209,117 +296,6 @@ public sealed class DDGIAtlasResources : IDisposable
             VisibilityBindlessIndex = sharedHeap.Register(Visibility);
         }
 
-        SparseLayoutReady = false;
-        UploadedProbeCount = 0;
-    }
-
-    /// <summary>
-    /// Uploads the sparse layout populated by the GPU placement pass:
-    /// world-space per-probe positions + the coarse-grid indirection
-    /// array. <paramref name="positions"/> length must be
-    /// ≤ <see cref="MaxProbesTotalBudget"/>. Until this is invoked,
-    /// <see cref="SparseLayoutReady"/> is false and consumer
-    /// shaders should skip DDGI sampling entirely.
-    /// </summary>
-    public void UploadSparseLayout(
-        Vector3[] positions,
-        int[] gridToProbeIndex)
-    {
-        if (positions == null)
-            throw new ArgumentNullException(nameof(positions));
-        if (gridToProbeIndex == null)
-            throw new ArgumentNullException(nameof(gridToProbeIndex));
-        if (positions.Length > MaxProbesTotalBudget)
-            throw new ArgumentException(
-                $"positions.Length {positions.Length} exceeds " +
-                $"MaxProbesTotalBudget {MaxProbesTotalBudget}.");
-        if (gridToProbeIndex.Length != CoarseGridCells)
-            throw new ArgumentException(
-                $"gridToProbeIndex.Length {gridToProbeIndex.Length} " +
-                $"does not match CoarseGridCells {CoarseGridCells}.",
-                nameof(gridToProbeIndex));
-
-        Vector4[] packedPositions = new Vector4[positions.Length];
-        for (int i = 0; i < positions.Length; ++i)
-            packedPositions[i] = new Vector4(positions[i], 1f);
-        ProbePositions.Upload(packedPositions);
-        UploadInts(
-            GridToProbeIndex,
-            new ReadOnlySpan<int>(gridToProbeIndex));
-        UploadedProbeCount = positions.Length;
-        // MARK: UploadSparseLayout is the volume-seed path. The CPU
-        // fallback in DDGIRendererPlugin.EnsureVolumeLayout and the
-        // UploadEmptySparseLayout failure mode both reach here. Set
-        // SparseLayoutReady=true so PBR + debug viz can sample, but
-        // leave SparseLayoutGpuPlaced untouched so the
-        // ShouldKickPlacement gate stays open until the GPU dispatch
-        // actually commits a refined layout. Without this split the
-        // CPU seed pre-empts the GPU placement run on tick 1 because
-        // both paths used to flip the same flag.
-        SparseLayoutReady = true;
-    }
-
-    public void MarkSparseLayoutReady()
-    {
-        SparseLayoutReady = true;
-        // MARK: MarkSparseLayoutReady is called exclusively from the
-        // GPU placement pass's Execute() method immediately after
-        // sink.Dispatch() succeeds. Being the ONLY writer of
-        // SparseLayoutGpuPlaced makes it the canonical "GPU placement
-        // committed this scene" signal that ShouldKickPlacement keys
-        // off.
-        SparseLayoutGpuPlaced = true;
-    }
-
-    /// <summary>
-    /// Resets the placement counter SSBO to zero. Call this from the
-    /// placement pass's <c>Execute()</c> BEFORE dispatch so the atomic
-    /// <see cref="ddgi_probe_placement.slang"/> kernel starts with a
-    /// clean slot allocator. Without this reset, the GPU counter
-    /// retains its terminal value from the previous placement run
-    /// and atomic adds accumulate against stale offsets in
-    /// <see cref="ProbePositions"/>.
-    /// </summary>
-    public void ZeroProbeCounter()
-    {
-        uint zero = 0;
-        ProbeCounter.Upload(new ReadOnlySpan<uint>(ref zero));
-        Span<uint> drawArgs = stackalloc uint[4] { 0u, 1u, 0u, 0u };
-        ProbeDrawArgs.Upload(drawArgs);
-    }
-
-    /// <summary>Marks the sparse-layout cache stale when the host
-    /// scene changes. Sets <see cref="SparseLayoutReady"/> back to
-    /// false so consumers (ClusteredRendererPlugin debug overlay,
-    /// is-debug-views decision) refresh from the next placement
-    /// pass instead of reading stale slot indices. The actual
-    /// SSBOs the GPU placement kernel writes are unchanged; we
-    /// only flip the host-side hint.</summary>
-    public void ResetSparseLayoutForSceneReload()
-    {
-        SparseLayoutReady = false;
-        SparseLayoutGpuPlaced = false;
-        UploadedProbeCount = 0;
-    }
-
-    private static unsafe void UploadInts(RhiBuffer buffer, ReadOnlySpan<int> data)
-    {
-        fixed (int* p = data)
-        {
-            buffer.Upload(new ReadOnlySpan<byte>(
-                p, data.Length * sizeof(int)));
-        }
-    }
-
-    /// <summary>Legacy compatibility switch. Runtime DDGI never performs CPU atlas writes.</summary>
-    public bool WarmupEnabled { get; set; } = false;
-
-    /// <summary>Legacy compatibility switch retained for configuration compatibility.</summary>
-    public static bool WarmupEnabledGlobally { get; set; } = false;
-
-    /// <summary>Retained for source compatibility; GPU placement and update own the atlas.</summary>
-    public void WarmUpAtlas()
-    {
     }
 
     public void Dispose()
@@ -333,81 +309,36 @@ public sealed class DDGIAtlasResources : IDisposable
         Visibility?.Dispose();
         ProbePositions?.Dispose();
         GridToProbeIndex?.Dispose();
+        ProbeWorldKeys?.Dispose();
+        WorldProbeHash?.Dispose();
         ProbeCounter?.Dispose();
         ProbeDrawArgs?.Dispose();
-        Lights?.Dispose();
-        LightTreeNodes?.Dispose();
-    }
-
-    /// <summary>Bulk upload of the light snapshot consumed by the
-    /// probe-update kernel's <c>EvaluateLights</c>. The snapshot's
-    /// 64-byte packed layout (Position/Direction/Color/ShapeParams)
-    /// matches the host's canonical LightData, so the kernel reads
-    /// the same fields without plugin-side indirection.</summary>
-    public void UploadLights(ReadOnlySpan<DDGILightSnapshot> snapshot)
-    {
-        if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
-        Lights.Upload(snapshot);
-        UploadedLightCount = snapshot.Length;
-    }
-
-    /// <summary>Uploads the BBV light tree node array built on the
-    /// CPU side. <paramref name="rootIndex"/> identifies the root
-    /// of the tree within <paramref name="nodes"/> (allows for
-    /// pre-padding textures later if needed). Until this is
-    /// called, <see cref="TreeNodeCount"/> is 0 and the shader
-    /// skips tree traversal entirely.</summary>
-    public void UploadLightTree(
-        ReadOnlySpan<DDGILightTreeNode> nodes,
-        int rootIndex)
-    {
-        if (nodes.Length > LightTreeNodeCapacity)
-            throw new ArgumentException(
-                $"Light tree has {nodes.Length} nodes but capacity " +
-                $"is only {LightTreeNodeCapacity}.",
-                nameof(nodes));
-        if (nodes.Length == 0)
-        {
-            TreeNodeCount = 0;
-            TreeRootIndex = -1;
-            return;
-        }
-        if (rootIndex < 0 || rootIndex >= nodes.Length)
-            throw new ArgumentOutOfRangeException(
-                nameof(rootIndex),
-                $"Light tree root index {rootIndex} is out of the " +
-                $"node range [0, {nodes.Length}).");
-
-        LightTreeNodes.Upload(nodes);
-        TreeNodeCount = nodes.Length;
-        TreeRootIndex = rootIndex;
+        ProbeStates?.Dispose();
+        ProbeUpdateQueue?.Dispose();
+        VolumeState?.Dispose();
+        foreach (RhiBuffer requestBuffer in _probeRequests)
+            requestBuffer?.Dispose();
     }
 
     private static uint NextGraphResourceId()
         => unchecked((uint)Interlocked.Increment(ref _nextGraphResourceId));
 
-    private static int NextPow2(int value)
+    private static int CalculateHashCapacity(int probeCapacity)
     {
-        int result = 1;
-        while (result < value) result <<= 1;
-        return result;
+        int target = checked(probeCapacity * 2);
+        int capacity = 1;
+        while (capacity < target)
+            capacity = checked(capacity << 1);
+        return capacity;
     }
+
+    internal void SelectRequestBuffer(long frameNumber)
+        => _requestBufferIndex = (int)(
+            (ulong)frameNumber % (ulong)_probeRequests.Length);
+
 }
 
 public sealed record Vector3I(int X, int Y, int Z)
 {
     public int Volume => X * Y * Z;
-}
-
-/// <summary>Snapshot of scene-light state uploaded once per Phase-3
-/// dispatch. Packs the same fields as the host's
-/// <c>LightData</c> but on the plugin side to avoid host coupling.</summary>
-[System.Runtime.InteropServices.StructLayout(
-    System.Runtime.InteropServices.LayoutKind.Sequential)]
-public struct DDGILightSnapshot
-{
-    public Vector4 Position;
-    public Vector4 Direction;
-    public Vector4 Color;
-    public Vector4 ShapeParams;
 }

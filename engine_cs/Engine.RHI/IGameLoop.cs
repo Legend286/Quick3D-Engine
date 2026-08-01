@@ -48,7 +48,7 @@ public enum ViewportDebugView
     /// <summary>Displays ambient occlusion, roughness, and metallic channels.</summary>
     Rma,
 
-    /// <summary>Displays illumination with diffuse colour removed.</summary>
+    /// <summary>Displays direct and DDGI illumination with diffuse colour removed.</summary>
     LightingOnly,
 
     /// <summary>Displays a repeating world-position visualization.</summary>
@@ -134,6 +134,9 @@ public interface IGameLoop : IDisposable
 
     /// <summary>Gets or sets whether the optional path-tracing plugin is available.</summary>
     bool IsPathTracingRendererAvailable { get; set; }
+
+    /// <summary>Gets whether renderer-owned background work needs another frame.</summary>
+    bool HasPendingRenderWork { get; }
 
     /// <summary>Invalidates the current render plan, forcing it to rebuild next frame.</summary>
     void InvalidateRenderPlan();

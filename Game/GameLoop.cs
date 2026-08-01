@@ -95,6 +95,10 @@ public sealed class GameLoop : IGameLoop
         set { if (_gameRenderer != null) _gameRenderer.IsPathTracingRendererAvailable = value; }
     }
 
+    /// <inheritdoc />
+    public bool HasPendingRenderWork =>
+        _gameRenderer?.HasPendingRenderWork ?? false;
+
     public ulong SelectedEntity
     {
         get => _gameRenderer?.SelectedEntity ?? 0;

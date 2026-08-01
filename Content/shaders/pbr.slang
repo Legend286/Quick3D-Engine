@@ -579,8 +579,13 @@ float4 fragmentMain(
     dmat.sheenTint = 0.5;
     dmat.clearcoat = 0.0;
     dmat.clearcoatGloss = 1.0;
+
+    DisneyMaterial lightingOnlyMaterial = dmat;
+    lightingOnlyMaterial.baseColor = float3(1.0);
+    lightingOnlyMaterial.metallic = 0.0;
     
     float3 Lo = float3(0.0);
+    float3 lightingOnlyLo = float3(0.0);
 
     bool useClusters = push.clusterGrid.w > 0.0 && push.clusterParams.y > 0.0;
     if (useClusters) {
@@ -597,26 +602,60 @@ float4 fragmentMain(
         for (uint i = 0; i < record.count; i++) {
             uint lightIndex = push.clusterLightIndices[record.offset + i];
             Lo += EvaluateLightContribution(lightIndex, push.lights[lightIndex], input.worldPos, dmat, N, V, T, B);
+            if (debugView == 7u)
+                lightingOnlyLo += EvaluateLightContribution(
+                    lightIndex,
+                    push.lights[lightIndex],
+                    input.worldPos,
+                    lightingOnlyMaterial,
+                    N,
+                    V,
+                    T,
+                    B);
         }
     } else {
         for (uint i = 0; i < push.lightCount; i++) {
             Lo += EvaluateLightContribution(i, push.lights[i], input.worldPos, dmat, N, V, T, B);
+            if (debugView == 7u)
+                lightingOnlyLo += EvaluateLightContribution(
+                    i,
+                    push.lights[i],
+                    input.worldPos,
+                    lightingOnlyMaterial,
+                    N,
+                    V,
+                    T,
+                    B);
         }
     }
     
     float3 ambient = float3(0.03, 0.03, 0.03) * albedo * ao;
 
-    float3 indirectDiffuse =
+    float3 indirectDiffuse = float3(0.0);
 #ifdef DDGI_PLUGIN
-        SampleIndirectDiffuse(input.worldPos, N);
-#else
-        float3(0.0);
+    DDGIShadingResult ddgiShading = EvaluateDDGIShading(
+        input.worldPos,
+        N,
+        albedo,
+        metallic);
+    ambient = ApplyDDGIAmbientPolicy(ambient, ddgiShading);
+    indirectDiffuse = ddgiShading.indirectDiffuse;
 #endif
     float3 color = ambient + Lo + indirectDiffuse + emissive;
+#ifdef DDGI_PLUGIN
+    color = ApplyDDGIConsumerDebug(color, ddgiShading);
+#endif
     if (debugView == 7u) {
         color =
-            Lo / max(albedo, float3(0.04)) +
+            lightingOnlyLo +
+#ifdef DDGI_PLUGIN
+            EvaluateDDGILightingOnly(ddgiShading) +
+            ApplyDDGIAmbientPolicy(
+                float3(0.03) * ao,
+                ddgiShading) +
+#else
             float3(0.03) * ao +
+#endif
             emissive;
     }
     

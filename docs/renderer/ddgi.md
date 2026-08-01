@@ -1,248 +1,322 @@
-# DDGI — Dynamic Diffuse Global Illumination
+# DDGI
 
 ## Purpose
 
-`renderer.ddgi` is the engine's indirect-diffuse lighting plugin. When
-enabled, host PBR shading (`Content/shaders/pbr.slang`) replaces its
-fallback hemi-tint with an SH2 reconstruction drawn from a probe
-atlas covering the active scene volume. The plugin is **modular** —
-toggle it on and the override engages; toggle it off and the host
-passes compile back to the bundled stub. No source fork required.
+`renderer.ddgi` supplies dynamic diffuse global illumination to the clustered
+forward renderer. It has no authored world-space volume. Three camera-relative
+clipmaps prioritize updates into a persistent 262,144-slot GPU world cache.
+Shading addresses that cache through exact world-cell keys, so the finest built
+probes remain visible regardless of camera distance. Scrolling changes update
+residency without recycling valid world-cell slots or hiding their irradiance
+and visibility history.
 
-The plugin contributes four things:
+## Public API
 
-1. A **probe volume** that defines the spatial region over which
-   probes are scattered (`DDGIProbeVolume`).
-2. A **GPU-owned update budget** that refreshes the dense active probe
-   prefix each frame from the placement counter. `DDGIProbePriority`
-   remains available for offline tooling but is not used by the runtime.
-3. A **light tree** over punctual lights so probe rays can
-   efficiently traverse only relevant emitters
-   (`DDGILightBVH`).
-4. A **2 ms per-frame budget gate** on the
-   `GpuWorkDomain.Gi` admit slot so probe updates can never
-   dominate the frame.
+| Symbol | Purpose |
+| --- | --- |
+| `DDGIRendererPlugin` | Registers DDGI passes and exposes the active atlas through `IDDGIAtlasProvider`. |
+| `DDGIProbeVolume` | Configures clipmap resolution, base cell size, level scale, and resident-slot budget. It contains no probe positions. |
+| `DDGIAtlasResources` | Owns the persistent world atlas, world-cell keys and hash, active indirection, request, state, scheduling, and volume-metadata GPU resources. |
+| `DDGIProbeResetPass` | Resets active/update counters and indirect draw arguments on the GPU. |
+| `DDGIProbePlacementPass` | Scrolls the cache, performs geometry-aware density and clearance classification, and writes active/dormant state. |
+| `DDGIProbeSchedulePass` | Selects the highest-priority active probes into a bounded GPU update queue. |
+| `DDGIProbeUpdatePass` | Traces rays for queued probes and writes first-order, two-band SH irradiance plus 4×4 octahedral visibility moments. |
+| `DDGIDebugPass` | Draws current camera and scene-bake requests from GPU-owned position and state buffers. |
+| `IDDGIAtlasProvider` | Renderer-independent atlas, GPU-buffer, and plugin consumer-flag contract consumed by `PbrPass`. |
+| `ISceneGpuDataProvider` | Shares current lights, canonical sky parameters, packed instances, mesh parts, materials and counts, scene bounds, and monotonic light/sky/geometry revisions with extension passes. |
 
-The runtime is GPU-owned after the volume bounds are created. A graphics-queue
-placement kernel rebuilds the sparse position list, indirection table, active
-counter, and indirect debug draw arguments every frame. A following update
-kernel launches the fixed probe budget and culls inactive groups from that
-counter, then writes SH and visibility atlas data. The CPU submits scene AABBs
-and light snapshots, but never owns probe positions, active count, relocation,
-or update selection.
+## Usage
 
-## Public API surface
-
-| Symbol | Kind | Role |
-| --- | --- | --- |
-| `GpuWorkDomain.Gi` | enum value | 2.0 ms ceiling per frame; per-probe cost tracked via `RecordCompletedWork`. |
-| `DDGIProbeVolume` | `Engine.Renderer.DDGI` | CPU-owned volume bounds and grid metadata; GPU placement owns positions and active count. |
-| `DDGIProbePriority` | same | Legacy CPU priority helper retained for offline tooling; not used by the GPU-owned runtime. |
-| `DDGILightBVH` | same | CPU binary-volume hierarchy over punctual lights with `GetBoundingSphere(orderedLightIndex)` for shader ray-box tests. |
-| `DDGIRendererPlugin` | `Engine.DDGI`, plugin entry | Implements `IRendererPlanPlugin`; wires GPU placement, GPU-counted updates, light uploads, PBR sampling, and indirect debug drawing. |
-| `ddgi_sampling.slang` | shader | `SampleIndirectDiffuse(worldPos, worldNormal)` — entered via `#ifdef DDGI_PLUGIN` in `pbr.slang`. |
-
-## Usage example
-
-Enable the plugin from `Modules.json`:
+Enable the optional plugin in `.eeproj/addons.json`:
 
 ```json
 {
-  "plugins": {
-    "enable": ["renderer.ddgi"]
-  }
+  "version": 1,
+  "enabled": [
+    { "id": "renderer.ddgi", "version": "0.1.0" }
+  ]
 }
 ```
 
-Or via the editor's **Tools → Plugins** dialog. The plugin's
-`BuildPlan(context)` runs once per scene compile and:
+Select **DDGI Probes** in the viewport debug-view menu to display current
+geometry-driven probe requests. **Probe status colours** is enabled by default
+so the overlay remains visible before irradiance is ready; disable it to
+reconstruct stored two-band SH irradiance on each octahedron face. Green means
+ready and connected to the current sampling grid,
+red means classified but never updated, orange means pending classification,
+dirty, or converging after a radiance change, grey means valid cached data
+outside current grid residency, and dark
+means placement rejected the cell. Relocation and camera visibility do not
+change state colour. Fine, medium, and far clipmaps use decreasing brightness
+without changing diagnostic meaning.
 
-1. Uploads `context.Scene.Lights` (a `SceneGraph.Lights` list of
-   `LightNode`s with type/position/range/intensity/etc.) into the GPU
-   light snapshot and light tree.
-2. Schedules GPU placement before the host renderer. Placement writes
-   dense probe positions, grid indirection, the active counter, and
-   indirect debug draw arguments.
-3. Dispatches the fixed GPU probe budget. Each update group reads the
-   placement counter and exits for inactive slots; there is no CPU
-   probe list, readback, or per-probe scheduler.
-4. Lets PBR sample the GPU-written SH/visibility atlas and lets the
-   debug pass consume the GPU indirect draw arguments.
+Select **DDGI Indirect** to isolate raw received probe irradiance on scene
+surfaces without albedo, metallic, or AO modulation. **Lighting Only** includes
+direct and DDGI illumination with base colour divided out. Both are exclusive
+surface modes and disable the **DDGI Probes** geometry overlay.
 
-Host shader engagement is automatic: the manifest's
-`shader_features: ["DDGI_PLUGIN"]` flows through
-`EditorShaderBridge.ActiveShaderContextChanged` and reaches
-`pbr.slang` as `-D DDGI_PLUGIN=1`. The `#include "ddgi_sampling.slang"`
-inside `pbr.slang` resolves through the
-`ShaderIncludeResolver`-merged include dirs.
+Both DDGI views are registered by `DDGIRendererPlugin`; neither name nor mode
+exists in the engine's built-in debug enum. The PBR shader contains only a
+`DDGI_PLUGIN` hook, while the plugin include owns indirect-debug behavior.
 
-> **Phase-2 limit**: `BuildCameraSnapshot()` falls back to a known
-> identity-pose (origin + `-Z` forward, 60° FOV) because
-> `Scene.Cameras[0]` has no world transform and
-> `RendererPluginContext` does not yet expose an
-> `ActiveCameraEntity -> Transform` lookup. Phase 3 ships the pose
-> resolution; distance scoring degrades predictably in the meantime.
+## GPU Pipeline
 
-## Performance characteristics
+The extension plan executes before clustered shading:
 
-| Knob | Default | Notes |
-| --- | --- | --- |
-| `GpuWorkDomain.Gi.BudgetMilliseconds` | `2.0` | Hard ceiling; `TryAdmit` returns `false` once exceeded. |
-| `GpuWorkDomain.Gi.EstimatedUnitMilliseconds` | `0.25` | Initial estimate; overridden by `RecordCompletedWork`'s EMA. |
-| `GpuWorkDomain.Gi.MaximumUnits` | `8` | Sized to match the time-driven cap (8 × 0.25 = 2.0 ms). Raise `BudgetMilliseconds` in tandem if hardware RT costs change. |
-| `MaxProbesPerFrame` const | `8` | Capped at `MaximumUnits` so admission math stays consistent. |
-| `DistanceWeight` | `1.0` | Camera-distance priority weight in `DDGIProbePriority.Tuning`. |
-| `DistanceFalloffMeters` | `24.0` | Distance scoring window for camera-frustum prioritization. |
-| `FrustumContainmentBonus` | `0.5` | Per-probe score bonus when inside the camera frustum. |
-| `StalePenaltyPerFrame` | `0.05` | Linear penalty growth per stale frame; cumulative across frames. |
-| `StalePenaltyCap` | `1.0` | Cap on the cumulative stale penalty so old probes don't dominate. |
-| `DirtyLightBoost` | `4.0` | Multiplier for probes within range of a recently-changed light. |
-| `DirtyLightBaseBoost` | `0.5` | Base-amount added when a dirty-light is in range. |
+Project switches and plugin toggles publish enabled shader features and include
+directories before renderer extensions are attached. This guarantees that an
+active DDGI plan and the clustered PBR pass agree on the `DDGI_PLUGIN` sampling
+branch. The clustered plan never derives that feature from the atlas provider;
+if editor activation is delayed, PBR remains on its valid host fallback until
+the complete feature-and-include context is available.
 
-The budget gate cooperates with the existing
-`RecordFrameGpuTime` feedback loop, so heavy `Gi` frames reduce
-admission over time.
+1. **Reset** clears frame counters and writes the fixed-capacity indirect probe
+   draw command with a one-thread compute dispatch.
+2. **World-cache requests** map each active `(world cell, clipmap level)` key to
+   a stable physical atlas slot and persistent GPU hash entry. Keys are never
+   evicted. Scene bounds also
+   produce a far-to-fine warm-up stream of 1 to 64 cells per frame. The default
+   32-probe allowance produces 16 bake cells. Adding a large model such as
+   Sponza changes the geometry revision and restarts this stream.
+3. **Placement** uploads the active and warm-up requests, registers every key in
+   the persistent lookup, rebuilds local update indirection, and classifies at
+   most 128 camera requests plus 1 to 64
+   bake requests with fourteen-direction inline TLAS queries. A request becomes
+   geometry-active when those rays find nearby scene geometry and clearance.
+   Empty camera-clipmap cells become sky-only probes; they capture sky once and
+   remain dormant until the sky revision changes. Empty scene-bake cells remain
+   inactive, so local-light edits cannot spend update budget on empty space.
+   Placement also tests the candidate against each transformed mesh-part AABB;
+   it does not use one coarse model or scene bound. A part overlap combined
+   with a TLAS surface within twice the clearance radius forces relocation even
+   when the closest hit alone would otherwise look marginal. Requiring both
+   signals avoids treating a broad decorative-mesh bound as solid space.
+   Relocation validates candidates on both sides of the closest surface,
+   rejects a candidate below 75% of the half-metre clearance radius, and
+   selects the nearest valid free-space result. It does not query triangle
+   front-face state, so imported mesh winding cannot change validity and the
+   generated Metal shader does not depend on a backend-specific ray-query
+   facing intrinsic.
+   A cached probe whose key and geometry revision are unchanged keeps its ready
+   marker and atlas history when it re-enters a clipmap. If the TLAS is
+   temporarily unavailable, placement remains pending and the initial-bake
+   cursor pauses instead of committing an inactive probe at the current
+   geometry revision.
+4. **Schedule** scans the current request stream plus a rotating 8,192-slot
+   window of the persistent atlas and writes 1 to 128 indices to
+   `ProbeUpdateQueue` according to measured GPU cost. The persistent window
+   eventually revisits built probes outside every current clipmap after a light
+   change. Bake probes occupy at most
+   half the current adaptive capacity, leaving
+   capacity for visible camera probes. Priority then combines invalid history,
+   geometry and lighting dirtiness, transformed mesh-part AABB overlap,
+   visibility, residency, cascade level, and distance. Ready probes with no
+   changed input are excluded rather than periodically refreshed.
+5. **Update** dispatches only the queue capacity. Each probe traces 32 rays,
+   evaluates the clustered renderer's canonical current-frame GPU light
+   buffer at the triangle-interpolated world normal, samples the canonical
+   Nishita sky on misses and as incident sky irradiance at hits. Probe sky
+   sampling excludes the tiny high-energy sun disc because the directional
+   light is evaluated explicitly; this prevents a randomly aligned ray from
+   injecting a bright SH outlier. The pass samples the hit material's
+   base colour and metallic channel, stores four first-order SH irradiance
+   coefficients and a 4×4
+   octahedral tile of directional distance moments,
+   and records its update frame in `ProbeStates`. Every probe and update uses an
+   independently scrambled, stratified 32-ray sphere to avoid coherent spatial
+   patterns without altering RGB radiance. Stable updates retain 92% of atlas
+   history. Lighting changes use four prioritized convergence updates, retaining
+   50% per step, so the bounded staggered stream reaches 93.75% of the new
+   solution without a full-history single-frame flash. New, reclassified, and
+   relocated probes replace invalid history immediately and then receive three
+   prioritized running-average updates. The four batches provide 128 effective
+   samples without desaturating, luminance-clamping, or mixing colour channels.
+   A successful replacement clears relocation state so subsequent updates can
+   accumulate history. Directional-light direction,
+   colour, intensity, angular radius, or shadow-state changes are part of that
+   revision, so edited sun lighting is retraced rather than blended against
+   stale probe radiance.
+   Update rays also audit clearance. A ready probe that observes geometry within
+   0.375 metres is marked dirty and pending, re-enters placement next frame,
+   and loses ready status until its relocated position has been retraced.
+6. **Clustered shading** converts the fragment position to eight exact world
+   cells and queries `WorldProbeHash` from the finest level outward. It
+   bilinearly samples visibility in the probe-to-surface octahedral direction,
+   applies Chebyshev weighting, and adds diffuse indirect illumination for
+   non-metallic energy. Complete fine support returns immediately. Missing fine
+   corners lower confidence and are filled by the next built level, so clipmap
+   movement cannot create a black border and already-built fine probes remain
+   authoritative at distance. DDGI is sanitized and clamped. Each fragment
+   reports its accumulated ready-probe confidence and fades out the renderer's
+   constant ambient fallback only by that amount; uncovered geometry therefore
+   retains the fallback while complete DDGI coverage removes it. Direct-light,
+   shadowed, and emissive paths remain unchanged. If atlas setup is unavailable,
+   confidence remains zero rather than making the frame black.
 
-## Render-flow lifecycle
+Material AO modulates the non-DDGI ambient fallback but does not multiply DDGI.
+Probe visibility moments already provide geometric indirect occlusion, and
+applying an imported material AO map again can erase valid irradiance across a
+level such as Sponza. Imported glTF metallic-roughness red channels are not
+treated as AO, while textured metallic energy uses the sampled blue channel
+rather than the uniform metallic factor.
+7. **Debug** addresses the current request, position, and state buffers through
+   GPU virtual addresses. Pending probes draw at their requested world position;
+   active probes draw at their classified or relocated position. The editor
+   reapplies the selected plugin debug view when a plugin reloads, so a selected
+   probe overlay cannot silently revert to a disabled pass.
 
-`DDGIRendererPlugin.BuildPlan` runs once per frame after the host
-has resolved the scene + content root. The sequence below is the
-canonical resolution order — reordering these steps risks the
-one-frame `SparseLayoutReady` flicker that previously caused
-PbrPass to silently fall back to no-DDGI shading and the editor
-probe overlay to read stale SSBO tails.
+The GPU-owned buffers are:
 
-1. **`EnsureAtlas`** — allocate persistent atlas and storage buffers and
-   register the two atlas textures in the shared bindless heap.
-2. **`EnsureVolumeLayout`** — initialise only the CPU volume metadata; no
-   probe positions or grid entries are uploaded.
-3. **Placement pass** — runs every frame before PBR. It clears the GPU
-   counter and indirect draw args, accepts empty volume cells, and atomically
-   allocates dense probe slots. When a scene TLAS is available it also runs
-   free-space relocation tests; without a TLAS it keeps the volume populated
-   so debug visualization and sky-only GI remain available while geometry is
-   streaming.
-4. **Light upload** — refresh the light snapshot/tree used by probe rays.
-5. **Update pass** — launches `MaxProbesTotalBudget` groups. Each group reads
-   the GPU counter and updates one live probe; inactive groups return before
-   touching the atlas. With a TLAS, rays gather visibility and direct light;
-   without one, the same GPU kernel writes a sky/ambient fallback into the
-   atlas instead of aborting the pass. This keeps scheduling and active-count
-   ownership on GPU.
-6. **PBR sampling** — reads the GPU-written grid and position buffers through
-   device addresses and samples the SH/visibility atlases.
-7. **Debug pass** — uses the GPU indirect draw argument buffer, so it never
-   derives its vertex count from a CPU probe count and never renders zeroed
-   origin tails.
-
-> **Hot-reload caveat:** `SceneGraph.GetHashCode()` is reference
-> identity. If the host scene-graph wrapper is recreated every
-> frame, the fingerprint will fire `Reset ≡` re-upload ≡ re-run
-> placement every frame, thrasing the Gi budget. Hashes should
-> be derived from observed scene content (mesh-AABB count,
-> entity count) once the renderer-free scene surface lands.
-
-## Consumer-side bindings
-
-PbrPass wires the DDGI atlas into the `ScenePushData` extension
-once `_ddgiAtlas.IsSparseLayoutReady` is true:
-
-* `push.DDGIAtlasParams.x` = irradiance bindless slot,
-  `push.DDGIAtlasParams.y` = visibility bindless slot,
-  `push.DDGIAtlasParams.z` = probe grid resolution,
-  `push.DDGIAtlasParams.w` = ready flag (`1.0` when sampling
-  should engage, `0.0` otherwise).
-* `push.DDGIProbePositions` + `push.DDGIGridToProbeIndex` carry
-  the device addresses of the atlas's sparse SSBOs so the shader
-  can dereference them via the push constant root.
-* `push.DDGIOriginAndCountZ.xyz` = probe-volume origin,
-  `.w` = probe grid Z resolution.
-* `push.DDGIExtentAndFlags.xyz` = probe-volume half-extents,
-  `.w` = `MaxProbesPerFrame` ceiling.
-
-The sampling shader (`ddgi_sampling.slang`, included into
-`pbr.slang` behind `#ifdef DDGI_PLUGIN`) walks the 8-cell
-trilinear corner of the shading point's coarse cell, calls
-`LookupSparseProbeIndex(cell, gridCount)` to recover the
-canonical atlas slot, and skips any cell whose indirection entry
-is `-1` (placement-rejected or uninitialised). The hard-coded
-sparse-index math that previously lived inline is gone — that
-math collapsed cells onto a fake stepping-2 grid and dropped the
-entire PBR GI term to zero. Sampled SH2 coefficients are weighted
-by trilinear interpolation, distance falloff, and the canonical
-Chebychev visibility weighting before being added to the
-Lo-summed direct-lighting term.
-
-## Persistent-resource barriers
-
-The DDGI atlas is owned by the plugin but imported into the render graph with
-stable `ResourceHandle` values. Placement declares UAV writes for probe
-positions, grid indirection, the active counter, and indirect draw arguments.
-The draw-argument buffer is a 16-byte non-indexed Metal indirect command
-(`[vertexCount, instanceCount, firstVertex, firstInstance]`), initialized with
-`instanceCount = 1` and incremented by the placement kernel. Update declares
-reads of placement/light buffers and UAV writes to irradiance
-and visibility. PBR and the debug overlay declare their corresponding reads.
-The compiler therefore emits producer-to-consumer barriers while excluding
-these persistent resources from transient heap aliasing.
-
-`Renderer` binds the current provider's actual RHI buffers and textures before
-each graph execution and removes bindings when the provider disappears. The
-executor maps graph states explicitly to native RHI states; the numeric enum
-values are intentionally different. `Game.Tests/RenderGraphExternalResourceTests.cs`
-covers barrier inference, aliasing exclusion, invalid handles, and state
-mapping.
-
-## Runtime fallback constraint
-
-The placement and update shaders retain the `sceneTlas` declaration for the
-hardware-raytracing path and select it with a uniform `UseSceneTlas` flag. The
-host skips the AS bind when no TLAS exists. This is valid on the current Metal
-path because the no-TLAS branch performs no AS access; a future backend must
-preserve that descriptor-lifetime rule or provide a dedicated no-RT shader
-variant.
-
-## Cross-references
-
-- `engine-spec.md` §4 (RHI commitment to Metal RT first;
-  DDGI gather phase uses inline ray queries via
-  `BindAccelStruct`).
-- `docs/renderer/render-graph.md` (pass lifecycle; the Phase-3
-  `DDGIProbeUpdatePass` will be an async compute pass with
-  `ResourceState.UnorderedAccess` on the probe atlas).
-- `docs/asset-pipeline/tags.md` will gain a `DDGI_PROBE_VOLUME_V1`
-  tag when serialised volumes ship.
-
-## Phase status
-
-| Phase | Status |
+| Buffer | Contents |
 | --- | --- |
-| CPU scaffolding (volume + priority + light BVH) | landed (`54df63c`) |
-| Budget gate + plugin lifecycle + sampler + docs (this doc) | landed (Phase 2) |
-| Probe-position debug visualization | landed (Phase 2.5) |
-| Metal RT gather + SH projection + parallel `[NumThreads(32,1,1)]` dispatch + timing feedback | landed (Phase 3) |
-| Two-bounce cascade | pending (Phase 4) |
+| `ProbePositions` | `float4` world position and active marker per resident slot. |
+| `GridToProbeIndex` | Current local cell to resident-slot index, or `-1` for dormant cells. |
+| `ProbeWorldKeys` | Exact signed world-cell coordinate and level for every persistent physical slot. |
+| `WorldProbeHash` | Open-addressed slot lookup used by clustered shading independently of clipmap residency. |
+| `ProbeStates` | Active, visible, dirty, pending, relocated, scene-bake, AABB-priority, sky-only, cascade, radiance-convergence count and initial-accumulation mode, last-update frame, geometry revision, and packed sampled light/sky revision. |
+| `ProbeRequests` | Triple-buffered active clipmap cells plus the bounded scene-bake batch, each mapped to a persistent physical slot. |
+| `ProbeCounter` | Active, scheduled-update, camera-classification, and bake-classification counts. |
+| `ProbeUpdateQueue` | Bounded list consumed by the update dispatch. |
+| `ProbeDrawArgs` | Fixed-capacity non-indexed indirect draw arguments written by reset. |
+| `VolumeState` | Per-level snapped centres, cell sizes, grid offsets, resolution, and frame. |
 
-## Debugging — probe visualisationOnce `renderer.ddgi` is enabled, the editor's debug-view dropdown
-includes **DDGI Probes**. Selecting it overlays the GPU-owned probes in
-the active `DDGIProbeVolume`:
+`IDDGIAtlasProvider.TryGetPersistentLookup` exposes `ProbeWorldKeys`,
+`WorldProbeHash`, and its power-of-two capacity to renderer consumers.
 
-* **Topology:** an octahedron uses 24 indexed vertex IDs per probe;
-  the indirect command's vertex count is accumulated by the placement
-  kernel.
-* **Depth:** pipeline-level depth testing is disabled so probes remain
-  visible behind geometry, which is useful for diagnosing placement and
-  volume coverage.
-* **Wire-in:** `DDGIRendererPlugin` registers the debug pass as a post-pass
-  and the pass reads persistent probe positions plus GPU indirect draw args.
-  It does not upload a CPU probe list each frame.
-* **Fallback visibility:** if no scene TLAS is available, placement accepts
-  volume cells directly and the debug pass still renders their positions;
-  update writes sky/ambient atlas data until ray-tracing geometry becomes
-  available.
-* **Camera:** the pass uses `TryGetActiveCameraData(width, height, …)` to
-  obtain the active view-projection matrix.
+## Unbounded Movement
 
+The cache is not an authored scene volume and has no fixed world-space bounds.
+Each clipmap still contains `11^3 = 1331` local cells: two-metre fine cells cover
+22 metres, eight-metre medium cells cover 88 metres, and 32-metre far cells
+cover 352 metres per axis. Those 3993 local entries point into 262,144 persistent
+physical slots keyed by exact world cell and cascade. Moving away only changes
+which probes receive camera-priority updates. It does not clear, reuse,
+overwrite, or stop shading from the physical probe.
 
-[clustered]: ../../Plugins/Renderer.Clustered/ClusteredRendererPlugin.cs
-[registry]:  ../../engine_cs/Engine.Renderer/DDGI/DDGIVolumeRegistry.cs
+The cache deliberately has no eviction path. This guarantees that a valid probe
+is never rebuilt because of camera movement. If all 262,144 keys are consumed,
+existing GI remains intact and previously unseen cells stop allocating until
+the plugin or scene session is reset. At the default sizes, a scene can retain
+far more unique cells than the three active clipmaps while staying within a
+small GPU-memory budget.
+
+Changing to a different `SceneGraph` starts a new scene session and allocates a
+fresh atlas, preventing identical world-cell coordinates in two levels from
+sharing stale GI. Editing or importing geometry into the current scene keeps
+the atlas and advances its geometry revision instead.
+
+Scene geometry bounds seed a complete far-to-fine initial build. The stream
+starts at sixteen cells, can contract to one when measured update capacity is
+constrained, and scales to sixty-four when cost permits more work. Bake
+production stays at or below half the update allowance, so every active bake
+request can enter the same frame's priority queue rather than disappearing
+uninitialized when the traversal advances. A geometry revision change restarts
+the bounded traversal;
+the revision fingerprint includes entity identity, transforms, bounds, part
+geometry addresses, and index counts. When a many-part model such as Sponza
+enters the renderer/TLAS, the change cannot alias a similarly sized existing
+instance, and cached probes are reclassified and retraced against the new
+scene. `IDDGIAtlasProvider.HasPendingWork` keeps low-power editor viewports
+rendering until this scene traversal finishes instead of stopping after the
+model-insertion burst. A light or sky revision also reserves two allocated-atlas
+passes of refresh allowance and keeps the viewport rendering until that budget
+is consumed. This lets the bounded 1–128 update queue and rotating persistent
+scan propagate a directional or local-light edit after mouse or keyboard
+interaction stops. Sky-only probes compare only the packed sky revision, so
+moving a point or spot light does not wake empty-space work.
+Radiance revisions never replace or dispose the atlas: they only mark relevant
+probes for bounded retracing and blend their temporal history as each probe is
+updated. Renderer-extension hot reload first retires every compiled DDGI pass,
+then releases the atlas, so a frame cannot execute against disposed buffers.
+
+## Performance
+
+The renderer resets all GPU-work domains once before any render-graph pass, so
+extension ordering and disabled shadow passes cannot preserve stale GI
+admissions or erase current-frame diagnostics. The hard update ceiling is 128
+probes. The 4 ms scheduler starts with a
+32-probe estimate, feeds delayed GPU timings into its per-probe cost estimate,
+and can grow or shrink the submitted count from 1 to 128. Scene-bake placement
+uses half that allowance clamped from 1 to 64, so warm-up and camera-visible
+work progress together. At 32 rays per probe the hard maximum is 4096 rays. A continuously changing light cannot
+immediately reselect a probe updated in the prior frame;
+older lighting-dirty probes receive the refresh priority so the cache converges
+instead of repeatedly updating only the closest slots. Placement dispatches one
+thread per current request, but the fourteen classification rays run for at most 128
+camera cells and 64 scene-bake cells. A probe close to or inside geometry runs
+two additional fourteen-ray validations, one on each side of the nearest
+surface. Geometry changes therefore stay bounded
+instead of expanding one frame's work with scene complexity.
+Ready probes are event-driven: geometry revisions reclassify them, light or sky
+revisions retrace them, and convergence flags schedule the remaining temporal
+steps. There is no periodic refresh, so an unchanged scene reaches an idle
+state. Ready sky-only probes ignore local-light revisions; only a sky revision
+makes them eligible again.
+Initial and relocated probes consume four scheduler admissions over time, but
+each admission remains a 32-ray dispatch and the adaptive per-frame probe cap is
+unchanged. This trades warm-up latency for stable 128-sample history without a
+single-frame ray-budget spike.
+Placement and update share one frame-cached scene TLAS, so enabling DDGI does
+not duplicate acceleration-structure extraction or builds. Scheduling uses one
+GPU thread to select the top 128 entries from current requests and one rotating
+8,192-slot persistent-cache window. This bounds each frame while covering the
+full 262,144-slot cache over 32 frames.
+
+The update pass dispatches only the scheduler's admitted capacity. Delayed GPU
+timestamps use a 16-frame submission history to feed the matching capacity and
+measured pass cost back into the scheduler; no probe-counter readback or
+render-thread wait is required. Timing samples train the per-probe estimate only
+while scene-bake or radiance-refresh work is present, preventing idle dispatches
+from making the next complex-scene burst look artificially cheap.
+
+DDGI does not build or upload a CPU light tree. It shares the renderer's
+triple-buffered `LightData` buffer, so moved ECS lights reach probe updates in
+the same frame without a second scene extraction or synchronization upload.
+The light fingerprint includes the complete position, direction, colour,
+intensity, shape, and shadow fields. Directional-light edits therefore advance
+`CurrentLightRevision` and receive lighting-dirty scheduling priority. The sky
+has an independent fingerprint over its sun direction, angular radius,
+intensity, turbidity, and ground albedo. Probe updates sample those exact sky
+parameters without the explicit sun disc instead of adding a constant ambient
+or synthetic gradient.
+
+GPU virtual-address buffers are declared through `ICommandSink.UseBuffer` with
+resource-usage flags only: `1` for read, `2` for write, and `3` for read/write.
+The argument is not a shader binding slot. Passing other values can produce an
+invalid backend usage mask and abort a Metal command buffer before presentation.
+
+The irradiance atlas is `4096 × 256` RGBA16F and visibility is
+`4096 × 1024` RGBA16F. Irradiance, visibility, positions, states, and world
+keys total 52 MiB for 262,144 slots. The half-full 524,288-entry world hash adds
+2 MiB. Active indirection, triple-buffered requests, queue, counters, and
+clipmap metadata add less than 512 KiB.
+
+## Irradiance And Occlusion
+
+Irradiance uses four RGB first-order SH coefficients packed into four
+`RGBA16F` texels: 32 bytes per probe and 8 MiB for 262,144 slots. Second-order
+SH would require nine texels and 18 MiB; third order would require sixteen
+texels and 32 MiB. Diffuse GI
+stays first-order because higher orders multiply per-pixel atlas reads while ray
+tracing, directional visibility, and placement provide a better quality return.
+
+Visibility stores mean hit distance and mean-square distance in a 4×4
+octahedral `RGBA16F` tile per probe. The update pass projects all 32 traced
+distances into each directional texel with a cosine-to-the-fourth lobe, broad
+enough for the ray count to avoid under-sampled directional speckle, and
+preserves stable temporal history.
+Shading encodes the probe-to-surface vector, bilinearly reads the four nearest
+moment texels, and applies Chebyshev weighting with a 2% minimum. The 16-texel
+tile costs 128 bytes per probe and 32 MiB for 262,144 slots. It rejects light
+transport crossing geometry in the sampled direction instead of applying one
+non-directional visibility value to the entire probe. Bounded hit-to-light
+shadow rays remain a possible higher-cost quality tier and do not require
+higher-order irradiance SH.
+
+## Cross-References
+
+- [Shader modularity](shader-modularity.md)
+- [Shader cache](shader-cache.md)
+- [Render graph](render-graph.md)
+- [RHI API](../rhi/api.md)
+- [Engine specification](../../engine-spec.md)

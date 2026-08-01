@@ -1,104 +1,109 @@
 // SPDX-License-Identifier: MIT
-// DDGI v1 probe-update compute kernel (canonical SEED-DDGI math).
-//
-// Dispatch shape: (MaxProbesTotalBudget, 1, 1, 1, 1, 1). One
-// thread group is launched for every budget slot; each group first
-// culls itself against the GPU-owned placement counter. Each live
-// probe group loops over RaysPerProbe (= 32) rays,
-// accumulates per-ray incident radiance + visibility Chebychev
-// moments in registers, and on exit writes the 4-channel SH
-// (Y00 + Y1_-1 + Y10 + Y11) to the irradiance atlas (register(u0))
-// and the 2-channel mean/mean² moments to the visibility atlas
-// (register(t4) RW).
-//
-// Direct-light contribution is gathered via a hierarchical BBV
-// light tree (LightTreeNode at register(t2)) instead of an O(L)
-// loop over the full Lights SSBO. The CPU builder (see
-// Plugins/Renderer.DDGI/DDGILightTreeBuilder.cs) packs ≤ 4 lights
-// per leaf and reorders the Lights SSBO so leaf ranges are
-// contiguous; the shader therefore doesn't need a separate
-// remapping buffer.
-//
-// Push constants carry:
-//   * uint frameNumber, lightCount, raysPerProbe, maxProbeBudget
-//   * GPU-owned probeCounter pointer for active-count culling
-//   * TreeRootIndex, TreeNodeCount, TreeLeafVisitBudget
-
 #include "scene_data.slang"
+#include "nishita_sky.slang"
 
-static const uint kLeafFlagBit   = 0x80000000u;
-static const uint kLeafMaskBits  = 0x7FFFFFFFu;
-
-// MARK: LightTreeNode descriptor (32 bytes, matches Plugins/
-// Renderer.DDGI/DDGILightTreeNode.cs). High bit of
-// .minAndData0.w acts as the leaf flag; remaining 31 bits hold
-// either the child-left index or the leaf's first-light index.
-struct LightTreeNode
+struct ProbeState
 {
-    float4 minAndData0;
-    float4 maxAndData1;
-
-    bool   IsLeaf()             { return (asuint(minAndData0.w) & kLeafFlagBit) != 0u; }
-    uint   FirstOrChildLeft()   { return asuint(minAndData0.w) & kLeafMaskBits; }
-    uint   CountOrChildRight()  { return asuint(maxAndData1.w); }
+    uint flags;
+    uint lastUpdateFrame;
+    uint geometryRevision;
+    uint lightRevision;
 };
+
+static const uint kRadianceConvergenceMask = 7u << 10u;
+static const uint kRadianceConvergenceShift = 10u;
+static const uint kRadianceConvergenceSteps = 3u;
+static const uint kInitialRadianceAccumulation = 1u << 13u;
+static const float kVisibilityLobePower = 4.0;
 
 struct UpdatePushData
 {
-    uint   probeCount;
     uint   frameNumber;
     uint   lightCount;
     uint   raysPerProbe;
+    uint   maxUpdates;
     float4 cameraPositionAndJitter;
     float4 atlasUVParams;
     float4 originAndProbeCountZ;
     float4 extent;
-    uint   probeIndex0;
-    uint   probeIndex1;
-    uint   probeIndex2;
-    uint   probeIndex3;
-    uint   probeIndex4;
-    uint   probeIndex5;
-    uint   probeIndex6;
-    uint   probeIndex7;
-    uint   treeRootIndex;
-    uint   treeNodeCount;
-    uint   treeLeafVisitBudget;
-    uint   paddingTail3;
+    float4 skySunDirectionAndRadius;
+    float4 skyAtmosphereParameters;
     uint   maxProbeBudget;
     uint   UseSceneTlas;
-    uint   Padding0;
-    uint   Padding1;
-    uint   Padding2;
+    uint   radianceRevision;
+    float  minimumProbeClearance;
 
     float4* probePositions;
     LightData* lights;
-    LightTreeNode* lightTree;
     uint*   probeCounter;
+    ProbeState* probeStates;
+    uint* probeUpdateQueue;
+    InstanceData* instances;
+    PartData* parts;
+    MaterialData* materials;
+    uint instanceCount;
+    uint partCount;
+    uint materialCount;
+    uint padding0;
 };
 
 [push_constant]
 ConstantBuffer<UpdatePushData> push;
 
-static const int kMaxProbesPerFrame = 8;
-
-// (Removed global registers)
+[[vk::binding(3, 0)]]
 RaytracingAccelerationStructure sceneTlas   : register(t3);
 
-RWTexture2D<float4> irradiance : register(u0);
-RWTexture2D<float4> visibility : register(u4);
+[[vk::binding(0, 0)]] RWTexture2D<float4> irradiance : register(u0);
+[[vk::binding(4, 0)]] RWTexture2D<float4> visibility : register(u4);
+
+struct BindlessHeap
+{
+    Texture2D textures[4096];
+};
+[[vk::binding(1, 0)]] ParameterBlock<BindlessHeap> bindless;
+[[vk::binding(2, 0)]] SamplerState textureSampler;
 
 // MARK: SH basis constants (canonical 2-band spherical-harmonics)
 static const float kY00  = 0.282095;
 static const float kY1m1 = 0.488603;
 
-float3 OctahedralDirection(uint sampleIdx, uint raysCount, float jitter)
+uint2 AtlasCoordinate(uint linearIndex)
 {
-    float u = (float(sampleIdx) + jitter) / float(raysCount);
-    float v = (float((sampleIdx * 2654435761u) % raysCount) + jitter) /
-        float(raysCount);
-    float phi     = u * 2.0 * 3.14159265;
-    float cosTheta = 1.0 - 2.0 * v;
+    uint width = max((uint)push.atlasUVParams.z, 1u);
+    return uint2(linearIndex % width, linearIndex / width);
+}
+
+uint HashUint(uint value)
+{
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    value *= 0x846ca68bu;
+    value ^= value >> 16u;
+    return value;
+}
+
+float Hash01(uint value)
+{
+    return float(HashUint(value) & 0x00ffffffu) / 16777216.0;
+}
+
+float3 StratifiedSphereDirection(
+    uint sampleIdx,
+    uint raysCount,
+    uint probeIndex,
+    uint frameNumber)
+{
+    uint seed = HashUint(
+        probeIndex ^ HashUint(frameNumber + 0x9e3779b9u));
+    float heightJitter = Hash01(seed);
+    float azimuthRotation = Hash01(seed ^ 0x68bc21ebu);
+    float height =
+        (float(sampleIdx) + heightJitter) / float(raysCount);
+    float azimuth = frac(
+        float(sampleIdx) * 0.61803398875 + azimuthRotation);
+    float phi = azimuth * 2.0 * 3.14159265;
+    float cosTheta = 1.0 - 2.0 * height;
     float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
     return float3(sinTheta * cos(phi),
                   sinTheta * sin(phi),
@@ -127,9 +132,10 @@ float3 EvaluateOneLight(
         float dist = length(toLight);
         float3 l = toLight / max(dist, 0.001);
         float dotNL = max(0.0, dot(shadingNormal, l));
-        float falloff = 1.0 - saturate(dist / max(range, 0.001));
+        float falloff = saturate(
+            1.0 - pow(dist / max(range, 0.001), 4.0));
         irradiance = light.color.xyz * intensity * dotNL *
-            falloff / max(dist * dist, 0.001);
+            falloff * falloff / (dist * dist + 1.0);
     }
     else if (lightType == 2.0)
     {
@@ -141,107 +147,144 @@ float3 EvaluateOneLight(
         float dotNL = max(0.0, dot(shadingNormal, l));
         float cosTheta = dot(-l, axis);
         float outerCos = clamp(light.shapeParams.y, 0.001, 0.999);
-        float innerCos = clamp(light.shapeParams.x, 0.001, outerCos - 0.001);
+        float innerCos = clamp(light.shapeParams.x, 0.001, 0.999);
         float cone = saturate((cosTheta - outerCos) /
             max(innerCos - outerCos, 0.001));
-        float falloff = cone *
-            (1.0 - saturate(dist / max(range, 0.001)));
+        float rangeFalloff = saturate(
+            1.0 - pow(dist / max(range, 0.001), 4.0));
+        float falloff = cone * cone * rangeFalloff * rangeFalloff;
         irradiance = light.color.xyz * intensity * dotNL * falloff /
-            max(dist * dist, 0.001);
+            (dist * dist + 1.0);
     }
     return irradiance;
 }
 
-// MARK: AABB slab test from ray origin in direction dir (assumed
-// roughly unit length). Returns true when the ray reaches the AABB
-// in front of the origin and within tFar. Used as a cheap node
-// culling step before descending into the tree.
-bool RayPlausiblyReachesAabb(
-    float3 origin,
-    float3 dir,
-    float3 aabbMin,
-    float3 aabbMax)
+float3 EvaluateLights(
+    float3 shadingPos,
+    float3 shadingNormal)
 {
-    float3 dirSign = float3(
-        sign(dir.x), sign(dir.y), sign(dir.z));
-    float3 invDirSafe = dirSign /
-        max(abs(dir), float3(1e-6));
-    float3 t1 = (aabbMin - origin) * invDirSafe;
-    float3 t2 = (aabbMax - origin) * invDirSafe;
-    float3 tNear3 = min(t1, t2);
-    float3 tFar3  = max(t1, t2);
-    float tNear = max(max(tNear3.x, tNear3.y), tNear3.z);
-    float tFar  = min(min(tFar3.x, tFar3.y), tFar3.z);
-    return tFar >= max(tNear, 0.0);
+    float3 directAccum = float3(0.0);
+    for (uint lightIndex = 0u;
+         lightIndex < push.lightCount;
+         ++lightIndex)
+    {
+        directAccum += EvaluateOneLight(
+            shadingPos,
+            shadingNormal,
+            push.lights[lightIndex]);
+    }
+    return directAccum;
 }
 
-// MARK: Hierarchical light gather. Iterative worklist descents
-// the tree, culls nodes whose world AABB the ray plausibility
-// test misses, and accumulates per-leaf contributions up to
-// `treeLeafVisitBudget`. When the tree is empty, returns zero so
-// the caller falls back to ambient only.
-float3 TraverseLightTree(
-    float3 shadingPos,
-    float3 shadingNormal,
-    float3 rayOrigin,
-    float3 rayDir,
-    uint rootIdx,
-    uint nodeCount,
-    uint leafBudget)
+uint LoadTriangleIndex(PartData part, uint elementIndex)
 {
-    if (rootIdx >= nodeCount || nodeCount == 0 || leafBudget == 0)
-        return float3(0.0);
+    if ((part.flags & 1u) != 0u)
+        return part.indices[elementIndex];
+    uint packed = part.indices[elementIndex / 2u];
+    return (elementIndex & 1u) == 0u
+        ? packed & 0xFFFFu
+        : packed >> 16u;
+}
 
-    float3 accumulated = float3(0.0);
-    const int kWorklistCap = 12;
-    uint worklist[kWorklistCap];
-    int top = 1;
-    worklist[0] = rootIdx;
-    uint leavesVisited = 0;
+void EvaluateHitSurface(
+    uint partIndex,
+    uint primitiveIndex,
+    float2 triangleBarycentrics,
+    float3 rayDirection,
+    out float3 worldNormal,
+    out float3 diffuseReflectance,
+    out float3 emissiveRadiance)
+{
+    worldNormal = -rayDirection;
+    diffuseReflectance = float3(0.72);
+    emissiveRadiance = float3(0.0);
+    if (partIndex >= push.partCount)
+        return;
 
-    while (top > 0 && leavesVisited < leafBudget)
+    PartData part = push.parts[partIndex];
+    if (part.instanceIdx >= push.instanceCount ||
+        part.materialIdx >= push.materialCount)
     {
-        uint nIdx = worklist[--top];
-        if (nIdx >= nodeCount) continue;
-
-        LightTreeNode node = push.lightTree[nIdx];
-
-        // The surface normal is not a direction from the probe toward a
-        // light. Applying the ray/AABB test here rejected valid lights
-        // whenever the light tree lay outside that arbitrary normal ray.
-        // The bounded leaf budget already limits traversal work; evaluate
-        // each visited leaf instead of applying the invalid directional cull.
-        if (node.IsLeaf())
-        {
-            uint first = node.FirstOrChildLeft();
-            uint count = node.CountOrChildRight();
-            for (uint i = 0u; i < count; ++i)
-            {
-                if (first + i >= push.lightCount) break;
-                accumulated += EvaluateOneLight(shadingPos, shadingNormal, push.lights[first + i]);
-            }
-            ++leavesVisited;
-            continue;
-        }
-
-        if (top + 2 <= kWorklistCap)
-        {
-            uint left = node.FirstOrChildLeft();
-            uint right = node.CountOrChildRight();
-            worklist[top++] = left;
-            worklist[top++] = right;
-        }
+        return;
     }
 
-    return accumulated;
+    uint elementBase = primitiveIndex * 3u;
+    if (elementBase + 2u >= part.indexCount)
+        return;
+    uint index0 = LoadTriangleIndex(part, elementBase + 0u);
+    uint index1 = LoadTriangleIndex(part, elementBase + 1u);
+    uint index2 = LoadTriangleIndex(part, elementBase + 2u);
+    Vertex vertex0 = part.vertices[index0];
+    Vertex vertex1 = part.vertices[index1];
+    Vertex vertex2 = part.vertices[index2];
+    float3 barycentrics = float3(
+        1.0 - triangleBarycentrics.x - triangleBarycentrics.y,
+        triangleBarycentrics.x,
+        triangleBarycentrics.y);
+    float3 localNormal = normalize(
+        float3(vertex0.nx, vertex0.ny, vertex0.nz) * barycentrics.x +
+        float3(vertex1.nx, vertex1.ny, vertex1.nz) * barycentrics.y +
+        float3(vertex2.nx, vertex2.ny, vertex2.nz) * barycentrics.z);
+    InstanceData instance = push.instances[part.instanceIdx];
+    worldNormal = normalize(mul(
+        (float3x3)instance.modelMatrix,
+        localNormal));
+    if (dot(worldNormal, rayDirection) > 0.0)
+        worldNormal = -worldNormal;
+
+    MaterialData material = push.materials[part.materialIdx];
+    float2 uv =
+        float2(vertex0.u, vertex0.v) * barycentrics.x +
+        float2(vertex1.u, vertex1.v) * barycentrics.y +
+        float2(vertex2.u, vertex2.v) * barycentrics.z;
+    float3 albedo = material.baseColor.rgb;
+    if (material.albedoTexIndex != 0xFFFFFFFFu)
+    {
+        albedo *= bindless.textures[material.albedoTexIndex].SampleLevel(
+            textureSampler,
+            uv,
+            0.0).rgb;
+    }
+    float metallic = material.metallic;
+    if (material.rmaTexIndex != 0xFFFFFFFFu)
+    {
+        metallic *= bindless.textures[material.rmaTexIndex].SampleLevel(
+            textureSampler,
+            uv,
+            0.0).b;
+    }
+    diffuseReflectance = max(albedo, float3(0.0)) *
+        saturate(1.0 - metallic);
+    emissiveRadiance = max(material.emissiveColor.rgb, float3(0.0));
 }
 
 groupshared float3 g_s0[32];
 groupshared float3 g_sY[32];
 groupshared float3 g_sZ[32];
 groupshared float3 g_sX[32];
-groupshared float2 g_visMoments[32];
-groupshared uint   g_visHitCount[32];
+groupshared float3 g_rayDirection[32];
+groupshared float g_rayDistance[32];
+
+static const uint kVisibilityTileResolution = 4u;
+static const uint kVisibilityTexelsPerProbe = 16u;
+
+float3 OctahedralDecode(float2 encoded)
+{
+    float2 octahedron = encoded * 2.0 - 1.0;
+    float3 direction = float3(
+        octahedron.x,
+        octahedron.y,
+        1.0 - abs(octahedron.x) - abs(octahedron.y));
+    if (direction.z < 0.0)
+    {
+        float2 signValue = float2(
+            direction.x >= 0.0 ? 1.0 : -1.0,
+            direction.y >= 0.0 ? 1.0 : -1.0);
+        direction.xy =
+            (1.0 - abs(direction.yx)) * signValue;
+    }
+    return normalize(direction);
+}
 
 [shader("compute")]
 [NumThreads(32, 1, 1)]
@@ -251,25 +294,27 @@ void computeMain(
 {
     uint probeOrdinal = groupID.x;
     uint rayIdx = groupThreadID.x;
-    uint activeProbeCount = min(push.probeCounter[0], push.maxProbeBudget);
+    uint updateCount = min(push.probeCounter[1], push.maxUpdates);
 
-    if (probeOrdinal >= activeProbeCount || rayIdx >= 32u)
+    if (probeOrdinal >= updateCount || rayIdx >= 32u)
         return;
 
-    // Placement allocates sparse slots densely from zero. The update pass
-    // dispatches the fixed GPU budget and culls its tail from the GPU-owned
-    // counter, so no CPU probe list or readback is required.
-    uint sparseIdx = probeOrdinal;
+    uint sparseIdx = push.probeUpdateQueue[probeOrdinal];
+    if (sparseIdx >= push.maxProbeBudget)
+        return;
 
     float3 origin = push.probePositions[sparseIdx].xyz;
     uint raysPerProbe = push.raysPerProbe;
     if (raysPerProbe == 0) raysPerProbe = 32;
-    float frameJitter = push.cameraPositionAndJitter.w;
 
     float tMax = push.extent.x;
     if (tMax <= 0.0) tMax = 8.0;
 
-    float3 rayDir = OctahedralDirection(rayIdx, raysPerProbe, frameJitter);
+    float3 rayDir = StratifiedSphereDirection(
+        rayIdx,
+        raysPerProbe,
+        sparseIdx,
+        push.frameNumber);
 
     RayDesc ray;
     ray.Origin    = origin;
@@ -279,6 +324,9 @@ void computeMain(
 
     bool hit = false;
     float hit_t = tMax;
+    uint hitPartIndex = 0xFFFFFFFFu;
+    uint hitPrimitiveIndex = 0u;
+    float2 hitBarycentrics = float2(0.0);
 
     if (push.UseSceneTlas != 0u)
     {
@@ -291,61 +339,62 @@ void computeMain(
         {
             hit = true;
             hit_t = min(query.CommittedRayT(), tMax);
+            hitPartIndex = query.CommittedInstanceID();
+            hitPrimitiveIndex = query.CommittedPrimitiveIndex();
+            hitBarycentrics = query.CommittedTriangleBarycentrics();
         }
     }
 
     float3 incident = float3(0.0);
+    SkyParams sky;
+    sky.sunDirAndRadius = push.skySunDirectionAndRadius;
+    sky.intensityTurbidityAlbedoPad =
+        push.skyAtmosphereParameters;
+    SkyParams diffuseSky = sky;
+    diffuseSky.sunDirAndRadius.w = 0.0;
     if (hit)
     {
-        g_visMoments[rayIdx] = float2(hit_t, hit_t * hit_t);
-        g_visHitCount[rayIdx] = 1u;
-
         float3 hitPos = origin + rayDir * hit_t;
-        float3 hitNormal = -rayDir;
-        float3 incidentLight = TraverseLightTree(
-            hitPos, hitNormal,
-            hitPos, hitNormal,
-            push.treeRootIndex,
-            push.treeNodeCount,
-            push.treeLeafVisitBudget);
-
-        incident = incidentLight * (0.5 / 3.14159265);
+        float3 hitNormal;
+        float3 diffuseReflectance;
+        float3 emissiveRadiance;
+        EvaluateHitSurface(
+            hitPartIndex,
+            hitPrimitiveIndex,
+            hitBarycentrics,
+            rayDir,
+            hitNormal,
+            diffuseReflectance,
+            emissiveRadiance);
+        float3 incidentLight = EvaluateLights(hitPos, hitNormal);
+        float3 skyIrradiance = GetSkyRadiance(
+            hitNormal,
+            diffuseSky.sunDirAndRadius.xyz,
+            diffuseSky) * 3.14159265;
+        incident =
+            (incidentLight + skyIrradiance) *
+                diffuseReflectance * (1.0 / 3.14159265) +
+            emissiveRadiance;
     }
     else
     {
-        g_visMoments[rayIdx] = float2(0.0, 0.0);
-        g_visHitCount[rayIdx] = 0u;
-
-        float upness = saturate(rayDir.y);
-        float3 skySky   = float3(0.10, 0.14, 0.28);
-        float3 skyHoriz = float3(0.18, 0.20, 0.24);
-        incident = lerp(skyHoriz, skySky, upness) * 0.3;
-
-        if (push.lightCount > 0 && rayDir.y > 0.0)
-        {
-            LightData sun = push.lights[0];
-            if (sun.direction.w == 0.0)
-            {
-                float3 sunDir = -sun.direction.xyz;
-                float sunDot = max(dot(rayDir, sunDir), 0.0);
-                float sunAngle = pow(sunDot, 64.0);
-                incident += sun.color.xyz * sun.color.w * sunAngle * 0.5;
-            }
-        }
+        incident = GetSkyRadiance(
+            rayDir,
+            diffuseSky.sunDirAndRadius.xyz,
+            diffuseSky);
     }
 
     g_s0[rayIdx] = incident;
     g_sY[rayIdx] = incident * rayDir.y;
     g_sZ[rayIdx] = incident * rayDir.z;
     g_sX[rayIdx] = incident * rayDir.x;
+    g_rayDirection[rayIdx] = rayDir;
+    g_rayDistance[rayIdx] = hit ? hit_t : tMax;
 
     GroupMemoryBarrierWithGroupSync();
 
     if (rayIdx == 0u)
     {
-        float visMeanAccum = 0.0;
-        float visMeanSqAccum = 0.0;
-        uint  visCount = 0;
         float3 s0 = float3(0.0);
         float3 sY = float3(0.0);
         float3 sZ = float3(0.0);
@@ -353,30 +402,98 @@ void computeMain(
 
         for (uint i = 0u; i < 32u; ++i)
         {
-            if (g_visHitCount[i] > 0u)
-            {
-                visMeanAccum   += g_visMoments[i].x;
-                visMeanSqAccum += g_visMoments[i].y;
-                visCount       += g_visHitCount[i];
-            }
             s0 += g_s0[i];
             sY += g_sY[i];
             sZ += g_sZ[i];
             sX += g_sX[i];
         }
 
-        uint visBase = sparseIdx;
-        if (visCount > 0u)
+        ProbeState state = push.probeStates[sparseIdx];
+        bool hasHistory = push.probePositions[sparseIdx].w > 0.5;
+        bool lightingChanged =
+            state.lightRevision != push.radianceRevision;
+        uint convergenceSteps =
+            (state.flags & kRadianceConvergenceMask) >>
+            kRadianceConvergenceShift;
+        bool initialAccumulation =
+            (state.flags & kInitialRadianceAccumulation) != 0u;
+        bool replaceHistory = !hasHistory ||
+            (state.flags & (4u | 16u)) != 0u;
+        float historyWeight = 0.92;
+        if (replaceHistory)
         {
-            float invCount = 1.0 / float(visCount);
-            visibility[uint2(visBase, 0)] = float4(
-                visMeanAccum * invCount,
-                visMeanSqAccum * invCount,
-                0.0, 0.0);
+            historyWeight = 0.0;
         }
-        else
+        else if (lightingChanged)
         {
-            visibility[uint2(visBase, 0)] = float4(tMax, tMax * tMax, 0.0, 0.0);
+            historyWeight = 0.50;
+        }
+        else if (convergenceSteps > 0u)
+        {
+            float accumulatedBatchCount = float(
+                kRadianceConvergenceSteps - convergenceSteps + 1u);
+            historyWeight = initialAccumulation
+                ? accumulatedBatchCount / (accumulatedBatchCount + 1.0)
+                : 0.50;
+        }
+        uint visibilityBase =
+            sparseIdx * kVisibilityTexelsPerProbe;
+        for (uint tileY = 0u;
+             tileY < kVisibilityTileResolution;
+             ++tileY)
+        {
+            for (uint tileX = 0u;
+                 tileX < kVisibilityTileResolution;
+                 ++tileX)
+            {
+                float2 octahedralUv =
+                    (float2(tileX, tileY) + 0.5) /
+                    float(kVisibilityTileResolution);
+                float3 tileDirection =
+                    OctahedralDecode(octahedralUv);
+                float weightSum = 0.0;
+                float mean = 0.0;
+                float meanSquare = 0.0;
+                for (uint visibilityRay = 0u;
+                     visibilityRay < 32u;
+                     ++visibilityRay)
+                {
+                    float directionalWeight = pow(
+                        saturate(dot(
+                            tileDirection,
+                            g_rayDirection[visibilityRay])),
+                        kVisibilityLobePower);
+                    float rayDistance =
+                        g_rayDistance[visibilityRay];
+                    weightSum += directionalWeight;
+                    mean += rayDistance * directionalWeight;
+                    meanSquare += rayDistance * rayDistance *
+                        directionalWeight;
+                }
+                float inverseWeight = 1.0 /
+                    max(weightSum, 0.0001);
+                if (weightSum <= 0.0001)
+                {
+                    mean = tMax;
+                    meanSquare = tMax * tMax;
+                    inverseWeight = 1.0;
+                }
+                float4 nextVisibility = float4(
+                    mean * inverseWeight,
+                    meanSquare * inverseWeight,
+                    0.0,
+                    0.0);
+                uint localVisibilityIndex =
+                    tileY * kVisibilityTileResolution + tileX;
+                uint2 visibilityCoordinate = AtlasCoordinate(
+                    visibilityBase + localVisibilityIndex);
+                float4 previousVisibility =
+                    visibility[visibilityCoordinate];
+                visibility[visibilityCoordinate] = lerp(
+                    nextVisibility,
+                    previousVisibility,
+                    historyWeight);
+            }
         }
 
         float invRays = 1.0 / float(raysPerProbe);
@@ -384,9 +501,77 @@ void computeMain(
         float PI = 3.14159265;
         float weight = 4.0 * PI * invRays;
 
-        irradiance[uint2(baseCol + 0u, 0)] = float4(s0 * weight * kY00, 1.0);
-        irradiance[uint2(baseCol + 1u, 0)] = float4(sY * weight * kY1m1, 0.0);
-        irradiance[uint2(baseCol + 2u, 0)] = float4(sZ * weight * kY1m1, 0.0);
-        irradiance[uint2(baseCol + 3u, 0)] = float4(sX * weight * kY1m1, 0.0);
+        float4 nextC0 = float4(s0 * weight * kY00, 1.0);
+        float4 nextCY = float4(sY * weight * kY1m1, 0.0);
+        float4 nextCZ = float4(sZ * weight * kY1m1, 0.0);
+        float4 nextCX = float4(sX * weight * kY1m1, 0.0);
+        uint2 coordinate0 = AtlasCoordinate(baseCol + 0u);
+        uint2 coordinate1 = AtlasCoordinate(baseCol + 1u);
+        uint2 coordinate2 = AtlasCoordinate(baseCol + 2u);
+        uint2 coordinate3 = AtlasCoordinate(baseCol + 3u);
+        irradiance[coordinate0] = lerp(
+            nextC0,
+            irradiance[coordinate0],
+            historyWeight);
+        irradiance[coordinate1] = lerp(
+            nextCY,
+            irradiance[coordinate1],
+            historyWeight);
+        irradiance[coordinate2] = lerp(
+            nextCZ,
+            irradiance[coordinate2],
+            historyWeight);
+        irradiance[coordinate3] = lerp(
+            nextCX,
+            irradiance[coordinate3],
+            historyWeight);
+        state.lastUpdateFrame = push.frameNumber;
+        state.lightRevision = push.radianceRevision;
+        state.flags &= ~4u;
+        state.flags &= ~16u;
+        state.flags &= ~kRadianceConvergenceMask;
+        state.flags &= ~kInitialRadianceAccumulation;
+        if (replaceHistory)
+        {
+            state.flags |=
+                kRadianceConvergenceSteps <<
+                kRadianceConvergenceShift;
+            state.flags |= kInitialRadianceAccumulation;
+        }
+        else if (lightingChanged)
+        {
+            state.flags |=
+                kRadianceConvergenceSteps <<
+                kRadianceConvergenceShift;
+        }
+        else if (convergenceSteps > 0u)
+        {
+            uint remainingSteps = convergenceSteps - 1u;
+            if (remainingSteps > 0u)
+            {
+                state.flags |=
+                    remainingSteps <<
+                    kRadianceConvergenceShift;
+                if (initialAccumulation)
+                    state.flags |= kInitialRadianceAccumulation;
+            }
+        }
+        float nearestGeometryDistance = tMax;
+        for (uint clearanceRay = 0u;
+             clearanceRay < 32u;
+             ++clearanceRay)
+        {
+            nearestGeometryDistance = min(
+                nearestGeometryDistance,
+                g_rayDistance[clearanceRay]);
+        }
+        if (push.UseSceneTlas != 0u &&
+            nearestGeometryDistance < push.minimumProbeClearance)
+        {
+            state.flags |= 4u;
+            state.flags |= 8u;
+        }
+        push.probeStates[sparseIdx] = state;
+        push.probePositions[sparseIdx].w = 1.0;
     }
 }

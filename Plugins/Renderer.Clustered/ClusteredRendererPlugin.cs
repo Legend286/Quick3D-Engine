@@ -35,6 +35,10 @@ public sealed class ClusteredRendererPlugin :
         RendererPluginContext context)
     {
         var result = new RendererPluginPlan();
+        Engine.RenderGraph.IDDGIAtlasProvider? ddgiProvider =
+            context.EnableGlobalExtensions
+                ? Engine.RenderGraph.DDGIAtlasProviderRegistry.Active
+                : null;
         var cliArgs = context.ShaderCliArgs;
         var includeDirs = context.ShaderIncludeDirs;
         // Single cast at the BuildPlan entry point. Future plugins
@@ -101,8 +105,6 @@ public sealed class ClusteredRendererPlugin :
         }
 
         var pbrPasses = new List<PbrPass>();
-        Engine.RenderGraph.IDDGIAtlasProvider? ddgiProvider =
-            Engine.RenderGraph.DDGIAtlasProviderRegistry.Active;
         foreach (var scenePass in
                  context.Scene.Passes)
         {
@@ -137,4 +139,5 @@ public sealed class ClusteredRendererPlugin :
         // docs/editor/tools.md for the wiring contract.
         return result;
     }
+
 }

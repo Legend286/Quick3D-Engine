@@ -126,11 +126,14 @@ public struct ScenePushData
     // host's SceneDataExtractor leaves these at zero when DDGI is
     // disabled so the consumer-side Slang macros can fall back to
     // no-atlas sampling without host coupling.
-    public Vector4 DDGIAtlasParams;     // x: irradiance bindless slot, y: visibility bindless slot, z: probeGridXY, w: probeCount
+    public Vector4 DDGIAtlasParams;     // x: irradiance bindless slot, y: visibility bindless slot, z: plugin flags, w: ready
     public Vector4 DDGIOriginAndCountZ; // xyz: probe origin, w: probeCountZ
     public Vector4 DDGIExtentAndFlags;  // x: extentX, y: extentY, z: raysPerProbe, w: maxProbesPerFrame
     public ulong DDGIProbePositions;
     public ulong DDGIGridToProbeIndex;
+    public ulong DDGIProbeWorldKeys;
+    public ulong DDGIWorldProbeHash;
+    public ulong DDGIVolumeState;
 }
 
 [StructLayout(LayoutKind.Sequential)]
