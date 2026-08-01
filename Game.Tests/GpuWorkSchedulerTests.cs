@@ -25,6 +25,36 @@ public sealed class GpuWorkSchedulerTests
     }
 
     [Fact]
+    public void ShadowBudget_CarriesUnusedWorkIntoNextFrame()
+    {
+        var scheduler = new GpuWorkScheduler();
+        scheduler.BeginFrame(1);
+        scheduler.BeginFrame(2);
+
+        Assert.Equal(
+            3,
+            scheduler.GetUnitAllowance(GpuWorkDomain.Shadows));
+        Assert.True(scheduler.TryAdmit(GpuWorkDomain.Shadows, 3));
+    }
+
+    [Fact]
+    public void ForcedShadowWork_BypassesUnitAndTimeLimits()
+    {
+        var scheduler = new GpuWorkScheduler();
+        scheduler.BeginFrame(1);
+
+        Assert.True(
+            scheduler.TryAdmit(
+                GpuWorkDomain.PunctualShadows,
+                72,
+                forced: true));
+        Assert.Equal(
+            72,
+            scheduler.GetSnapshots()[
+                (int)GpuWorkDomain.PunctualShadows].AdmittedUnits);
+    }
+
+    [Fact]
     public void ShadowAtlasBudgets_LimitPageCounts()
     {
         Assert.Equal(
@@ -198,6 +228,20 @@ public sealed class GpuWorkSchedulerTests
     }
 
     [Fact]
+    public void DirectionalShadowBatch_UsesDisjointIndirectCommandRegions()
+    {
+        Assert.Equal(
+            0ul,
+            DirectionalShadowPass.GetDrawCommandOffset(0, 100));
+        Assert.Equal(
+            1600ul,
+            DirectionalShadowPass.GetDrawCommandOffset(1, 100));
+        Assert.Equal(
+            4800ul,
+            DirectionalShadowPass.GetDrawCommandOffset(3, 100));
+    }
+
+    [Fact]
     public void BeginFrame_ResetsAdmissionCounters()
     {
         var scheduler = new GpuWorkScheduler();
@@ -210,6 +254,20 @@ public sealed class GpuWorkSchedulerTests
         GpuWorkBudgetSnapshot shadow = scheduler.GetSnapshots()[0];
         Assert.Equal(1, shadow.AdmittedUnits);
         Assert.Equal(0, shadow.DeferredUnits);
+    }
+
+    [Fact]
+    public void BeginFrame_BeforeExtensionWork_PreservesAdmissionDiagnostics()
+    {
+        var scheduler = new GpuWorkScheduler();
+
+        scheduler.BeginFrame(7);
+        Assert.True(scheduler.TryAdmit(GpuWorkDomain.Gi, 32));
+        scheduler.BeginFrame(7);
+
+        GpuWorkBudgetSnapshot gi =
+            scheduler.GetSnapshots()[(int)GpuWorkDomain.Gi];
+        Assert.Equal(32, gi.AdmittedUnits);
     }
 
     [Fact]
@@ -239,5 +297,27 @@ public sealed class GpuWorkSchedulerTests
         Assert.Equal(4, gi.AdmittedUnits);
         Assert.Equal(4092, gi.DeferredUnits);
         Assert.Equal(0.3, gi.EstimatedUnitMilliseconds, 6);
+    }
+
+    [Fact]
+    public void GiBudget_ScalesFromThirtyTwoToOneTwentyEightWithMeasuredCost()
+    {
+        var scheduler = new GpuWorkScheduler();
+        scheduler.BeginFrame(1);
+
+        Assert.Equal(
+            32,
+            scheduler.GetUnitAllowance(GpuWorkDomain.Gi));
+
+        for (int sample = 0; sample < 24; ++sample)
+            scheduler.RecordCompletedWork(
+                GpuWorkDomain.Gi,
+                0.32,
+                32);
+
+        Assert.Equal(
+            128,
+            scheduler.GetUnitAllowance(GpuWorkDomain.Gi));
+        Assert.True(scheduler.TryAdmit(GpuWorkDomain.Gi, 128));
     }
 }

@@ -20,6 +20,19 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 {
     private const int GpuFrameHistoryCapacity = 15;
 
+    private sealed record TimestampPoolSubmission(
+        RenderPlan Plan,
+        long FrameNumber,
+        bool[] SampledPasses,
+        bool ExpectsCompute);
+
+    private sealed record CompletedTimestampCapture(
+        RenderPlan Plan,
+        long FrameNumber,
+        double? FrameMilliseconds,
+        double?[] PassMilliseconds,
+        bool ExpectsCompute);
+
     private readonly RhiDevice _device;
     private CommandRecorder? _rec;
     private readonly RenderGraphContext _ctx = new();
@@ -29,9 +42,13 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     private ulong _graphicsCompletionFenceValue;
     private RenderPassTiming[] _lastPassTimings = Array.Empty<RenderPassTiming>();
     private readonly RhiTimestampQueryPool?[] _timestampPools = new RhiTimestampQueryPool?[3];
-    private readonly long[] _timestampPoolFrames = new long[3];
+    private readonly TimestampPoolSubmission?[] _timestampPoolSubmissions =
+        new TimestampPoolSubmission?[3];
     private readonly RhiTimestampQueryPool?[] _computeTimestampPools = new RhiTimestampQueryPool?[3];
-    private readonly long[] _computeTimestampPoolFrames = new long[3];
+    private readonly TimestampPoolSubmission?[] _computeTimestampPoolSubmissions =
+        new TimestampPoolSubmission?[3];
+    private readonly Dictionary<long, CompletedTimestampCapture> _completedGraphicsTimings = new();
+    private readonly Dictionary<long, CompletedTimestampCapture> _completedComputeTimings = new();
     private double?[] _lastGpuPassMilliseconds = Array.Empty<double?>();
     private readonly double[] _gpuFrameHistory =
         new double[GpuFrameHistoryCapacity];
@@ -45,6 +62,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     private int _nextTimestampPool;
     private int _nextComputeTimestampPool;
     private long _executionNumber;
+    private RenderPlan? _publishedTimingPlan;
 
     private RhiHeap? _transientHeap;
     private ulong _currentHeapSize;
@@ -117,7 +135,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     public void Execute(RenderPlan graph, RhiFence? waitFence = null, ulong waitValue = 0, RhiFence? signalFence = null, ulong signalValue = 0)
     {
         _ctx.FrameNumber = _executionNumber;
-        PollGpuTimings(graph.Passes.Length);
+        PollGpuTimings(graph);
         RhiTimestampQueryPool? timestampPool = AcquireTimestampPool(graph.Passes.Length);
         RhiTimestampQueryPool? computeTimestampPool =
             CanUseAsyncCompute(graph)
@@ -125,6 +143,8 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                 : null;
         bool recordingGpuTimestamps = timestampPool != null;
         bool recordingComputeGpuTimestamps = computeTimestampPool != null;
+        var sampledGraphicsPasses = new bool[graph.Passes.Length];
+        var sampledComputePasses = new bool[graph.Passes.Length];
         bool useAsyncCompute = CanUseAsyncCompute(graph);
         using var graphicsRecorder = new CommandRecorder(_device);
         using var computeRecorder = useAsyncCompute
@@ -186,15 +206,16 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                     onAsyncCompute
                         ? recordingComputeGpuTimestamps
                         : recordingGpuTimestamps;
+                bool passTimestampStarted = false;
                 if (capturePassGpuTiming)
                 {
-                    bool recorded = recorder.BeginTimestampScope(
+                    passTimestampStarted = recorder.BeginTimestampScope(
                         onAsyncCompute ? computeTimestampPool! : timestampPool!,
                         (uint)(i * 2));
                     if (onAsyncCompute)
-                        recordingComputeGpuTimestamps = recorded;
+                        recordingComputeGpuTimestamps = passTimestampStarted;
                     else
-                        recordingGpuTimestamps = recorded;
+                        recordingGpuTimestamps = passTimestampStarted;
                 }
                 if (barriers.Count > 0)
                 {
@@ -213,18 +234,21 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                     recorder.PipelineBarrier(nativeBarriers);
                 }
                 pass.Execute(this, _ctx);
-                if (capturePassGpuTiming &&
-                    (onAsyncCompute
-                        ? recordingComputeGpuTimestamps
-                        : recordingGpuTimestamps))
+                if (passTimestampStarted)
                 {
                     bool recorded = recorder.EndTimestampScope(
                         onAsyncCompute ? computeTimestampPool! : timestampPool!,
                         (uint)(i * 2 + 1));
                     if (onAsyncCompute)
+                    {
                         recordingComputeGpuTimestamps = recorded;
+                        sampledComputePasses[i] = recorded;
+                    }
                     else
+                    {
                         recordingGpuTimestamps = recorded;
+                        sampledGraphicsPasses[i] = recorded;
+                    }
                 }
                 timings[i] = new RenderPassTiming(
                     pass.Name,
@@ -236,6 +260,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 
             if (useAsyncCompute)
                 computeRecorder!.SignalFence(_asyncComputeFence, asyncFenceValue);
+            bool submittedComputeGpuTimestamps = false;
             if (useAsyncCompute &&
                 recordingComputeGpuTimestamps &&
                 computeRecorder!.ResolveTimestamps(
@@ -246,7 +271,15 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                     _computeTimestampPools,
                     computeTimestampPool);
                 if (submittedPool >= 0)
-                    _computeTimestampPoolFrames[submittedPool] = _executionNumber;
+                {
+                    _computeTimestampPoolSubmissions[submittedPool] =
+                        new TimestampPoolSubmission(
+                            graph,
+                            _executionNumber,
+                            sampledComputePasses,
+                            false);
+                    submittedComputeGpuTimestamps = true;
+                }
             }
             if (recordingGpuTimestamps &&
                 graphicsRecorder.ResolveTimestamps(
@@ -255,7 +288,14 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             {
                 int submittedPool = Array.IndexOf(_timestampPools, timestampPool);
                 if (submittedPool >= 0)
-                    _timestampPoolFrames[submittedPool] = _executionNumber;
+                {
+                    _timestampPoolSubmissions[submittedPool] =
+                        new TimestampPoolSubmission(
+                            graph,
+                            _executionNumber,
+                            sampledGraphicsPasses,
+                            submittedComputeGpuTimestamps);
+                }
             }
             if (signalFence != null && signalValue > 0)
                 graphicsRecorder.SignalFence(signalFence, signalValue);
@@ -380,151 +420,206 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         }
     }
 
-    private void PollGpuTimings(int passCount)
+    private void PollGpuTimings(RenderPlan graph)
     {
-        if (!EnableGpuTiming || _timestampPassCount != passCount)
+        if (!EnableGpuTiming || _timestampPassCount != graph.Passes.Length)
             return;
 
-        long newestFrame = -1;
-        double? newestFrameMilliseconds = null;
-        double?[]? newestDurations = null;
-        for (int poolIndex = 0; poolIndex < _timestampPools.Length; ++poolIndex)
+        if (!ReferenceEquals(_publishedTimingPlan, graph))
+            ResetPublishedGpuTimings(graph);
+
+        PollTimestampPools(
+            _timestampPools,
+            _timestampPoolSubmissions,
+            _completedGraphicsTimings);
+        PollTimestampPools(
+            _computeTimestampPools,
+            _computeTimestampPoolSubmissions,
+            _completedComputeTimings);
+
+        CompletedTimestampCapture? newestGraphics = null;
+        CompletedTimestampCapture? matchingCompute = null;
+        foreach (CompletedTimestampCapture graphics in
+                 _completedGraphicsTimings.Values)
         {
-            RhiTimestampQueryPool? pool = _timestampPools[poolIndex];
+            if (!ReferenceEquals(graphics.Plan, graph) ||
+                graphics.FrameNumber <= _lastGpuTimingFrameNumber)
+            {
+                continue;
+            }
+
+            CompletedTimestampCapture? compute = null;
+            if (graphics.ExpectsCompute &&
+                (!_completedComputeTimings.TryGetValue(
+                    graphics.FrameNumber,
+                    out compute) ||
+                 !ReferenceEquals(compute.Plan, graph)))
+            {
+                continue;
+            }
+
+            if (newestGraphics == null ||
+                graphics.FrameNumber > newestGraphics.FrameNumber)
+            {
+                newestGraphics = graphics;
+                matchingCompute = compute;
+            }
+        }
+
+        if (newestGraphics == null)
+        {
+            PruneCompletedTimingCaptures(graph);
+            return;
+        }
+
+        double passMaxMilliseconds = PublishPassTimings(
+            newestGraphics.PassMilliseconds,
+            matchingCompute?.PassMilliseconds,
+            _lastGpuPassMilliseconds);
+
+        _lastGpuTimingFrameNumber = newestGraphics.FrameNumber;
+        _lastRawGpuFrameMilliseconds = newestGraphics.FrameMilliseconds;
+        _lastComputeRawFrameMilliseconds = matchingCompute?.FrameMilliseconds;
+
+        double graphicsPathMilliseconds =
+            newestGraphics.FrameMilliseconds ?? passMaxMilliseconds;
+        double computePathMilliseconds =
+            matchingCompute?.FrameMilliseconds ?? 0.0;
+        double frameMilliseconds = Math.Max(
+            graphicsPathMilliseconds,
+            computePathMilliseconds);
+        if (frameMilliseconds <= 0.0)
+            frameMilliseconds = passMaxMilliseconds;
+        if (frameMilliseconds > 0.0)
+            _lastGpuFrameMilliseconds = RecordGpuFrameDuration(frameMilliseconds);
+
+        PruneCompletedTimingCaptures(graph);
+    }
+
+    private static void PollTimestampPools(
+        RhiTimestampQueryPool?[] pools,
+        TimestampPoolSubmission?[] submissions,
+        Dictionary<long, CompletedTimestampCapture> completedCaptures)
+    {
+        for (int poolIndex = 0; poolIndex < pools.Length; ++poolIndex)
+        {
+            RhiTimestampQueryPool? pool = pools[poolIndex];
             if (pool is not { HasPendingResults: true })
                 continue;
 
-            double? poolFrameMilliseconds =
-                pool.TryReadFrameDuration(
-                    out ulong frameDurationNanoseconds)
-                    ? frameDurationNanoseconds / 1_000_000.0
-                    : null;
+            TimestampPoolSubmission? submission = submissions[poolIndex];
+            if (submission == null)
+                continue;
 
-            var durationsNanoseconds = new ulong[passCount];
-            if (!pool.TryReadDurations(durationsNanoseconds) ||
-                _timestampPoolFrames[poolIndex] <= newestFrame)
+            double? frameMilliseconds =
+                pool.TryReadFrameDuration(out ulong frameNanoseconds)
+                    ? frameNanoseconds / 1_000_000.0
+                    : null;
+            var durationsNanoseconds =
+                new ulong[submission.SampledPasses.Length];
+            if (!pool.TryReadDurations(durationsNanoseconds))
+            {
+                if (!pool.HasPendingResults)
+                    submissions[poolIndex] = null;
+                continue;
+            }
+
+            var passMilliseconds =
+                new double?[submission.SampledPasses.Length];
+            for (int passIndex = 0;
+                 passIndex < passMilliseconds.Length;
+                 ++passIndex)
+            {
+                ulong duration = durationsNanoseconds[passIndex];
+                if (submission.SampledPasses[passIndex] &&
+                    duration != ulong.MaxValue)
+                {
+                    passMilliseconds[passIndex] =
+                        duration / 1_000_000.0;
+                }
+            }
+
+            completedCaptures[submission.FrameNumber] =
+                new CompletedTimestampCapture(
+                    submission.Plan,
+                    submission.FrameNumber,
+                    frameMilliseconds,
+                    passMilliseconds,
+                    submission.ExpectsCompute);
+            submissions[poolIndex] = null;
+        }
+    }
+
+    private static double PublishPassTimings(
+        double?[] graphics,
+        double?[]? compute,
+        double?[] destination)
+    {
+        Array.Clear(destination);
+        double maximumMilliseconds = MergePassTimings(graphics, destination);
+        if (compute != null)
+        {
+            maximumMilliseconds = Math.Max(
+                maximumMilliseconds,
+                MergePassTimings(compute, destination));
+        }
+        return maximumMilliseconds;
+    }
+
+    private static double MergePassTimings(
+        double?[] source,
+        double?[] destination)
+    {
+        double maximumMilliseconds = 0.0;
+        int count = Math.Min(source.Length, destination.Length);
+        for (int passIndex = 0; passIndex < count; ++passIndex)
+        {
+            if (source[passIndex] is not double milliseconds ||
+                !double.IsFinite(milliseconds))
             {
                 continue;
             }
 
-            newestFrame = _timestampPoolFrames[poolIndex];
-            newestFrameMilliseconds = poolFrameMilliseconds;
-            newestDurations = new double?[passCount];
-            for (int passIndex = 0; passIndex < passCount; ++passIndex)
-            {
-                ulong duration = durationsNanoseconds[passIndex];
-                newestDurations[passIndex] = duration == ulong.MaxValue
-                    ? null
-                    : duration / 1_000_000.0;
-            }
+            destination[passIndex] = milliseconds;
+            maximumMilliseconds = Math.Max(maximumMilliseconds, milliseconds);
+        }
+        return maximumMilliseconds;
+    }
+
+    private void ResetPublishedGpuTimings(RenderPlan graph)
+    {
+        _publishedTimingPlan = graph;
+        Array.Clear(_lastGpuPassMilliseconds);
+        _lastRawGpuFrameMilliseconds = null;
+        _lastComputeRawFrameMilliseconds = null;
+        _lastGpuFrameMilliseconds = null;
+        _lastGpuTimingFrameNumber = -1;
+        Array.Clear(_gpuFrameHistory);
+        _gpuFrameHistoryCount = 0;
+        _gpuFrameHistoryIndex = 0;
+        PruneCompletedTimingCaptures(graph);
+    }
+
+    private void PruneCompletedTimingCaptures(RenderPlan graph)
+    {
+        foreach (long frameNumber in _completedGraphicsTimings
+                     .Where(entry =>
+                         !ReferenceEquals(entry.Value.Plan, graph) ||
+                         entry.Key <= _lastGpuTimingFrameNumber)
+                     .Select(entry => entry.Key)
+                     .ToArray())
+        {
+            _completedGraphicsTimings.Remove(frameNumber);
         }
 
-        // Compute pool runs asynchronously on its own queue/command
-        // buffer — its per-slot durations must be merged into
-        // _lastGpuPassMilliseconds WITHOUT being clobbered by the
-        // graphics poll that follows.
-        double?[]? computeDurations = PollComputeGpuTimings(passCount);
-
-        if (newestDurations != null)
+        foreach (long frameNumber in _completedComputeTimings
+                     .Where(entry =>
+                         !ReferenceEquals(entry.Value.Plan, graph) ||
+                         entry.Key <= _lastGpuTimingFrameNumber)
+                     .Select(entry => entry.Key)
+                     .ToArray())
         {
-            // Per-pass timings remain informational. Frame-time
-            // accounting comes from the pool-resolved
-            // MTLCounterSetTimestamp duration when the driver
-            // supports it (already captured into
-            // newestFrameMilliseconds); concurrent passes do NOT
-            // sum-inflate.
-            //
-            // Only overwrite slots where the graphics pool produced
-            // a valid (non-null) duration. Compute-pool slots are
-            // null in the graphics pool (BeginTimestampScope was
-            // never recorded there for compute-queue passes), so
-            // skipping nulls preserves compute-pool data instead of
-            // stomping it with stale-null graphics-pool readings.
-            double passMaxMs = 0.0;
-            for (int passIndex = 0;
-                 passIndex < newestDurations.Length;
-                 ++passIndex)
-            {
-                if (newestDurations[passIndex] is double duration &&
-                    double.IsFinite(duration) &&
-                    duration > passMaxMs)
-                {
-                    passMaxMs = duration;
-                }
-                if (newestDurations[passIndex] is double graphics &&
-                    _lastGpuPassMilliseconds.Length > passIndex)
-                {
-                    _lastGpuPassMilliseconds[passIndex] = graphics;
-                }
-            }
-
-            // Fold compute-queue per-pass durations into the
-            // published slots for the same logic: only overwrite
-            // where the compute pool produced a real value.
-            if (computeDurations != null)
-            {
-                for (int passIndex = 0;
-                     passIndex < computeDurations.Length &&
-                     passIndex < _lastGpuPassMilliseconds.Length;
-                     ++passIndex)
-                {
-                    if (computeDurations[passIndex] is double compute &&
-                        double.IsFinite(compute))
-                    {
-                        _lastGpuPassMilliseconds[passIndex] = compute;
-                        if (compute > passMaxMs)
-                            passMaxMs = compute;
-                    }
-                }
-            }
-
-            _lastGpuTimingFrameNumber = newestFrame;
-            _lastRawGpuFrameMilliseconds =
-                newestFrameMilliseconds;
-
-            // GPU frame wall time = max(graphics-queue, compute-queue,
-            // per-pass critical path). When async compute is on, the
-            // two queues run concurrently so the frame time isn't their
-            // sum — it's the longest of them. Both queue-actual frame
-            // durations are read from MTLCounterSetTimestamp when the
-            // driver supports it; fall back to SUM-of-per-pass for the
-            // appropriate queue (not max: serial compute would otherwise
-            // under-report; serial graphics likewise).
-            double graphicsPathMs =
-                newestFrameMilliseconds ?? passMaxMs;
-            double computePathMs =
-                _lastComputeRawFrameMilliseconds ?? 0.0;
-            double frameMs = Math.Max(graphicsPathMs, computePathMs);
-            if (frameMs <= 0.0)
-                frameMs = passMaxMs;
-            if (frameMs > 0.0)
-            {
-                _lastGpuFrameMilliseconds =
-                    RecordGpuFrameDuration(frameMs);
-            }
-            return;
-        }
-
-        // No graphics pool produced a fresh read this frame. Reset the
-        // per-slot timing vector so the next Execute() doesn't publish
-        // stale-uniform values from a previous command buffer whose
-        // individual pass deltas have since escaped the pool's resolved
-        // buffer. Without this, the render-graph explorer can show
-        // identical GPU costs across every pass when only some pools
-        // produced fresh data — the un-touched slots would otherwise
-        // carry forward whatever the prior frame happened to embed.
-        if (_lastGpuTimingFrameNumber >= 0 &&
-            _lastRawGpuFrameMilliseconds.HasValue)
-        {
-            for (int passIndex = 0;
-                 passIndex < _lastGpuPassMilliseconds.Length;
-                 ++passIndex)
-            {
-                _lastGpuPassMilliseconds[passIndex] = null;
-            }
-            _lastGpuTimingFrameNumber = -1;
-            _lastRawGpuFrameMilliseconds = null;
-            _lastGpuFrameMilliseconds = null;
+            _completedComputeTimings.Remove(frameNumber);
         }
     }
 
@@ -557,85 +652,6 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         return sorted[(_gpuFrameHistoryCount - 1) / 2];
     }
 
-    /// <summary>
-    /// Reads the most-recently-submitted compute-queue timestamp pool
-    /// and returns its per-pass durations. The returned array is
-    /// indexed parallel to <c>graph.Passes</c>; entries are <c>null</c>
-    /// wherever the compute pool has no recorded sample for that
-    /// slot (i.e. graphics-queue passes whose BeginTimestampScope was
-    /// never invoked on the compute recorder). Callers must fold the
-    /// returned array into <c>_lastGpuPassMilliseconds</c> instead of
-    /// overwriting it, otherwise per-pass GPU durations from the
-    /// compute pipe will silently cancel out the previously-published
-    /// graphics-queue values.
-    /// </summary>
-    private double?[]? PollComputeGpuTimings(int passCount)
-    {
-        if (!EnableGpuTiming || _timestampPassCount != passCount)
-            return null;
-
-        long newestFrame = -1;
-        double? newestFrameMilliseconds = null;
-        double?[]? newestDurations = null;
-        for (int poolIndex = 0;
-             poolIndex < _computeTimestampPools.Length;
-             ++poolIndex)
-        {
-            RhiTimestampQueryPool? pool = _computeTimestampPools[poolIndex];
-            if (pool is not { HasPendingResults: true })
-                continue;
-
-            double? poolFrameMilliseconds =
-                pool.TryReadFrameDuration(
-                    out ulong frameDurationNanoseconds)
-                    ? frameDurationNanoseconds / 1_000_000.0
-                    : null;
-
-            var durationsNanoseconds = new ulong[passCount];
-            if (!pool.TryReadDurations(durationsNanoseconds) ||
-                _computeTimestampPoolFrames[poolIndex] <= newestFrame)
-            {
-                continue;
-            }
-
-            newestFrame = _computeTimestampPoolFrames[poolIndex];
-            newestFrameMilliseconds = poolFrameMilliseconds;
-            newestDurations = new double?[passCount];
-            for (int passIndex = 0; passIndex < passCount; ++passIndex)
-            {
-                ulong duration = durationsNanoseconds[passIndex];
-                newestDurations[passIndex] = duration == ulong.MaxValue
-                    ? null
-                    : duration / 1_000_000.0;
-            }
-        }
-
-        // MARK: Without an MTLCounterSetTimestamp duration, fall back to
-        // SUM-of-per-pass compute durations (not max). Async compute
-        // submits passes serially on the same queue command buffer, so
-        // queue wall time is the sum — taking max under-reports when
-        // two-or-more compute passes share the queue.
-        if (newestDurations != null && !newestFrameMilliseconds.HasValue)
-        {
-            double computeSumMs = 0.0;
-            for (int passIndex = 0;
-                 passIndex < newestDurations.Length;
-                 ++passIndex)
-            {
-                if (newestDurations[passIndex] is double dur &&
-                    double.IsFinite(dur))
-                {
-                    computeSumMs += dur;
-                }
-            }
-            if (computeSumMs > 0.0)
-                newestFrameMilliseconds = computeSumMs;
-        }
-
-        _lastComputeRawFrameMilliseconds = newestFrameMilliseconds;
-        return newestDurations;
-    }
-
     private void DisposeTimestampPools()
     {
         foreach (RhiTimestampQueryPool? pool in _timestampPools)
@@ -643,16 +659,20 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         foreach (RhiTimestampQueryPool? pool in _computeTimestampPools)
             pool?.Dispose();
         Array.Clear(_timestampPools);
-        Array.Clear(_timestampPoolFrames);
+        Array.Clear(_timestampPoolSubmissions);
         Array.Clear(_computeTimestampPools);
-        Array.Clear(_computeTimestampPoolFrames);
+        Array.Clear(_computeTimestampPoolSubmissions);
+        _completedGraphicsTimings.Clear();
+        _completedComputeTimings.Clear();
         _timestampPassCount = 0;
         Array.Clear(_gpuFrameHistory);
         _gpuFrameHistoryCount = 0;
-        _gpuFrameHistoryIndex = 0;            _lastRawGpuFrameMilliseconds = null;
-            _lastComputeRawFrameMilliseconds = null;
-            _lastGpuFrameMilliseconds = null;
-            _lastGpuTimingFrameNumber = -1;
+        _gpuFrameHistoryIndex = 0;
+        _lastRawGpuFrameMilliseconds = null;
+        _lastComputeRawFrameMilliseconds = null;
+        _lastGpuFrameMilliseconds = null;
+        _lastGpuTimingFrameNumber = -1;
+        _publishedTimingPlan = null;
     }
 
     private void AllocateTransientResources(RenderPlan graph)

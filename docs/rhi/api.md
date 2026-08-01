@@ -35,6 +35,14 @@ ARC `__strong` ivars. `rhi_destroy_*` calls `delete` on the impl, which
 releases the underlying Objective-C objects through ARC. The C# side keeps
 matching `using` blocks so handles are released deterministically.
 
+`rhi_get_buffer_device_address(NULL)` returns zero at both the dispatcher and
+backend boundary. Managed buffer address, upload, and readback operations
+reject a released handle with `ObjectDisposedException` before entering native
+code. Buffer creation also rejects a successful status paired with a null
+handle. These checks allow the renderer frame boundary to report a stale
+resource lifetime error instead of terminating the process with a native null
+dereference.
+
 Textures created with `RHI_TEXTURE_EXTERNAL_IMAGE` add one more lifetime edge:
 the texture may export a platform-owned external image handle for compositor
 interop. On macOS that handle is an `IOSurfaceRef`. The caller keeps owning the
@@ -204,6 +212,11 @@ State tracking happens in C# (the render graph compiler). The C side accepts
 preserves the ABI slot for Vulkan integration without changing the rendered
 output on Metal.
 
+`CommandRecorder.UseBuffer` declares residency for resources accessed through
+bindings or GPU virtual addresses. Its `usage` value contains read (`1`), write
+(`2`), or both (`3`); it is not a shader binding index. The managed RHI rejects
+zero and unknown bits before backend command encoding.
+
 ## Phase 2 entry point
 
 The Avalonia viewport panel calls:
@@ -231,6 +244,11 @@ creating backend resources. `ViewportProjectionMode` supports Perspective and
 Orthographic; `ViewportDebugView` selects Lit, Wireframe, Depth, normal,
 material-channel, lighting, position, emissive, UV, tangent, and bitangent
 visualizations.
+
+`IGameLoop.HasPendingRenderWork` reports whether renderer-owned incremental
+work needs another viewport frame. Low-power editor presentation consults it
+after normal input bursts, allowing workloads such as a DDGI scene bake to
+finish without forcing the viewport into permanent realtime mode.
 
 Projection changes animate through a shared camera projection blend. The blend
 is carried in camera frame data and used by raster shaders, path-traced primary

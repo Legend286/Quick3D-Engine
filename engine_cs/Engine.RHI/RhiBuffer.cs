@@ -11,7 +11,22 @@ public sealed class RhiBuffer : IDisposable
 {
     public IntPtr Handle { get; private set; }
     public ulong Size { get; }
-    public ulong DeviceAddress => RhiNative.RhiGetBufferDeviceAddress(Handle);
+
+    /// <summary>Gets whether the native buffer has been released.</summary>
+    public bool IsDisposed => Handle == IntPtr.Zero;
+
+    /// <summary>Gets the GPU virtual address of a live buffer.</summary>
+    /// <exception cref="ObjectDisposedException">
+    /// Thrown when the buffer has already been released.
+    /// </exception>
+    public ulong DeviceAddress
+    {
+        get
+        {
+            IntPtr handle = GetLiveHandle();
+            return RhiNative.RhiGetBufferDeviceAddress(handle);
+        }
+    }
     private readonly bool _owns;
     private readonly long _allocationId;
 
@@ -43,7 +58,11 @@ public sealed class RhiBuffer : IDisposable
             Usage = usage,
         };
         int rc = RhiNative.RhiCreateBuffer(device.Handle, in desc, out IntPtr buf);
-        if (rc != 0) throw new InvalidOperationException($"rhi_create_buffer rc={rc}");
+        if (rc != 0 || buf == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                $"rhi_create_buffer rc={rc} handle=0x{buf.ToInt64():X}");
+        }
         return new RhiBuffer(buf, size);
     }
 
@@ -54,8 +73,10 @@ public sealed class RhiBuffer : IDisposable
         {
             fixed (T* p = data)
             {
-                int rc = RhiNative.RhiBufferUpload(Handle, (IntPtr)p,
-                                                    (ulong)(data.Length * sizeof(T)));
+                int rc = RhiNative.RhiBufferUpload(
+                    GetLiveHandle(),
+                    (IntPtr)p,
+                    (ulong)(data.Length * sizeof(T)));
                 if (rc != 0) throw new InvalidOperationException($"rhi_buffer_upload rc={rc}");
             }
         }
@@ -64,8 +85,38 @@ public sealed class RhiBuffer : IDisposable
     public void Upload(IntPtr data, ulong sizeBytes)
     {
         if (sizeBytes == 0) return;
-        int rc = RhiNative.RhiBufferUpload(Handle, data, sizeBytes);
+        int rc = RhiNative.RhiBufferUpload(
+            GetLiveHandle(),
+            data,
+            sizeBytes);
         if (rc != 0) throw new InvalidOperationException($"rhi_buffer_upload rc={rc}");
+    }
+
+    /// <summary>
+    /// Reads a synchronous byte range from a GPU buffer.
+    /// </summary>
+    public byte[] Readback(ulong offsetBytes, ulong sizeBytes)
+    {
+        if (sizeBytes == 0) return Array.Empty<byte>();
+        if (sizeBytes > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(sizeBytes));
+
+        byte[] result = new byte[(int)sizeBytes];
+        unsafe
+        {
+            fixed (byte* p = result)
+            {
+                int rc = RhiNative.RhiBufferReadback(
+                    GetLiveHandle(),
+                    offsetBytes,
+                    (IntPtr)p,
+                    sizeBytes);
+                if (rc != 0)
+                    throw new InvalidOperationException(
+                        $"rhi_buffer_readback rc={rc}");
+            }
+        }
+        return result;
     }
 
     /// <summary>
@@ -93,4 +144,12 @@ public sealed class RhiBuffer : IDisposable
     /// thread still drops the native MTLBuffer before GC reclaims. Targets
     /// the common LLM mistake of creating Rhi* without pairing dispose.</summary>
     ~RhiBuffer() => Dispose();
+
+    private IntPtr GetLiveHandle()
+    {
+        IntPtr handle = Handle;
+        if (handle == IntPtr.Zero)
+            throw new ObjectDisposedException(nameof(RhiBuffer));
+        return handle;
+    }
 }

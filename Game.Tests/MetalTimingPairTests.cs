@@ -19,6 +19,8 @@
 // so a future edit cannot silently drop one half of the pair.
 
 using Engine.RHI;
+using Engine.RenderGraph;
+using System.Reflection;
 using Xunit;
 
 namespace Game.Tests;
@@ -119,6 +121,26 @@ public sealed class MetalTimingPairTests
         Assert.True(lastFrame[5] is 0.07);
         Assert.Null(lastFrame[6]);
         Assert.Null(lastFrame[7]);
+    }
+
+    [Fact]
+    public void PublishPassTimings_ClearsUnsampledPassSlots()
+    {
+        MethodInfo publish = typeof(RenderGraphExecutor).GetMethod(
+            "PublishPassTimings",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        var graphics = new double?[] { 0.42, null, 1.10, null };
+        var compute = new double?[] { null, 0.25, null, null };
+        var destination = new double?[] { 9.0, 9.0, 9.0, 9.0 };
+
+        publish.Invoke(
+            null,
+            new object?[] { graphics, compute, destination });
+
+        Assert.Equal(0.42, destination[0]);
+        Assert.Equal(0.25, destination[1]);
+        Assert.Equal(1.10, destination[2]);
+        Assert.Null(destination[3]);
     }
 
     private sealed class FakePool

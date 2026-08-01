@@ -345,18 +345,15 @@ static void engine_log_sink_ui_ring(const EngineLogRecord* rec, void* userdata) 
     (void)userdata;
     pthread_mutex_lock(&g_state.ui_ring_lock);
     uint32_t idx = g_state.ui_ring_head;
-    
-    // Free the old message string if we are wrapping around the ring capacity
-    if (g_state.ui_ring_count >= ENGINE_LOG_DEFAULT_RING_CAP) {
-        if (g_state.ui_ring[idx].msg) {
-            free((void*)g_state.ui_ring[idx].msg);
-            g_state.ui_ring[idx].msg = NULL;
-        }
+
+    if (g_state.ui_ring[idx].msg) {
+        free((void*)g_state.ui_ring[idx].msg);
+        g_state.ui_ring[idx].msg = NULL;
     }
-    
+
     g_state.ui_ring[idx] = *rec;
     g_state.ui_ring[idx].msg = rec->msg ? strdup(rec->msg) : NULL;
-    
+
     g_state.ui_ring_head = (idx + 1) % ENGINE_LOG_DEFAULT_RING_CAP;
     if (g_state.ui_ring_count < ENGINE_LOG_DEFAULT_RING_CAP) ++g_state.ui_ring_count;
     pthread_mutex_unlock(&g_state.ui_ring_lock);
@@ -501,13 +498,14 @@ void engine_log_shutdown(void) {
     atomic_store_explicit(&g_state.pump_should_stop, 1, memory_order_release);
     pthread_join(g_state.pump_thread, NULL);
 
-    /* Free ui_ring malloc'd strings. */
-    for (uint32_t i = 0; i < g_state.ui_ring_count; ++i) {
+    for (uint32_t i = 0; i < ENGINE_LOG_DEFAULT_RING_CAP; ++i) {
         if (g_state.ui_ring[i].msg) {
             free((void*)g_state.ui_ring[i].msg);
             g_state.ui_ring[i].msg = NULL;
         }
     }
+    g_state.ui_ring_head = 0;
+    g_state.ui_ring_count = 0;
 
     pthread_mutex_lock(&g_state.sinks_lock);
     EngineLogSinkEntry* e = g_state.sinks_head;
@@ -633,6 +631,7 @@ int32_t engine_log_drain(EngineLogRecord* out_records, int32_t max_records) {
         /* Drain oldest-first. Find oldest = head - count. */
         uint32_t oldest = (g_state.ui_ring_head + ENGINE_LOG_DEFAULT_RING_CAP - g_state.ui_ring_count) % ENGINE_LOG_DEFAULT_RING_CAP;
         out_records[drained] = g_state.ui_ring[oldest];
+        memset(&g_state.ui_ring[oldest], 0, sizeof(g_state.ui_ring[oldest]));
         --g_state.ui_ring_count;
         ++drained;
     }

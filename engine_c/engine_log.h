@@ -43,13 +43,10 @@ typedef enum EngineLogLevel {
 /**
  * One log record handed out via engine_log_drain().
  *
- * Lifetime contract:
- *   - `file` and `msg` point into fixed-size ring slots inside the log system.
- *   - They are valid until the next call to engine_log_emit() that wraps
- *     the same slot index.
- *   - Consumers MUST copy out before that wrap, typically immediately on drain.
- *
- * Records are POD: no destructor, no allocator, no cross-thread pointers.
+ * Lifetime contract depends on the delivery API. Sink callbacks borrow all
+ * pointers for the callback duration. engine_log_drain() transfers ownership
+ * of `msg` to the caller while the other pointers remain borrowed; see the
+ * drain contract below.
  */
 typedef struct EngineLogRecord
 {
@@ -158,11 +155,13 @@ ENGINE_API void    engine_log_emit(int32_t level,
  * yet observed by this drain call. Returns the number of records written
  * into out_records (0..max_records).
  *
- * Records are sink-stage pins; their `msg` and `file` pointers are valid
- * until the next internal ring slot wrap. C# should copy the bytes into a
- * managed buffer immediately on drain.
+ * A successful drain transfers ownership of each record's `msg` allocation
+ * to the caller. Call engine_log_free_record() exactly once for every returned
+ * record after copying its fields. Other string pointers remain borrowed and
+ * should be copied immediately.
  */
 ENGINE_API int32_t engine_log_drain(EngineLogRecord* out_records, int32_t max_records);
+/** Release the message allocation transferred by engine_log_drain(). */
 ENGINE_API void    engine_log_free_record(EngineLogRecord* rec);
 
 /**

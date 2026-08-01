@@ -15,11 +15,20 @@ public enum GpuWorkDomain
     PunctualShadows,
     BackgroundCompute,
     /// <summary>Dynamic Diffuse Global Illumination — probe
-    /// gather / SH2 projection / atlas update. Hard 2.0 ms ceiling
-    /// per frame; per-probe ray count + camera-first priority
-    /// rotate work across frames. See <c>docs/renderer/ddgi.md</c>.</summary>
+    /// gather / SH projection / atlas update. Uses a measured 4 ms
+    /// budget with a 128-probe hard ceiling.</summary>
     Gi,
     Count,
+}
+
+/// <summary>Provides frame-indexed completed unit counts for GPU timing.</summary>
+public interface IGpuWorkTimingSource
+{
+    /// <summary>Gets the scheduler domain measured by this pass.</summary>
+    GpuWorkDomain WorkDomain { get; }
+
+    /// <summary>Gets the units submitted in a previously captured frame.</summary>
+    bool TryGetSubmittedUnitCount(long frameNumber, out int unitCount);
 }
 
 public readonly record struct GpuWorkBudgetSnapshot(
@@ -51,6 +60,10 @@ public sealed class GpuWorkScheduler
         public double BudgetMilliseconds;
         public double EstimatedUnitMilliseconds;
         public int MaximumUnits;
+        public int BurstMaximumUnits;
+        public double CarryLimitMilliseconds;
+        public double CarryMilliseconds;
+        public double AvailableMilliseconds;
         public int AdmittedUnits;
         public int DeferredUnits;
         public long TotalAdmittedUnits;
@@ -66,6 +79,8 @@ public sealed class GpuWorkScheduler
             BudgetMilliseconds = 2.0,
             EstimatedUnitMilliseconds = 1.0,
             MaximumUnits = 1,
+            BurstMaximumUnits = 4,
+            CarryLimitMilliseconds = 6.0,
         },
         new()
         {
@@ -73,6 +88,8 @@ public sealed class GpuWorkScheduler
             BudgetMilliseconds = 6.0,
             EstimatedUnitMilliseconds = 0.25,
             MaximumUnits = 24,
+            BurstMaximumUnits = 96,
+            CarryLimitMilliseconds = 12.0,
         },
         new()
         {
@@ -80,22 +97,15 @@ public sealed class GpuWorkScheduler
             BudgetMilliseconds = 1.5,
             EstimatedUnitMilliseconds = 0.25,
             MaximumUnits = 4,
+            BurstMaximumUnits = 4,
         },
-        // DDGI per-frame ceiling — keeps the probe update pass under
-        // 2 ms. Per-probe cost is tracked via RecordCompletedWork so
-        // the scheduler can clamp admission if hardware RT costs
-        // exceed the budget under heavier SH projection loads.
-        // MaximumUnits = 8 matches the time-driven cap
-        // (8 admits × 0.25 ms = 2.0 ms ceiling); raise the
-        // MaximumUnits ONLY in tandem with BudgetMilliseconds so the
-        // TryAdmit time-floor remains consistent. See
-        // docs/renderer/ddgi.md.
         new()
         {
             Name = "Global Illumination",
-            BudgetMilliseconds = 2.0,
-            EstimatedUnitMilliseconds = 0.25,
-            MaximumUnits = 8,
+            BudgetMilliseconds = 4.0,
+            EstimatedUnitMilliseconds = 0.125,
+            MaximumUnits = 128,
+            BurstMaximumUnits = 128,
         },
     };
 
@@ -108,13 +118,24 @@ public sealed class GpuWorkScheduler
         if (_frameNumber == frameNumber)
             return;
 
-        _frameNumber = frameNumber;
         foreach (DomainState domain in _domains)
         {
+            if (_frameNumber >= 0 && domain.CarryLimitMilliseconds > 0.0)
+            {
+                domain.CarryMilliseconds = Math.Min(
+                    Math.Max(
+                        domain.AvailableMilliseconds -
+                            domain.AdmittedMilliseconds,
+                        0.0),
+                    domain.CarryLimitMilliseconds);
+            }
+            domain.AvailableMilliseconds =
+                domain.BudgetMilliseconds + domain.CarryMilliseconds;
             domain.AdmittedUnits = 0;
             domain.DeferredUnits = 0;
             domain.AdmittedMilliseconds = 0.0;
         }
+        _frameNumber = frameNumber;
     }
 
     public bool TryAdmit(GpuWorkDomain domain, bool forced = false)
@@ -129,14 +150,15 @@ public sealed class GpuWorkScheduler
             return true;
 
         DomainState state = _domains[(int)domain];
+        int frameMaximumUnits = GetFrameMaximumUnits(state);
         bool withinUnitLimit =
-            state.AdmittedUnits + unitCount <= state.MaximumUnits;
+            state.AdmittedUnits + unitCount <= frameMaximumUnits;
         bool withinTimeLimit =
             state.AdmittedUnits == 0 ||
             state.AdmittedMilliseconds +
                 state.EstimatedUnitMilliseconds * unitCount <=
-                    state.BudgetMilliseconds;
-        if (!withinUnitLimit || (!forced && !withinTimeLimit))
+                    GetAvailableMilliseconds(state);
+        if (!forced && (!withinUnitLimit || !withinTimeLimit))
         {
             state.DeferredUnits += unitCount;
             state.TotalDeferredUnits += unitCount;
@@ -156,12 +178,12 @@ public sealed class GpuWorkScheduler
     {
         DomainState state = _domains[(int)domain];
         int timeLimitedUnits = (int)Math.Floor(
-            state.BudgetMilliseconds /
+            GetAvailableMilliseconds(state) /
             Math.Max(state.EstimatedUnitMilliseconds, 0.001));
         return Math.Clamp(
             Math.Max(timeLimitedUnits, minimumAtomicUnits),
             minimumAtomicUnits,
-            state.MaximumUnits);
+            GetFrameMaximumUnits(state));
     }
 
     public void RecordFrameGpuTime(double milliseconds)
@@ -253,7 +275,7 @@ public sealed class GpuWorkScheduler
                 state.Name,
                 state.BudgetMilliseconds,
                 state.EstimatedUnitMilliseconds,
-                state.MaximumUnits,
+                GetFrameMaximumUnits(state),
                 state.AdmittedUnits,
                 state.DeferredUnits,
                 state.TotalAdmittedUnits,
@@ -261,4 +283,20 @@ public sealed class GpuWorkScheduler
         }
         return snapshots;
     }
+
+    private static int GetFrameMaximumUnits(DomainState state)
+    {
+        int carryUnits = (int)Math.Floor(
+            state.CarryMilliseconds /
+            Math.Max(state.EstimatedUnitMilliseconds, 0.001));
+        return Math.Clamp(
+            state.MaximumUnits + carryUnits,
+            state.MaximumUnits,
+            Math.Max(state.BurstMaximumUnits, state.MaximumUnits));
+    }
+
+    private static double GetAvailableMilliseconds(DomainState state)
+        => state.AvailableMilliseconds > 0.0
+            ? state.AvailableMilliseconds
+            : state.BudgetMilliseconds + state.CarryMilliseconds;
 }

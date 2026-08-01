@@ -303,8 +303,25 @@ public sealed class CommandRecorder : IDisposable
     public void BindSampler(uint slot, RhiSampler samp)
         => RhiNative.RhiCmdBindSampler(CurrentEncoder, slot, samp.Handle);
 
-    public void UseBuffer(RhiBuffer buf, uint usage = 1 /* Read */)
-        => RhiNative.RhiCmdUseBuffer(CurrentEncoder, buf.Handle, usage);
+    /// <summary>Declares buffer residency for the active encoder.</summary>
+    /// <param name="buf">Buffer accessed through bindings or a GPU address.</param>
+    /// <param name="usage">Read bit 1, write bit 2, or both.</param>
+    public void UseBuffer(RhiBuffer buf, uint usage = 1)
+    {
+        ArgumentNullException.ThrowIfNull(buf);
+        if (CurrentEncoder == IntPtr.Zero)
+            throw new InvalidOperationException("Must be in a pass");
+        if (buf.Handle == IntPtr.Zero)
+            throw new ObjectDisposedException(nameof(buf));
+        if (usage == 0 || (usage & ~3u) != 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(usage),
+                usage,
+                "Buffer usage must contain only read (1) and write (2) bits.");
+        }
+        RhiNative.RhiCmdUseBuffer(CurrentEncoder, buf.Handle, usage);
+    }
 
     public void BindAccelStruct(uint slot, RhiAccelStruct as_handle)
     {

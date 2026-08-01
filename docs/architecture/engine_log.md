@@ -22,7 +22,7 @@ ABI‑stable exports (visible across hot reloads):
 | Function | Role |
 | --- | --- |
 | `engine_log_init` | Bring up the log subsystem. Idempotent per process. |
-| `engine_log_shutdown` | Flush sinks + tear down. |
+| `engine_log_shutdown` | Flush sinks and tear down once at process-lifetime exit. |
 | `engine_log_set_global_level` / `engine_log_global_level_get` | Default severity filter. |
 | `engine_log_set_module_level` | Per-subsystem override (e.g. bump `physics` to DEBUG). |
 | `engine_log_emit` | Producer entry point (called by macros). |
@@ -64,17 +64,33 @@ Never returns. Used for "this cannot happen" conditions and unrecoverable errors
 
 ## Lifetime contract for `EngineLogRecord`
 
-Records handed back from `engine_log_drain` carry `const char*` pointers into the ring slot's internal storage. They are valid until the **next** `engine_log_emit` that wraps the same slot. C# must copy out before that wrap, otherwise stale-pointer reads will occur.
+`engine_log_drain` transfers ownership of each returned record's duplicated
+`msg` allocation to the caller. The caller copies all fields immediately and
+calls `engine_log_free_record` exactly once. Draining clears the native slot,
+so shutdown and later writes cannot release the transferred allocation again.
+The remaining string pointers are borrowed from producer-ring storage and must
+also be copied immediately.
 
 For C# consumers:
 
 ```csharp
 foreach (EngineLogRecord rec in EngineLog.DrainRecords(max))
 {
-    var msg = rec.MsgUtf8;   // copies the bytes into a managed string
-    // rec.Msg is no longer safe to use once the engine advances
+    var msg = rec.MsgUtf8;
+    EngineLog.EngineLogFreeRecord(ref rec);
 }
 ```
+
+The editor owns one process-wide logger lifetime. Project selection may
+initialize it, but only the application entry point shuts it down after all
+windows and graphics resources have closed.
+
+The editor removes `out/logs/slang_diagnostics.txt` when a project session
+starts. Metal appends every Slang failure from that session with the compilation
+phase, entry point, stage, source size, include paths, raw compiler arguments,
+and untruncated diagnostic stream. The artifact therefore cannot be mistaken
+for a failure from an earlier engine run and retains related failures from more
+than one shader stage.
 
 ## Per-feature doc rules
 

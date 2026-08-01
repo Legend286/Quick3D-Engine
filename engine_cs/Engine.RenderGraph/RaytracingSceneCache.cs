@@ -45,6 +45,8 @@ public sealed class RaytracingSceneCache
     private readonly IEntityStore _world;
     private RhiAccelStruct? _tlas;
     private int _lastInstanceHash;
+    private long _lastUpdateFrame = long.MinValue;
+    private TlasUpdateResult _lastUpdateResult;
     private readonly Queue<RhiAccelStruct> _oldTlasQueue = new();
 
     public RaytracingSceneCache(RhiDevice device, IEntityStore world)
@@ -65,6 +67,25 @@ public sealed class RaytracingSceneCache
     /// uses it to reset its frame accumulator on topology drift.
     /// </summary>
     public unsafe TlasUpdateResult TryUpdateTlas(ICommandSink sink)
+        => UpdateTlas(sink);
+
+    /// <summary>
+    /// Updates the shared acceleration structure at most once for a render
+    /// frame and returns the cached result to additional consumers.
+    /// </summary>
+    public TlasUpdateResult TryUpdateTlas(
+        ICommandSink sink,
+        long frameNumber)
+    {
+        if (_lastUpdateFrame == frameNumber)
+            return _lastUpdateResult;
+
+        _lastUpdateResult = UpdateTlas(sink);
+        _lastUpdateFrame = frameNumber;
+        return _lastUpdateResult;
+    }
+
+    private unsafe TlasUpdateResult UpdateTlas(ICommandSink sink)
     {
         var instances = new List<RhiNative.TlasInstanceDesc>();
         var blasesToBuild = new List<RhiAccelStruct>();
@@ -201,6 +222,8 @@ public sealed class RaytracingSceneCache
     {
         _tlas?.Dispose();
         _tlas = null;
+        _lastUpdateFrame = long.MinValue;
+        _lastUpdateResult = default;
         while (_oldTlasQueue.Count > 0)
             _oldTlasQueue.Dequeue().Dispose();
     }

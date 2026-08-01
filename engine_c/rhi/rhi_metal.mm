@@ -70,6 +70,7 @@ struct RhiSwapchainImpl {
 
 struct RhiBufferImpl {
     __strong id<MTLBuffer> buf;
+    __strong id<MTLCommandQueue> readback_queue;
 };
 
 struct RhiHeapImpl {
@@ -209,6 +210,8 @@ static void  metal_destroy_pipeline(RhiPipeline* p);
 static void  metal_destroy_heap(RhiHeap* h);
 static void  metal_destroy_fence(RhiFence* f);static int32_t metal_buffer_upload(RhiBuffer* b, const void* data, uint64_t size);
 static void  metal_destroy_timestamp_query_pool(RhiTimestampQueryPool* pool);
+static int32_t metal_buffer_readback(RhiBuffer* buf, uint64_t offset_bytes,
+                                      void* out_bytes, uint64_t out_size);
 static int32_t metal_texture_readback(RhiTexture* t, void* out, uint64_t out_size, uint32_t stride);
 static int32_t metal_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride);
 static int32_t metal_texture_upload_mip(RhiTexture* t, uint32_t mip_level,
@@ -504,13 +507,16 @@ static int32_t metal_create_buffer(RhiDevice* d, const RhiBufferDesc* desc, RhiB
         if (!buf) return -1;
         RhiBufferImpl* bi = new RhiBufferImpl();
         bi->buf = buf;
+        bi->readback_queue = di->queue_graphics;
         *out = reinterpret_cast<RhiBuffer*>(bi);
         return 0;
     }
 }
 
 static uint64_t metal_get_buffer_device_address(RhiBuffer* buf) {
+    if (!buf) return 0;
     RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
+    if (!bi->buf) return 0;
     if (@available(macOS 13.0, iOS 16.0, *)) {
         return bi->buf.gpuAddress;
     }
@@ -617,11 +623,28 @@ static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, Rh
 // failure path in metal_create_shader calls this before logging so the
 // underlying compiler complaint is recoverable in full, even when the
 // in-process ring buffer truncates the error mid-stream.
-static void metal_dump_slang_diag(const char* label, const char* diag) {
+static void metal_dump_slang_diag(
+    const char* label,
+    const char* diag,
+    const RhiShaderDesc* desc,
+    const char* stage,
+    const std::vector<std::string>& include_dirs,
+    const std::vector<std::string>& cli_tokens) {
+    static std::mutex diagnostics_mutex;
+    std::lock_guard<std::mutex> lock(diagnostics_mutex);
+    const char* entry = desc && desc->entry_point
+        ? desc->entry_point
+        : "(unknown)";
+    uint32_t source_length = desc ? desc->source_len : 0;
     if (!diag || !diag[0]) {
-        fprintf(stderr, "=== SLANG FAIL [%s] (no diagnostics emitted) ===\n", label);
+        fprintf(stderr,
+                "=== SLANG FAIL [%s] entry=%s stage=%s "
+                "(no diagnostics emitted) ===\n",
+                label, entry, stage);
     } else {
-        fprintf(stderr, "=== SLANG FAIL [%s] ===\n%s\n=== END ===\n", label, diag);
+        fprintf(stderr,
+                "=== SLANG FAIL [%s] entry=%s stage=%s ===\n%s\n=== END ===\n",
+                label, entry, stage, diag);
     }
     // /out/logs/ is the same root the engine log subsystem writes to, so
     // the developer can find this artifact adjacent to engine.log when
@@ -634,10 +657,24 @@ static void metal_dump_slang_diag(const char* label, const char* diag) {
     if (mkdir("out/logs", 0755) != 0 && errno != EEXIST) {
         fprintf(stderr, "SLANG helper: mkdir(\"out/logs\") failed: errno=%d\n", errno);
     }
-    FILE* fp = fopen("out/logs/slang_diagnostics.txt", "w");
+    FILE* fp = fopen("out/logs/slang_diagnostics.txt", "a");
     if (fp) {
-        fprintf(fp, "# %s\n\n%s\n",
-                label, (diag && diag[0]) ? diag : "(no diagnostics)");
+        fprintf(fp,
+                "=== Slang shader failure ===\n"
+                "phase: %s\n"
+                "entry: %s\n"
+                "stage: %s\n"
+                "source: /tmp/temp.slang\n"
+                "source_bytes: %u\n"
+                "include_directories (%zu):\n",
+                label, entry, stage, source_length, include_dirs.size());
+        for (const std::string& dir : include_dirs)
+            fprintf(fp, "  - %s\n", dir.c_str());
+        fprintf(fp, "compiler_arguments (%zu):\n", cli_tokens.size());
+        for (const std::string& token : cli_tokens)
+            fprintf(fp, "  - %s\n", token.c_str());
+        fprintf(fp, "diagnostics:\n%s\n=== End Slang shader failure ===\n\n",
+                (diag && diag[0]) ? diag : "(no diagnostics)");
         fclose(fp);
     }
 }
@@ -736,7 +773,13 @@ static int32_t metal_create_shader(RhiDevice* d, const RhiShaderDesc* desc, RhiS
 
         SlangResult argsRes = spProcessCommandLineArguments(request, args, arg_count);
         if (SLANG_FAILED(argsRes)) {
-            metal_dump_slang_diag("arg-process", spGetDiagnosticOutput(request));
+            metal_dump_slang_diag(
+                "arg-process",
+                spGetDiagnosticOutput(request),
+                desc,
+                stage_str,
+                include_dirs,
+                cli_tokens);
             ENGINE_LOG_ERROR("rhi_metal",
                              "Slang: failed to process arguments (entry=%s). "
                              "Full diagnostics at out/logs/slang_diagnostics.txt "
@@ -749,7 +792,13 @@ static int32_t metal_create_shader(RhiDevice* d, const RhiShaderDesc* desc, RhiS
 
         SlangResult res = spCompile(request);
         if (SLANG_FAILED(res)) {
-            metal_dump_slang_diag("compile", spGetDiagnosticOutput(request));
+            metal_dump_slang_diag(
+                "compile",
+                spGetDiagnosticOutput(request),
+                desc,
+                stage_str,
+                include_dirs,
+                cli_tokens);
             ENGINE_LOG_ERROR("rhi_metal",
                              "Slang: compile failed (entry=%s). "
                              "Full diagnostics at out/logs/slang_diagnostics.txt "
@@ -763,7 +812,13 @@ static int32_t metal_create_shader(RhiDevice* d, const RhiShaderDesc* desc, RhiS
         size_t codeSize = 0;
         const void* codePtr = spGetCompileRequestCode(request, &codeSize);
         if (!codePtr) {
-            metal_dump_slang_diag("get-code", spGetDiagnosticOutput(request));
+            metal_dump_slang_diag(
+                "get-code",
+                spGetDiagnosticOutput(request),
+                desc,
+                stage_str,
+                include_dirs,
+                cli_tokens);
             ENGINE_LOG_ERROR("rhi_metal",
                              "Slang: failed to retrieve compiled code (entry=%s). "
                              "Full diagnostics at out/logs/slang_diagnostics.txt "
@@ -1023,6 +1078,7 @@ static int32_t metal_create_buffer_from_heap(RhiDevice* d, RhiHeap* h, const Rhi
         }
         RhiBufferImpl* bi = new RhiBufferImpl();
         bi->buf = buf;
+        bi->readback_queue = di->queue_graphics;
         *out = reinterpret_cast<RhiBuffer*>(bi);
         return 0;
     }
@@ -1264,6 +1320,66 @@ static int32_t metal_buffer_upload(RhiBuffer* buf, const void* data, uint64_t si
     }
     memcpy([bi->buf contents], data, (size_t)size);
     return 0;
+}
+
+static int32_t metal_buffer_readback(RhiBuffer* buf,
+                                       uint64_t offset_bytes,
+                                       void* out_bytes,
+                                       uint64_t out_size) {
+    @autoreleasepool {
+        if (!buf || !out_bytes || out_size == 0) return -1;
+
+        RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
+        if (!bi->buf || offset_bytes > (uint64_t)bi->buf.length ||
+            out_size > (uint64_t)bi->buf.length - offset_bytes) {
+            ENGINE_LOG_ERROR(
+                "rhi_metal",
+                "buffer readback range out of bounds (offset=%llu size=%llu length=%llu)",
+                (unsigned long long)offset_bytes,
+                (unsigned long long)out_size,
+                (unsigned long long)bi->buf.length);
+            return -1;
+        }
+
+        id<MTLBuffer> staging =
+            [bi->buf.device newBufferWithLength:(NSUInteger)out_size
+                                         options:MTLResourceStorageModeShared];
+        if (!staging) {
+            ENGINE_LOG_ERROR(
+                "rhi_metal",
+                "buffer readback staging allocation failed (size=%llu)",
+                (unsigned long long)out_size);
+            return -1;
+        }
+
+        id<MTLCommandQueue> queue = bi->readback_queue;
+        if (!queue) {
+            ENGINE_LOG_ERROR("rhi_metal", "buffer readback command queue unavailable");
+            return -1;
+        }
+
+        id<MTLCommandBuffer> command_buffer = [queue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [command_buffer blitCommandEncoder];
+        [blit copyFromBuffer:bi->buf
+                sourceOffset:(NSUInteger)offset_bytes
+                    toBuffer:staging
+           destinationOffset:0
+                        size:(NSUInteger)out_size];
+        [blit endEncoding];
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+
+        if (command_buffer.status != MTLCommandBufferStatusCompleted) {
+            ENGINE_LOG_ERROR(
+                "rhi_metal",
+                "buffer readback blit failed (status=%ld)",
+                (long)command_buffer.status);
+            return -1;
+        }
+
+        memcpy(out_bytes, staging.contents, (size_t)out_size);
+        return 0;
+    }
 }
 
 static int32_t metal_texture_readback(RhiTexture* t, void* out,
@@ -2557,6 +2673,7 @@ extern "C" void rhi_metal_register(void) {
     b.destroy_fence              = metal_destroy_fence;
     b.destroy_timestamp_query_pool = metal_destroy_timestamp_query_pool;
     b.buffer_upload              = metal_buffer_upload;
+    b.buffer_readback             = metal_buffer_readback;
     b.texture_readback           = metal_texture_readback;
     b.texture_upload             = metal_texture_upload;
     b.texture_upload_mip         = metal_texture_upload_mip;

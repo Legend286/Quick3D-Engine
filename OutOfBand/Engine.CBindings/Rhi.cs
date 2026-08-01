@@ -486,6 +486,12 @@ public static partial class RhiNative
                                                IntPtr data,
                                                ulong size);
 
+    [LibraryImport(Library, EntryPoint = "rhi_buffer_readback")]
+    public static partial int RhiBufferReadback(IntPtr buf,
+                                                ulong offset,
+                                                IntPtr outBytes,
+                                                ulong outSize);
+
     [LibraryImport(Library, EntryPoint = "rhi_texture_readback")]
     public static partial int RhiTextureReadback(IntPtr tex,
                                                  IntPtr outBytes,

@@ -184,7 +184,7 @@ int32_t rhi_bindless_lookup_slot(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* 
 }
 
 uint64_t rhi_get_buffer_device_address(RhiBuffer* buf) {
-    if (g_active >= 0 && g_backends[g_active].get_buffer_device_address) {
+    if (buf && g_active >= 0 && g_backends[g_active].get_buffer_device_address) {
         return g_backends[g_active].get_buffer_device_address(buf);
     }
     return 0;

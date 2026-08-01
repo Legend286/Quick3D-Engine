@@ -16,6 +16,11 @@
   punctual-light face allocation snapshot.
 - `RenderGraphShadowFaceDiagnostics`: Stable page-slot identity and cache
   readiness for one point- or spot-light face.
+- `IGpuWorkTimingSource`: Reports frame-indexed submitted work counts so
+  delayed GPU timestamps train the correct scheduler domain without readback.
+- `RendererPluginContext.EnableGlobalExtensions`: Allows the interactive
+  renderer to consume process-wide extension resources while keeping
+  device-isolated offscreen renderers disconnected from them.
 
 ## Usage Example
 ```csharp
@@ -47,9 +52,13 @@ waiting. If all pools are still in flight, the executor skips that frame's GPU
 capture rather than blocking rendering. Backends without timestamp support
 leave the nullable GPU fields empty.
 
-Each completed capture replaces the prior per-pass values, including missing
-samples. Invalid or unsupported samples therefore return to an unavailable
-state instead of leaving a stale timing visible indefinitely.
+Each completed capture is associated with its exact compiled plan, execution
+frame, queue, and successfully recorded pass slots. Graphics and asynchronous
+compute results are merged only when their execution frame matches. Publishing
+a capture replaces the complete prior per-pass vector, including missing
+samples, so invalid, unsupported, and queue-local gaps cannot inherit another
+pass's previous timing. Captures from a rebuilt plan are discarded even when
+the new plan happens to contain the same number of passes.
 
 The displayed frame duration and adaptive work controller use the lower
 median of the latest 15 active graphics workloads. This rejects isolated
@@ -75,15 +84,36 @@ cross-frame write/read hazards while preserving overlap between current-frame
 compute work and the independent directional-shadow graphics pass.
 
 The renderer GPU work scheduler places cacheable work into per-domain frame
-budgets. Directional shadows currently use a 2 ms target and a one-page hard
-limit. Dirty cascades are prioritized by validity, target refresh interval,
-and maximum staleness. Completed asynchronous GPU timings update the estimated
-tile cost using an exponential moving average.
+budgets. The renderer begins the scheduler frame before executing any graph
+pass, so extension ordering and absent shadow passes cannot leave stale
+admissions or reset diagnostics after earlier work. Unused directional and
+punctual time becomes bounded carry-over for a
+later burst, while completed asynchronous GPU timings update estimated unit
+cost with an exponential moving average. Transform and camera invalidation are
+correctness work: forced admission bypasses time and unit limits so all
+affected shadows use matching transforms in the current frame.
 
-Punctual shadows use a separate 6 ms domain. Static and movable face updates
-compete within that domain, while directional updates remain independent.
-Transform-dirty faces reserve two units atomically so their static and movable
-tiles become visible with one matching sampling matrix.
+DDGI uses a separate measured 4 ms domain. It begins at a 32-probe estimate and
+adjusts submission size from 1 through 128 probes using delayed pass timings.
+Lighting revisions and initial scene bakes change GPU scheduling priority but
+never bypass admission, so scene import and animated lights cannot turn probe
+convergence into an unbounded frame spike.
+The DDGI scheduler combines current clipmap requests with a rotating 8,192-slot
+persistent-atlas scan. Consequently, a light edit reaches built probes outside
+the current clipmaps without scanning all 262,144 slots in one frame. Empty
+sky-only probes are eligible only when the independent sky revision changes.
+
+Directional shadows use a 2 ms base target and can consume accumulated carry
+for up to four cascades. Dirty cascades share one culling encoder and disjoint
+indirect-command ranges before their four persistent pages are rendered.
+Punctual shadows use a separate 6 ms base domain, homogeneous batches of at
+most 24 faces, and a 96-face carry burst ceiling. Static and movable updates
+for one light remain atomic so sampling matrices cannot lead rendered pages.
+Forced invalidation can exceed the normal two-batch working set when a graph
+rebuild dirties many lights together. Per-batch culling and indirect-command
+buffers therefore grow on the render thread to match the admitted point and
+spot batches, remain distinct until submission completes, and are retained for
+reuse by later frames.
 
 Diagnostics also derive direct pass dependencies from resource writers,
 resource first/last-use lifetimes, access counts, and alias groups from the
@@ -105,6 +135,10 @@ The execution context publishes a monotonically increasing `FrameNumber`.
 Frame-shared caches use it to make repeated pass preparation idempotent.
 Imported resources can be removed with `RenderGraphExecutor.UnbindTexture`
 when a rebuilt plan no longer references them.
+
+Renderer extension post-passes execute after scene overlays and before ImGui.
+This lets diagnostics such as DDGI probe markers composite over the rendered
+scene without painting over editor controls.
 
 Pass display names describe the active implementation. Raster scene passes are
 reported as `Forward PBR`; compute path-traced scene passes are reported as
