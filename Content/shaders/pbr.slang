@@ -338,7 +338,16 @@ float EvaluatePunctualShadow(
     return min(staticVisibility, dynamicVisibility);
 }
 
-float3 EvaluateLightContribution(uint lightIndex, LightData light, float3 worldPos, DisneyMaterial dmat, float3 N, float3 V, float3 T, float3 B)
+float3 EvaluateLightContribution(
+    uint lightIndex,
+    LightData light,
+    float3 worldPos,
+    DisneyMaterial dmat,
+    float3 N,
+    float3 geometricNormal,
+    float3 V,
+    float3 T,
+    float3 B)
 {
     float lightType = light.direction.w;
     float3 L;
@@ -369,7 +378,10 @@ float3 EvaluateLightContribution(uint lightIndex, LightData light, float3 worldP
     float visibility = 1.0;
     if (lightType == 0.0 && light.shapeParams.w >= 0.5 &&
         lightIndex == (uint)push.directionalShadowParams.z)
-        visibility = EvaluateDirectionalShadow(worldPos, N, L);
+        visibility = EvaluateDirectionalShadow(
+            worldPos,
+            geometricNormal,
+            L);
     else if (lightType != 0.0 &&
         light.shapeParams.w >= 0.5 &&
         push.punctualShadowFaceCount > 0)
@@ -377,7 +389,7 @@ float3 EvaluateLightContribution(uint lightIndex, LightData light, float3 worldP
             lightIndex,
             light,
             worldPos,
-            N,
+            geometricNormal,
             L);
     return bsdf * radiance * dotNL * visibility;
 }
@@ -633,6 +645,7 @@ float4 ShadePbrSurface(
             input.worldPos,
             dmat,
             N,
+            vertexNormal,
             V,
             T,
             B);
@@ -644,6 +657,7 @@ float4 ShadePbrSurface(
                 input.worldPos,
                 lightingOnlyMaterial,
                 N,
+                vertexNormal,
                 V,
                 T,
                 B);
@@ -664,7 +678,16 @@ float4 ShadePbrSurface(
 
         for (uint i = 0; i < record.count; i++) {
             uint lightIndex = push.clusterLightIndices[record.offset + i];
-            Lo += EvaluateLightContribution(lightIndex, push.lights[lightIndex], input.worldPos, dmat, N, V, T, B);
+            Lo += EvaluateLightContribution(
+                lightIndex,
+                push.lights[lightIndex],
+                input.worldPos,
+                dmat,
+                N,
+                vertexNormal,
+                V,
+                T,
+                B);
             if (debugView == 7u)
                 lightingOnlyLo += EvaluateLightContribution(
                     lightIndex,
@@ -672,13 +695,23 @@ float4 ShadePbrSurface(
                     input.worldPos,
                     lightingOnlyMaterial,
                     N,
+                    vertexNormal,
                     V,
                     T,
                     B);
         }
     } else {
         for (uint i = 0; i < push.lightCount; i++) {
-            Lo += EvaluateLightContribution(i, push.lights[i], input.worldPos, dmat, N, V, T, B);
+            Lo += EvaluateLightContribution(
+                i,
+                push.lights[i],
+                input.worldPos,
+                dmat,
+                N,
+                vertexNormal,
+                V,
+                T,
+                B);
             if (debugView == 7u)
                 lightingOnlyLo += EvaluateLightContribution(
                     i,
@@ -686,6 +719,7 @@ float4 ShadePbrSurface(
                     input.worldPos,
                     lightingOnlyMaterial,
                     N,
+                    vertexNormal,
                     V,
                     T,
                     B);

@@ -134,6 +134,29 @@ public sealed class VisibilityBufferContractTests
     }
 
     [Fact]
+    public void PbrShadowBias_UsesInterpolatedVertexNormal()
+    {
+        string shader = ReadRepositoryFile(
+            "Content",
+            "shaders",
+            "pbr.slang");
+
+        Assert.Contains("float3 geometricNormal,", shader);
+        Assert.Contains(
+            "EvaluateDirectionalShadow(\n            worldPos,\n            geometricNormal,",
+            shader);
+        Assert.Contains(
+            "worldPos,\n            geometricNormal,\n            L);",
+            shader);
+        Assert.Contains(
+            "dmat,\n            N,\n            vertexNormal,",
+            shader);
+        Assert.DoesNotContain(
+            "visibility = EvaluateDirectionalShadow(worldPos, N, L)",
+            shader);
+    }
+
+    [Fact]
     public void VisibilityDebugView_ReadsBothAttachmentsAndDepth()
     {
         Assert.Equal(13, (int)ViewportDebugView.VisibilityBuffer);

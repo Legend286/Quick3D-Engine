@@ -97,6 +97,9 @@ shadows, and DDGI evaluation as forward raster shading.
   material data once per frame for both the shadow and forward passes.
 - Additional directional lights remain unshadowed until per-light atlas
   records are added.
+- Directional, point, and spot receiver bias uses the interpolated geometric
+  vertex normal. Tangent-space normal maps affect BRDF lighting only, so
+  texture detail cannot vary the depth comparison offset from pixel to pixel.
 - Thumbnail and hover-preview plans skip shadow allocation.
 
 ## Punctual Shadows
