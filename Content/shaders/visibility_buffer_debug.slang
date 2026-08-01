@@ -48,19 +48,6 @@ float3 VisualizeReconstructedValue(float3 value, uint mode)
     return value;
 }
 
-float ReconstructionErrorAmplification(uint mode)
-{
-    if (mode == 14u)
-        return 128.0;
-    if (mode == 16u)
-        return 128.0;
-    if (mode == 17u || mode == 18u)
-        return 32.0;
-    if (mode == 20u)
-        return 8.0;
-    return 32.0;
-}
-
 [shader("fragment")]
 float4 fragmentMain(VisibilityDebugVertexOutput input) : SV_Target
 {
@@ -74,7 +61,16 @@ float4 fragmentMain(VisibilityDebugVertexOutput input) : SV_Target
     if (depth >= 0.999999 && push.mode != 20u)
         return float4(0.012, 0.015, 0.022, 1.0);
 
-    if (push.mode >= 14u && push.mode <= 20u)
+    if (push.mode >= 14u && push.mode <= 19u)
+    {
+        float3 reconstructed =
+            reconstructionOutput.Load(int3(pixel, 0)).rgb;
+        return float4(
+            VisualizeReconstructedValue(reconstructed, push.mode),
+            1.0);
+    }
+
+    if (push.mode == 20u)
     {
         float3 reference = referenceOutput.Load(int3(pixel, 0)).rgb;
         float3 reconstructed =
@@ -91,8 +87,7 @@ float4 fragmentMain(VisibilityDebugVertexOutput input) : SV_Target
         if (pixel.x < dimensions.x / 2u)
             return float4(referenceDisplay, 1.0);
         float error = saturate(
-            length(reference - reconstructed) *
-            ReconstructionErrorAmplification(push.mode));
+            length(reference - reconstructed) * 8.0);
         float3 compared = lerp(
             reconstructedDisplay,
             float3(1.0, 0.0, 0.0),

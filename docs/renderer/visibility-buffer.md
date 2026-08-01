@@ -128,15 +128,10 @@ maps are sampled with reconstructed UV gradients so mip selection tracks the
 derivative-based sampling used by Forward PBR. Magenta output means a stored
 primitive index exceeded its part's index range.
 
-Every reconstruction view is an A/B comparison. The left half is produced by
-a conventional raster pass that follows Forward PBR's vertex interpolation,
-tangent-frame construction, and normal-map evaluation. The right half shows
-the compute-reconstructed value. A yellow line divides the two halves, and
-the right side blends toward red wherever the raw values differ. Error is
-amplified by attribute-specific factors: 128× for world position and UV, and
-32× for normals, tangents, and identifiers. This makes small quantization,
-interpolation, indexing, and tangent-frame discrepancies visible without
-reducing the normal display to a standalone heat map.
+Reconstruction views display their selected compute-reconstructed attribute
+directly across the viewport. They do not apply the PBR comparison's red error
+overlay, so position, normal, UV, material, instance, and tangent channels
+remain independently readable while diagnosing stored visibility data.
 
 ## Compute PBR Validation
 

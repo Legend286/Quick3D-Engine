@@ -182,7 +182,9 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("1.0 - barycentricXY.x - barycentricXY.y", shader);
         Assert.Contains("pixel.x < dimensions.x / 2u", shader);
         Assert.Contains("reference - reconstructed", shader);
-        Assert.Contains("ReconstructionErrorAmplification", shader);
+        Assert.Contains("push.mode >= 14u && push.mode <= 19u", shader);
+        Assert.Contains("push.mode == 20u", shader);
+        Assert.DoesNotContain("ReconstructionErrorAmplification", shader);
         Assert.Contains("pixelX < width / 2u", common);
         Assert.Contains("identifiers.x", common);
         Assert.Contains("identifiers.y", common);
@@ -337,7 +339,8 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("_owner.BindShadingResources(sink)", pass);
         Assert.Contains("sink.Dispatch(", pass);
         Assert.Contains("CreateVisibilityShadingPass()", plugin);
-        Assert.Contains("push.mode <= 20u", debugShader);
+        Assert.Contains("push.mode == 20u", debugShader);
+        Assert.Contains("length(reference - reconstructed) * 8.0", debugShader);
         Assert.Contains("\"Visibility PBR\"", viewModel);
     }
 
