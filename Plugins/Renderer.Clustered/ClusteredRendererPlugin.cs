@@ -123,10 +123,22 @@ public sealed class ClusteredRendererPlugin :
                     context.SharedShaderCache,
                     ddgiProvider));
         }
+        foreach (PbrPass pbrPass in pbrPasses)
+            result.AddPass(pbrPass.CreateComputePass());
         if (dirShadowPass != null)
             result.AddPass(dirShadowPass);
         if (punctualShadowPass != null)
             result.AddPass(punctualShadowPass);
+        if (context.EnableVisibilityBuffer && pbrPasses.Count > 0)
+        {
+            result.AddPass(pbrPasses[0].CreateVisibilityBufferPass());
+            result.AddPass(
+                pbrPasses[0].CreateVisibilityReconstructionPass());
+            result.AddPass(
+                pbrPasses[0].CreateVisibilityShadingPass());
+            result.AddPass(
+                pbrPasses[0].CreateVisibilityReferencePass());
+        }
         result.Passes.AddRange(pbrPasses);
 
         // DDGI probe overlay is editor-UI territory — the

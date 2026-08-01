@@ -33,7 +33,7 @@ public sealed class RhiPipeline : IDisposable
                 "Fragment shader was disposed before the graphics pipeline could be created.");
         var desc = new RhiNative.GraphicsPipelineDesc
         {
-            Abi = 4,
+            Abi = 5,
             VertexShader = vertexShader.Handle,
             FragmentShader = fragmentShader.Handle,
             ColorFormat = colorFormat,
@@ -43,12 +43,64 @@ public sealed class RhiPipeline : IDisposable
             SampleCount = 1,
             PrimitiveTopology = (uint)topology,
             DepthCompare = depthCompare,
+            ColorAttachmentCount =
+                colorFormat == RhiNative.TextureFormat.Undefined ? 0u : 1u,
         };
         int res = RhiNative.RhiCreateGraphicsPipeline(device.Handle, in desc, out IntPtr handle);
         GC.KeepAlive(vertexShader);
         GC.KeepAlive(fragmentShader);
         if (res != 0 || handle == IntPtr.Zero)
             throw new Exception("Failed to create graphics pipeline.");
+        return new RhiPipeline(handle);
+    }
+
+    /// <summary>Creates a graphics pipeline with two color attachments.</summary>
+    public static RhiPipeline CreateGraphicsMrt(
+        RhiDevice device,
+        RhiShader vertexShader,
+        RhiShader fragmentShader,
+        RhiNative.TextureFormat colorFormat0,
+        RhiNative.TextureFormat colorFormat1,
+        bool enableDepth = true,
+        bool enableDepthWrite = true,
+        RhiNative.CompareOp depthCompare = RhiNative.CompareOp.LessEqual)
+    {
+        if (vertexShader == null || vertexShader.Handle == IntPtr.Zero)
+            throw new ObjectDisposedException(nameof(vertexShader));
+        if (fragmentShader == null || fragmentShader.Handle == IntPtr.Zero)
+            throw new ObjectDisposedException(nameof(fragmentShader));
+        if (colorFormat0 == RhiNative.TextureFormat.Undefined ||
+            colorFormat1 == RhiNative.TextureFormat.Undefined)
+        {
+            throw new ArgumentException(
+                "MRT color attachment formats must be defined.");
+        }
+
+        var desc = new RhiNative.GraphicsPipelineDesc
+        {
+            Abi = 5,
+            VertexShader = vertexShader.Handle,
+            FragmentShader = fragmentShader.Handle,
+            ColorFormat = colorFormat0,
+            EnableDepth = enableDepth ? 1 : 0,
+            EnableDepthWrite = enableDepthWrite ? 1 : 0,
+            EnableBlend = 0,
+            SampleCount = 1,
+            PrimitiveTopology =
+                (uint)RhiNative.PrimitiveTopology.TriangleList,
+            DepthCompare = depthCompare,
+            ColorFormat1 = colorFormat1,
+            ColorAttachmentCount = 2,
+        };
+        int result = RhiNative.RhiCreateGraphicsPipeline(
+            device.Handle,
+            in desc,
+            out IntPtr handle);
+        GC.KeepAlive(vertexShader);
+        GC.KeepAlive(fragmentShader);
+        if (result != 0 || handle == IntPtr.Zero)
+            throw new InvalidOperationException(
+                $"rhi_create_graphics_pipeline rc={result}");
         return new RhiPipeline(handle);
     }
 

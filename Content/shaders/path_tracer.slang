@@ -3,6 +3,7 @@
 #include "scene_data.slang"
 #include "disney_bsdf.slang"
 #include "nishita_sky.slang"
+#include "visibility_debug_common.slang"
 
 [push_constant]
 ConstantBuffer<ScenePushData> push;
@@ -725,9 +726,32 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
             } else if (debugView == 12u) {
                 dbgColor =
                     bitangent * 0.5 + 0.5;
+            } else if (debugView == 13u) {
+                dbgColor = VisibilityDebugColor(
+                    uint2(partIdx, primitiveId),
+                    barycentrics,
+                    dispatchThreadID.x,
+                    uint(push.resolution.x));
+            } else if (debugView == 14u) {
+                dbgColor = frac(abs(hitPosition) * 0.1);
+            } else if (debugView == 15u) {
+                dbgColor = normal * 0.5 + 0.5;
+            } else if (debugView == 16u) {
+                dbgColor = float3(frac(surfaceUv), 0.0);
+            } else if (debugView == 17u) {
+                dbgColor = VisibilityIdentifierColor(
+                    uint2(part.materialIdx, 0x4d41544cu));
+            } else if (debugView == 18u) {
+                dbgColor = VisibilityIdentifierColor(
+                    uint2(
+                        part.instanceIdx,
+                        instance.entityIdLow ^ instance.entityIdHigh));
+            } else if (debugView == 19u) {
+                dbgColor = tangent * 0.5 + 0.5;
             }
         } else {
-            dbgColor = debugView == 1u
+            dbgColor =
+                debugView == 1u || debugView >= 13u
                 ? float3(0.0)
                 : GetSkyRadiance(
                     rayDir,

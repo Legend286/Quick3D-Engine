@@ -137,6 +137,10 @@ public sealed class RendererPluginContext
     /// never imported across RHI devices.</summary>
     public bool EnableGlobalExtensions { get; init; }
 
+    /// <summary>Gets whether the plan should produce opaque visibility-buffer
+    /// resources. Thumbnail and material-preview plans disable this surface.</summary>
+    public bool EnableVisibilityBuffer { get; init; }
+
     /// <summary>Optional ordered Slang CLI argv tokens (e.g. ["-D",
     /// "DDGI_PLUGIN=1"]) gathered from enabled plugin manifests'
     /// <c>shader_features</c>. Plugins pass this verbatim into

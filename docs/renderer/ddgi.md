@@ -115,7 +115,17 @@ the complete feature-and-include context is available.
 5. **Update** dispatches only the queue capacity. Each probe traces 32 rays,
    evaluates the clustered renderer's canonical current-frame GPU light
    buffer at the triangle-interpolated world normal, samples the canonical
-   Nishita sky on misses and as incident sky irradiance at hits. Probe sky
+   Nishita sky on genuine scene misses, and admits incident sky irradiance at
+   hits only when a second outward TLAS query is unobstructed. The trace range
+   is at least 64 metres and expands to 105% of the current scene-bounds
+   diagonal. It therefore clears the complete local scene before classifying a
+   ray as sky instead of coupling misses to probe
+   spacing. A temporarily unavailable TLAS retains existing probe history and
+   defers the update; it never replaces enclosed probes with a frame of sky.
+   Direct light evaluated at a ray hit also performs a TLAS visibility query
+   toward its directional, point, or spotlight source, preventing walls from
+   reflecting light whose source is geometrically occluded.
+   Probe sky
    sampling excludes the tiny high-energy sun disc because the directional
    light is evaluated explicitly; this prevents a randomly aligned ray from
    injecting a bright SH outlier. The pass samples the hit material's
@@ -125,17 +135,25 @@ the complete feature-and-include context is available.
    and records its update frame in `ProbeStates`. Every probe and update uses an
    independently scrambled, stratified 32-ray sphere to avoid coherent spatial
    patterns without altering RGB radiance. Stable updates retain 92% of atlas
-   history. Lighting changes use four prioritized convergence updates, retaining
-   50% per step, so the bounded staggered stream reaches 93.75% of the new
-   solution without a full-history single-frame flash. New, reclassified, and
+   history. The first update after a lighting change retains 75% of the prior
+   result, followed by three prioritized 50% convergence updates. The bounded
+   staggered stream therefore reaches 90.625% of the new solution without a
+   full-history single-frame flash. New, reclassified, and
    relocated probes replace invalid history immediately and then receive three
    prioritized running-average updates. The four batches provide 128 effective
-   samples without desaturating, luminance-clamping, or mixing colour channels.
+   samples without desaturating or mixing colour channels. Before projection,
+   a batch-relative luminance ceiling suppresses isolated high-energy ray hits
+   by scaling all three RGB channels together. It therefore preserves hue, and
+   consistently sampled coloured transport raises the batch mean and remains
+   fully represented. New and relocated probes remain sample-hidden during
+   those four initialization batches; shading fills their coverage from a
+   coarser built level or the renderer fallback until the 128-sample result is
+   ready.
    A successful replacement clears relocation state so subsequent updates can
    accumulate history. Directional-light direction,
    colour, intensity, angular radius, or shadow-state changes are part of that
-   revision, so edited sun lighting is retraced rather than blended against
-   stale probe radiance.
+   revision, so edited sun lighting enters the bounded retracing and convergence
+   stream.
    Update rays also audit clearance. A ready probe that observes geometry within
    0.375 metres is marked dirty and pending, re-enters placement next frame,
    and loses ready status until its relocated position has been retraced.
@@ -151,7 +169,11 @@ the complete feature-and-include context is available.
    constant ambient fallback only by that amount; uncovered geometry therefore
    retains the fallback while complete DDGI coverage removes it. Direct-light,
    shadowed, and emissive paths remain unchanged. If atlas setup is unavailable,
-   confidence remains zero rather than making the frame black.
+   confidence remains zero rather than making the frame black. A light or sky
+   revision does not remove otherwise-ready probes from sampling: their prior
+   radiance remains continuous until the bounded update stream blends in the
+   new solution. This avoids missing-probe bands and isolated refreshed-probe
+   colour patches while retaining full RGB transport.
 
 Material AO modulates the non-DDGI ambient fallback but does not multiply DDGI.
 Probe visibility moments already provide geometric indirect occlusion, and
@@ -238,7 +260,10 @@ probes. The 4 ms scheduler starts with a
 32-probe estimate, feeds delayed GPU timings into its per-probe cost estimate,
 and can grow or shrink the submitted count from 1 to 128. Scene-bake placement
 uses half that allowance clamped from 1 to 64, so warm-up and camera-visible
-work progress together. At 32 rays per probe the hard maximum is 4096 rays. A continuously changing light cannot
+work progress together. At 32 rays per probe the hard maximum is 4096 primary
+rays. Hit rays add one sky-visibility query and visibility queries only for
+lights whose unshadowed contribution is non-zero; the measured update cost
+feeds the adaptive admission limit. A continuously changing light cannot
 immediately reselect a probe updated in the prior frame;
 older lighting-dirty probes receive the refresh priority so the cache converges
 instead of repeatedly updating only the closest slots. Placement dispatches one
@@ -257,10 +282,12 @@ each admission remains a 32-ray dispatch and the adaptive per-frame probe cap is
 unchanged. This trades warm-up latency for stable 128-sample history without a
 single-frame ray-budget spike.
 Placement and update share one frame-cached scene TLAS, so enabling DDGI does
-not duplicate acceleration-structure extraction or builds. Scheduling uses one
-GPU thread to select the top 128 entries from current requests and one rotating
-8,192-slot persistent-cache window. This bounds each frame while covering the
-full 262,144-slot cache over 32 frames.
+not duplicate acceleration-structure extraction or builds. Scheduling uses a
+128-thread compute group to scan current requests and one rotating 8,192-slot
+persistent-cache window. Each lane retains its best two candidates before a
+bounded 256-entry shared-memory selection emits up to 128 unique probes. This
+bounds scheduler work while covering the full 262,144-slot cache over 32
+frames.
 
 The update pass dispatches only the scheduler's admitted capacity. Delayed GPU
 timestamps use a 16-frame submission history to feed the matching capacity and
@@ -310,8 +337,8 @@ moment texels, and applies Chebyshev weighting with a 2% minimum. The 16-texel
 tile costs 128 bytes per probe and 32 MiB for 262,144 slots. It rejects light
 transport crossing geometry in the sampled direction instead of applying one
 non-directional visibility value to the entire probe. Bounded hit-to-light
-shadow rays remain a possible higher-cost quality tier and do not require
-higher-order irradiance SH.
+shadow rays prevent occluded direct illumination from entering the SH result
+without requiring higher-order irradiance SH.
 
 ## Cross-References
 

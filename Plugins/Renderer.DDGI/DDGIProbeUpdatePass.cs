@@ -21,7 +21,7 @@ public sealed class DDGIProbeUpdatePass :
     private const int SubmissionHistoryCapacity = 16;
     public const int MaxProbesPerFrame = 128;
     public const int RaysPerProbe = 32;
-    public const float MaxTraceDistanceMeters = 64.0f;
+    public const float MinimumTraceDistanceMeters = 64.0f;
 
     private readonly RhiShader _computeShader;
     private readonly RhiPipeline _pipeline;
@@ -165,12 +165,21 @@ public sealed class DDGIProbeUpdatePass :
         catch (Exception exception)
         {
             Log.Error(
-                $"[DDGI] update TLAS unavailable; using sky fallback: " +
+                $"[DDGI] update TLAS unavailable; retaining probe history: " +
                 $"{exception.Message}",
                 "DDGI");
             tlasInfo = default;
         }
         bool useSceneTlas = tlasInfo.SceneTlas != null;
+        if (!useSceneTlas)
+        {
+            _submissionCounts[submissionSlot] = 0;
+            _submissionTimingEligible[submissionSlot] = false;
+            Log.Warn(
+                "[DDGI] update TLAS unavailable; retaining probe history.",
+                "DDGI");
+            return;
+        }
         _sceneGpuData?.PrepareSceneGpuData(
             context.FrameNumber,
             context.Width,
@@ -184,6 +193,16 @@ public sealed class DDGIProbeUpdatePass :
             _sceneGpuData?.CurrentLightRevision ?? 0u;
         uint skyRevision =
             _sceneGpuData?.CurrentSkyRevision ?? 0u;
+        float traceDistance = MinimumTraceDistanceMeters;
+        if (_sceneGpuData != null &&
+            _sceneGpuData.TryGetSceneBounds(
+                out Vector3 sceneBoundsMinimum,
+                out Vector3 sceneBoundsMaximum))
+        {
+            traceDistance = CalculateTraceDistance(
+                sceneBoundsMinimum,
+                sceneBoundsMaximum);
+        }
         _cameraProvider.TryGetViewportCameraData(
             context.Width,
             context.Height,
@@ -207,7 +226,7 @@ public sealed class DDGIProbeUpdatePass :
                 0f),
             OriginAndProbeCountZ = new Vector4(_atlas.Origin, 0f),
             Extent = new Vector4(
-                MaxTraceDistanceMeters,
+                traceDistance,
                 0f,
                 0f,
                 0f),
@@ -282,6 +301,20 @@ public sealed class DDGIProbeUpdatePass :
         _pipeline.Dispose();
         _computeShader.Dispose();
         _sampler.Dispose();
+    }
+
+    internal static float CalculateTraceDistance(
+        Vector3 sceneBoundsMinimum,
+        Vector3 sceneBoundsMaximum)
+    {
+        float sceneDiagonal = Vector3.Distance(
+            sceneBoundsMinimum,
+            sceneBoundsMaximum);
+        if (!float.IsFinite(sceneDiagonal))
+            return MinimumTraceDistanceMeters;
+        return Math.Max(
+            sceneDiagonal * 1.05f,
+            MinimumTraceDistanceMeters);
     }
 
     /// <inheritdoc />

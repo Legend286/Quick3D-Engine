@@ -80,6 +80,64 @@ public sealed class CommandRecorder : IDisposable
             throw new InvalidOperationException("rhi_begin_render_pass returned null");
     }
 
+    /// <summary>Begins a render pass with two to four color attachments.</summary>
+    public unsafe void BeginRenderPass(
+        ReadOnlySpan<RhiTexture> colorAttachments,
+        RhiNative.LoadOp loadOp = RhiNative.LoadOp.Clear,
+        RhiNative.StoreOp storeOp = RhiNative.StoreOp.Store,
+        RhiTexture? depth = null,
+        RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
+        RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store)
+    {
+        FlushDeferredPass();
+        if (CurrentEncoder != IntPtr.Zero)
+            throw new InvalidOperationException("Pass already active");
+        if (colorAttachments.Length is < 2 or > 4)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(colorAttachments));
+        }
+
+        RhiNative.PassAttachment* colors =
+            stackalloc RhiNative.PassAttachment[colorAttachments.Length];
+        for (int index = 0; index < colorAttachments.Length; ++index)
+        {
+            RhiTexture texture = colorAttachments[index] ??
+                throw new ArgumentNullException(nameof(colorAttachments));
+            if (texture.Handle == IntPtr.Zero)
+                throw new ObjectDisposedException(nameof(colorAttachments));
+            colors[index] = new RhiNative.PassAttachment
+            {
+                Texture = texture.Handle,
+                LoadOp = loadOp,
+                StoreOp = storeOp,
+            };
+        }
+
+        RhiNative.PassAttachment depthAttachment = default;
+        RhiNative.PassAttachment* depthPointer = null;
+        if (depth != null)
+        {
+            depthAttachment = new RhiNative.PassAttachment
+            {
+                Texture = depth.Handle,
+                LoadOp = depthLoad,
+                StoreOp = depthStore,
+            };
+            depthPointer = &depthAttachment;
+        }
+        var desc = new RhiNative.PassDesc
+        {
+            Abi = 1,
+            ColorAttachments = (IntPtr)colors,
+            ColorCount = (uint)colorAttachments.Length,
+            DepthAttachment = (IntPtr)depthPointer,
+        };
+        CurrentEncoder = RhiNative.RhiBeginRenderPass(CmdList, in desc);
+        if (CurrentEncoder == IntPtr.Zero)
+            throw new InvalidOperationException("rhi_begin_render_pass returned null");
+    }
+
     /// <summary>
     /// Begins a render pass with a depth attachment and no color attachments.
     /// </summary>

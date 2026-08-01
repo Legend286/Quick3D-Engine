@@ -299,10 +299,7 @@ public sealed class RhiTexture : IDisposable
             }
             else
             {
-                ulong bytesPerPixel =
-                    format == RhiNative.TextureFormat.Rgba16Float
-                        ? 8ul
-                        : 4ul;
+                ulong bytesPerPixel = GetUncompressedBytesPerPixel(format);
                 total += (ulong)mipWidth * mipHeight * bytesPerPixel;
             }
             mipWidth = Math.Max(mipWidth >> 1, 1);
@@ -310,6 +307,22 @@ public sealed class RhiTexture : IDisposable
         }
         return total;
     }
+
+    /// <summary>Gets bytes per pixel for an uncompressed texture format.</summary>
+    public static uint GetUncompressedBytesPerPixel(
+        RhiNative.TextureFormat format)
+        => format switch
+        {
+            RhiNative.TextureFormat.Rgba16Float => 8,
+            RhiNative.TextureFormat.Rg32Uint => 8,
+            RhiNative.TextureFormat.Rg16Unorm => 4,
+            RhiNative.TextureFormat.Rgba8Unorm => 4,
+            RhiNative.TextureFormat.Rgba8Srgb => 4,
+            RhiNative.TextureFormat.Bgra8Unorm => 4,
+            RhiNative.TextureFormat.Depth32Float => 4,
+            RhiNative.TextureFormat.Depth24Stencil8 => 4,
+            _ => 0,
+        };
 
     /// <summary>Read back the texture's bytes into a managed byte[].
     /// Caller is responsible for choosing the row stride.</summary>

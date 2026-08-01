@@ -153,6 +153,13 @@ public class PbrPass : RenderPass
     {
         builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.RenderTarget);
         builder.Write(RenderGraphResources.DepthBufferHandle, ResourceState.DepthStencil);
+        SetupShadingReads(builder);
+        builder.Read(_drawCommandsHandle, ResourceState.ShaderRead);
+        builder.Read(_drawCountHandle, ResourceState.ShaderRead);
+    }
+
+    internal void SetupShadingReads(RenderGraphBuilder builder)
+    {
         if (_directionalShadow != null)
         {
             for (int cascadeIndex = 0;
@@ -183,6 +190,7 @@ public class PbrPass : RenderPass
             builder.ImportBuffer(handles.GridToProbeIndex);
             builder.ImportBuffer(handles.ProbeWorldKeys);
             builder.ImportBuffer(handles.WorldProbeHash);
+            builder.ImportBuffer(handles.ProbeStates);
             builder.ImportBuffer(handles.VolumeState);
             builder.ImportTexture(handles.Irradiance);
             builder.ImportTexture(handles.Visibility);
@@ -190,17 +198,116 @@ public class PbrPass : RenderPass
             builder.Read(handles.GridToProbeIndex, ResourceState.ShaderRead);
             builder.Read(handles.ProbeWorldKeys, ResourceState.ShaderRead);
             builder.Read(handles.WorldProbeHash, ResourceState.ShaderRead);
+            builder.Read(handles.ProbeStates, ResourceState.ShaderRead);
             builder.Read(handles.VolumeState, ResourceState.ShaderRead);
             builder.Read(handles.Irradiance, ResourceState.ShaderRead);
             builder.Read(handles.Visibility, ResourceState.ShaderRead);
         }
-        builder.Read(_drawCommandsHandle, ResourceState.ShaderRead);
-        builder.Read(_drawCountHandle, ResourceState.ShaderRead);
         builder.Read(_clusterRecordsHandle, ResourceState.ShaderRead);
         builder.Read(_clusterLightIndicesHandle, ResourceState.ShaderRead);
     }
 
     internal RenderPass CreateComputePass() => new RasterComputePass(this);
+
+    internal RenderPass CreateVisibilityBufferPass()
+        => new VisibilityBufferPass(
+            _device,
+            _contentRoot,
+            _sceneCache,
+            this,
+            _cliArgs,
+            _includeDirs,
+            _compileCache);
+
+    internal RenderPass CreateVisibilityReconstructionPass()
+        => new VisibilityReconstructionPass(
+            _device,
+            _contentRoot,
+            _sceneCache,
+            this,
+            _cliArgs,
+            _includeDirs,
+            _compileCache);
+
+    internal RenderPass CreateVisibilityReferencePass()
+        => new VisibilityReferencePass(
+            _device,
+            _contentRoot,
+            _sceneCache,
+            this,
+            _cliArgs,
+            _includeDirs,
+            _compileCache);
+
+    internal RenderPass CreateVisibilityShadingPass()
+        => new VisibilityShadingPass(
+            _device,
+            _contentRoot,
+            this,
+            _cliArgs,
+            _includeDirs,
+            _compileCache);
+
+    internal ResourceHandle DrawCommandsHandle => _drawCommandsHandle;
+    internal RhiBuffer DrawCommandBuffer => _drawCmdBuffer;
+    internal SceneFrameData PreparedFrameData => _preparedFrameData;
+    internal ScenePushData PreparedPush => _preparedPush;
+    internal RhiBindlessHeap BindlessHeap => _bindlessHeap;
+    internal bool RenderSkyEnabled => _renderSky;
+
+    internal void BindShadingResources(ICommandSink sink)
+    {
+        SceneFrameData frameData = _preparedFrameData;
+        sink.UseBuffer(_instanceBuffer, 1);
+        sink.UseBuffer(_partBuffer, 1);
+        sink.UseBuffer(_materialBuffer, 1);
+        sink.UseBuffer(_cameraBuffer, 1);
+        sink.UseBuffer(_lightBuffer, 1);
+        sink.UseBuffer(_clusterRecordBuffer, 1);
+        sink.UseBuffer(_clusterLightIndexBuffer, 1);
+        if (_punctualShadow != null)
+            sink.UseBuffer(_punctualShadow.FaceBuffer, 1);
+        if (_ddgiAtlas != null &&
+            _ddgiAtlas.TryGetSparseBuffers(
+                out RhiBuffer probePositions,
+                out RhiBuffer gridToProbeIndex,
+                out _) &&
+            _ddgiAtlas.TryGetPersistentLookup(
+                out RhiBuffer probeWorldKeys,
+                out RhiBuffer worldProbeHash,
+                out _) &&
+            _ddgiAtlas.TryGetGpuProbeState(
+                out RhiBuffer probeStates,
+                out _,
+                out RhiBuffer volumeState) &&
+            _ddgiAtlas.IsSparseLayoutReady)
+        {
+            sink.UseBuffer(probePositions, 1);
+            sink.UseBuffer(gridToProbeIndex, 1);
+            sink.UseBuffer(probeWorldKeys, 1);
+            sink.UseBuffer(worldProbeHash, 1);
+            sink.UseBuffer(probeStates, 1);
+            sink.UseBuffer(volumeState, 1);
+        }
+        foreach (Engine.Assets.Mesh mesh in frameData.UniqueMeshes)
+        {
+            sink.UseBuffer(mesh.VertexBuffer, 1);
+            sink.UseBuffer(mesh.IndexBuffer, 1);
+        }
+        if (_bindlessHeap.IsInitialized)
+        {
+            sink.BindHeap(1, _bindlessHeap);
+            sink.BindSampler(0, _sampler);
+        }
+    }
+
+    internal void EnsurePrepared(
+        ICommandSink sink,
+        RenderGraphContext context)
+    {
+        if (_preparedFrame != context.FrameNumber)
+            ExecuteCompute(sink, context);
+    }
 
     internal void SetupCompute(RenderGraphBuilder builder)
     {
@@ -305,8 +412,7 @@ public class PbrPass : RenderPass
 
         uint w = context.Width > 0 ? context.Width : 1280;
         uint h = context.Height > 0 ? context.Height : 720;
-        if (_preparedFrame != context.FrameNumber)
-            ExecuteCompute(sink, context);
+        EnsurePrepared(sink, context);
 
         SceneFrameData frameData = _preparedFrameData;
         ScenePushData pbrPush = _preparedPush;
@@ -317,41 +423,7 @@ public class PbrPass : RenderPass
             sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store, depthTarget);
             sink.BindPipeline(_pipeline);
             sink.SetViewport(0, 0, w, h);
-            sink.UseBuffer(_instanceBuffer, 1);
-            sink.UseBuffer(_partBuffer, 1);
-            sink.UseBuffer(_materialBuffer, 1);
-            sink.UseBuffer(_cameraBuffer, 1);
-            sink.UseBuffer(_lightBuffer, 1);
-            sink.UseBuffer(_clusterRecordBuffer, 1);
-            sink.UseBuffer(_clusterLightIndexBuffer, 1);
-            if (_punctualShadow != null)
-                sink.UseBuffer(_punctualShadow.FaceBuffer, 1);
-            if (_ddgiAtlas != null &&
-                _ddgiAtlas.TryGetSparseBuffers(
-                    out RhiBuffer probePositions,
-                    out RhiBuffer gridToProbeIndex,
-                    out _) &&
-                _ddgiAtlas.TryGetPersistentLookup(
-                    out RhiBuffer probeWorldKeys,
-                    out RhiBuffer worldProbeHash,
-                    out _) &&
-                _ddgiAtlas.TryGetGpuProbeState(
-                    out _,
-                    out _,
-                    out RhiBuffer volumeState) &&
-                _ddgiAtlas.IsSparseLayoutReady)
-            {
-                sink.UseBuffer(probePositions, 1);
-                sink.UseBuffer(gridToProbeIndex, 1);
-                sink.UseBuffer(probeWorldKeys, 1);
-                sink.UseBuffer(worldProbeHash, 1);
-                sink.UseBuffer(volumeState, 1);
-            }
-            foreach (var mesh in frameData.UniqueMeshes)
-            {
-                sink.UseBuffer(mesh.VertexBuffer, 1);
-                sink.UseBuffer(mesh.IndexBuffer, 1);
-            }
+            BindShadingResources(sink);
 
             sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pbrPush));
 
@@ -361,11 +433,6 @@ public class PbrPass : RenderPass
                 sink.Draw(3, 1, 0, 0);
             }
 
-            if (_bindlessHeap.IsInitialized)
-            {
-                sink.BindHeap(1, _bindlessHeap);
-                sink.BindSampler(0, _sampler);
-            }
             sink.BindPipeline(_pipeline);
             sink.DrawIndirect(_drawCmdBuffer, 0, (uint)frameData.Parts.Count, (uint)DrawIndirectCommandSizeBytes);
         }
@@ -431,7 +498,7 @@ public class PbrPass : RenderPass
                     out _);
             bool hasGpuState =
                 _ddgiAtlas.TryGetGpuProbeState(
-                    out _,
+                    out RhiBuffer probeStates,
                     out _,
                     out RhiBuffer volumeState);
             bool hasPersistentLookup =
@@ -465,6 +532,7 @@ public class PbrPass : RenderPass
                 pbrPush.DDGIProbeWorldKeys = probeWorldKeys.DeviceAddress;
                 pbrPush.DDGIWorldProbeHash = worldProbeHash.DeviceAddress;
                 pbrPush.DDGIVolumeState = volumeState.DeviceAddress;
+                pbrPush.DDGIProbeStates = probeStates.DeviceAddress;
             }
             else
             {
@@ -473,6 +541,7 @@ public class PbrPass : RenderPass
                 pbrPush.DDGIProbeWorldKeys = 0;
                 pbrPush.DDGIWorldProbeHash = 0;
                 pbrPush.DDGIVolumeState = 0;
+                pbrPush.DDGIProbeStates = 0;
             }
         }
         else
@@ -485,6 +554,7 @@ public class PbrPass : RenderPass
             pbrPush.DDGIProbeWorldKeys = 0;
             pbrPush.DDGIWorldProbeHash = 0;
             pbrPush.DDGIVolumeState = 0;
+            pbrPush.DDGIProbeStates = 0;
         }
     }
 
@@ -529,7 +599,7 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     VertexOutput output;
     PartData part = push.parts[iid];
     InstanceData inst = push.instances[part.instanceIdx];
-    uint index = part.indices[vid];
+    uint index = LoadPartVertexIndex(part, vid);
     Vertex v = part.vertices[index];
     float3 vPos = float3(v.px, v.py, v.pz) + part.localOffset.xyz;
     float4 worldPos = mul(inst.modelMatrix, float4(vPos, 1.0));

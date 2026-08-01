@@ -96,7 +96,15 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         "Emissive",
         "UV",
         "Tangent",
-        "Bitangent"
+        "Bitangent",
+        "Visibility Buffer",
+        "Reconstructed Position",
+        "Reconstructed Normal",
+        "Reconstructed UV",
+        "Reconstructed Material ID",
+        "Reconstructed Instance ID",
+        "Reconstructed Tangent",
+        "Visibility PBR"
     ];
 
     /// <summary>Gets the composite debug-view dropdown: base views +
@@ -753,6 +761,22 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 "UV" => ViewportDebugView.Uv,
                 "Tangent" => ViewportDebugView.Tangent,
                 "Bitangent" => ViewportDebugView.Bitangent,
+                "Visibility Buffer" =>
+                    ViewportDebugView.VisibilityBuffer,
+                "Reconstructed Position" =>
+                    ViewportDebugView.ReconstructedPosition,
+                "Reconstructed Normal" =>
+                    ViewportDebugView.ReconstructedNormal,
+                "Reconstructed UV" =>
+                    ViewportDebugView.ReconstructedUv,
+                "Reconstructed Material ID" =>
+                    ViewportDebugView.ReconstructedMaterial,
+                "Reconstructed Instance ID" =>
+                    ViewportDebugView.ReconstructedInstance,
+                "Reconstructed Tangent" =>
+                    ViewportDebugView.ReconstructedTangent,
+                "Visibility PBR" =>
+                    ViewportDebugView.VisibilityPbr,
                 _ => ViewportDebugView.Lit
             };
         _gameLoop.CameraFieldOfViewDegrees =
@@ -789,6 +813,19 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
             ViewportDebugView.WorldPosition => "World Position",
             ViewportDebugView.Rma => "RMA",
             ViewportDebugView.Uv => "UV",
+            ViewportDebugView.VisibilityBuffer => "Visibility Buffer",
+            ViewportDebugView.ReconstructedPosition =>
+                "Reconstructed Position",
+            ViewportDebugView.ReconstructedNormal =>
+                "Reconstructed Normal",
+            ViewportDebugView.ReconstructedUv => "Reconstructed UV",
+            ViewportDebugView.ReconstructedMaterial =>
+                "Reconstructed Material ID",
+            ViewportDebugView.ReconstructedInstance =>
+                "Reconstructed Instance ID",
+            ViewportDebugView.ReconstructedTangent =>
+                "Reconstructed Tangent",
+            ViewportDebugView.VisibilityPbr => "Visibility PBR",
             _ => mode.ToString()
         };
 

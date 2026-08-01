@@ -64,7 +64,31 @@ public enum ViewportDebugView
     Tangent,
 
     /// <summary>Displays the surface bitangent direction.</summary>
-    Bitangent
+    Bitangent,
+
+    /// <summary>Displays raster identifiers and barycentric coordinates.</summary>
+    VisibilityBuffer,
+
+    /// <summary>Displays world position reconstructed from visibility.</summary>
+    ReconstructedPosition,
+
+    /// <summary>Displays geometric normals reconstructed from visibility.</summary>
+    ReconstructedNormal,
+
+    /// <summary>Displays texture coordinates reconstructed from visibility.</summary>
+    ReconstructedUv,
+
+    /// <summary>Displays stable reconstructed material identifiers.</summary>
+    ReconstructedMaterial,
+
+    /// <summary>Displays stable reconstructed scene-instance identifiers.</summary>
+    ReconstructedInstance,
+
+    /// <summary>Displays tangent vectors reconstructed from visibility.</summary>
+    ReconstructedTangent,
+
+    /// <summary>Compares compute visibility shading with forward PBR.</summary>
+    VisibilityPbr
 }
 
 /// <summary>Identifies the active editor transform gizmo operation.</summary>

@@ -114,7 +114,11 @@ public sealed class DDGIShaderContractTests
             "if (ready && !dirty && !lightingDirty && !converging)",
             source);
         Assert.Contains("sceneBake && !ready", source);
-        Assert.Contains("uint selected[128]", source);
+        Assert.Contains("[NumThreads(128, 1, 1)]", source);
+        Assert.Contains("groupshared uint g_candidateProbes", source);
+        Assert.Contains("candidateIndex += kSchedulerThreadCount", source);
+        Assert.Contains("kCandidatesPerLane = 2u", source);
+        Assert.Contains("GroupMemoryBarrierWithGroupSync", source);
         Assert.Contains("min(push.maxUpdates, 128u)", source);
         Assert.Contains("fineLevelWeight", source);
         Assert.Contains("lightingDirty", source);
@@ -130,6 +134,8 @@ public sealed class DDGIShaderContractTests
         string schedulePass = ReadRepositoryFile(
             "Plugins", "Renderer.DDGI", "DDGIProbeSchedulePass.cs");
         Assert.Contains("PersistentScanWindow = 8192", schedulePass);
+        Assert.Contains("SchedulerThreadCount = 128", schedulePass);
+        Assert.Contains("SchedulerThreadCount,", schedulePass);
         Assert.Contains("GetPersistentScanStart", schedulePass);
         Assert.Contains("AdvancePersistentScan", schedulePass);
         string updateSource = File.ReadAllText(
@@ -164,6 +170,8 @@ public sealed class DDGIShaderContractTests
 
         Assert.Contains("push.DDGIVolumeState[0]", sampling);
         Assert.Contains("push.DDGIProbePositions[sparseIdx].w > 0.5", sampling);
+        Assert.Contains("push.DDGIProbeStates[sparseIdx].x", sampling);
+        Assert.Contains("kInitialRadianceAccumulation", sampling);
         Assert.Contains("SamplePersistentLevel", sampling);
         Assert.Contains("LookupPersistentProbe", sampling);
         Assert.Contains(
@@ -177,6 +185,10 @@ public sealed class DDGIShaderContractTests
         Assert.Contains(
             "combinedConfidence +=",
             sampling);
+        Assert.Contains(
+            "saturate(result.sampleConfidence)",
+            sampling);
+        Assert.DoesNotContain("ProbeRadianceIsCurrent", sampling);
         Assert.DoesNotContain("gridOffset", sampling);
         Assert.Contains("AtlasCoordinate", sampling);
         Assert.Contains("kVisibilityTileResolution = 4u", sampling);
@@ -212,6 +224,7 @@ public sealed class DDGIShaderContractTests
         Assert.Contains("lightingOnlyLo +", pbr);
         Assert.DoesNotContain("Lo / max(albedo", pbr);
         Assert.Contains("pbrPush.DDGIVolumeState = volumeState.DeviceAddress", pass);
+        Assert.Contains("pbrPush.DDGIProbeStates = probeStates.DeviceAddress", pass);
 
         string clustered = ReadRepositoryFile(
             "Plugins", "Renderer.Clustered", "ClusteredRendererPlugin.cs");
@@ -301,10 +314,15 @@ public sealed class DDGIShaderContractTests
         Assert.Contains("state.lastUpdateFrame = push.frameNumber", source);
         Assert.Contains("#include \"nishita_sky.slang\"", source);
         Assert.Contains("state.lightRevision != push.radianceRevision", source);
+        Assert.Contains("historyWeight = 0.75", source);
         Assert.Contains("kRadianceConvergenceSteps = 3u", source);
         Assert.Contains("kInitialRadianceAccumulation = 1u << 13u", source);
         Assert.Contains("StratifiedSphereDirection", source);
         Assert.Contains("probeIndex ^ HashUint(frameNumber", source);
+        Assert.Contains("kRadianceOutlierScale = 6.0", source);
+        Assert.Contains("g_radianceLimit", source);
+        Assert.Contains("incident *= min(", source);
+        Assert.Contains("float3(0.2126, 0.7152, 0.0722)", source);
         Assert.Contains("accumulatedBatchCount / (accumulatedBatchCount + 1.0)", source);
         Assert.Contains("state.flags &= ~16u", source);
         Assert.Contains("kVisibilityLobePower = 4.0", source);
@@ -543,6 +561,31 @@ public sealed class DDGIShaderContractTests
             "geometryRevision != _bakeGeometryRevision",
             worldCache);
         Assert.Contains("_bakeLevel = _clipmapLevelCount - 1", worldCache);
+    }
+
+    [Fact]
+    public void ProbeUpdate_RejectsOccludedSkyAndUsesSceneScaleTraceDistance()
+    {
+        string updatePass = ReadRepositoryFile(
+            "Plugins", "Renderer.DDGI", "DDGIProbeUpdatePass.cs");
+        string updateShader = ReadRepositoryFile(
+            "Plugins", "Renderer.DDGI", "shaders",
+            "ddgi_probe_update.slang");
+
+        Assert.Contains("CalculateTraceDistance", updatePass);
+        Assert.Contains("TryGetSceneBounds", updatePass);
+        Assert.Contains("sceneDiagonal * 1.05f", updatePass);
+        Assert.Contains("retaining probe history", updatePass);
+        Assert.DoesNotContain("using sky fallback", updatePass);
+        Assert.Contains("TraceVisibility", updateShader);
+        Assert.Contains("HasLightVisibility", updateShader);
+        Assert.Contains("EvaluateLights(hitPos, hitNormal, tMax)", updateShader);
+        Assert.Contains(
+            "RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH",
+            updateShader);
+        Assert.Contains(
+            "if (TraceVisibility(",
+            updateShader);
     }
 
     [Fact]

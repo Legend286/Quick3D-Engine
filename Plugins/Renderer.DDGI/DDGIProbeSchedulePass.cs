@@ -15,6 +15,7 @@ namespace Engine.DDGI;
 public sealed class DDGIProbeSchedulePass : RenderPass, IDisposable
 {
     public const int PersistentScanWindow = 8192;
+    public const uint SchedulerThreadCount = 128;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SchedulePushData
@@ -178,7 +179,13 @@ public sealed class DDGIProbeSchedulePass : RenderPass, IDisposable
             0,
             (uint)sizeof(SchedulePushData),
             (IntPtr)(&push));
-        sink.Dispatch(1, 1, 1, 1, 1, 1);
+        sink.Dispatch(
+            1,
+            1,
+            1,
+            SchedulerThreadCount,
+            1,
+            1);
         sink.EndComputePass();
     }
 

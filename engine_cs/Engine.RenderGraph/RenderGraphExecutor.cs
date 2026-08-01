@@ -19,6 +19,7 @@ namespace Engine.RenderGraph;
 public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 {
     private const int GpuFrameHistoryCapacity = 15;
+    private const int CpuTimingHistoryCapacity = 32;
 
     private sealed record TimestampPoolSubmission(
         RenderPlan Plan,
@@ -49,6 +50,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         new TimestampPoolSubmission?[3];
     private readonly Dictionary<long, CompletedTimestampCapture> _completedGraphicsTimings = new();
     private readonly Dictionary<long, CompletedTimestampCapture> _completedComputeTimings = new();
+    private readonly Dictionary<long, RenderPassTiming[]> _cpuTimingCaptures = new();
     private double?[] _lastGpuPassMilliseconds = Array.Empty<double?>();
     private readonly double[] _gpuFrameHistory =
         new double[GpuFrameHistoryCapacity];
@@ -77,10 +79,14 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     public RenderGraphContext Context => _ctx;
     public IReadOnlyList<RenderPassTiming> LastPassTimings => _lastPassTimings;
     /// <summary>
-    /// Gets the command-buffer span for same-capture sample validation.
+    /// Gets the longest command-buffer span for the published GPU capture.
     /// </summary>
     public double? LastRawGpuFrameMilliseconds =>
-        _lastRawGpuFrameMilliseconds;
+        _lastRawGpuFrameMilliseconds is double graphics &&
+        _lastComputeRawFrameMilliseconds is double compute
+            ? Math.Max(graphics, compute)
+            : _lastRawGpuFrameMilliseconds ??
+                _lastComputeRawFrameMilliseconds;
     public double? LastGpuFrameMilliseconds => _lastGpuFrameMilliseconds;
     public long LastGpuTimingFrameNumber => _lastGpuTimingFrameNumber;
     public bool EnableGpuTiming { get; set; }
@@ -253,9 +259,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                 timings[i] = new RenderPassTiming(
                     pass.Name,
                     Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds,
-                    i < _lastGpuPassMilliseconds.Length
-                        ? _lastGpuPassMilliseconds[i]
-                        : null);
+                    null);
             }
 
             if (useAsyncCompute)
@@ -308,8 +312,11 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             computeRecorder?.Submit();
             graphicsRecorder.Submit();
 
-            _lastPassTimings = timings;
+            _cpuTimingCaptures[_executionNumber] = timings;
+            if (!EnableGpuTiming || _lastGpuTimingFrameNumber < 0)
+                _lastPassTimings = timings;
             _executionNumber++;
+            PruneCpuTimingCaptures();
             ReleaseTransientResources(graph);
         }
         finally
@@ -480,6 +487,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         _lastGpuTimingFrameNumber = newestGraphics.FrameNumber;
         _lastRawGpuFrameMilliseconds = newestGraphics.FrameMilliseconds;
         _lastComputeRawFrameMilliseconds = matchingCompute?.FrameMilliseconds;
+        PublishCoherentPassTimings(graph, newestGraphics.FrameNumber);
 
         double graphicsPathMilliseconds =
             newestGraphics.FrameMilliseconds ?? passMaxMilliseconds;
@@ -526,6 +534,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 
             var passMilliseconds =
                 new double?[submission.SampledPasses.Length];
+            double sampledTotalMilliseconds = 0.0;
             for (int passIndex = 0;
                  passIndex < passMilliseconds.Length;
                  ++passIndex)
@@ -536,7 +545,15 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                 {
                     passMilliseconds[passIndex] =
                         duration / 1_000_000.0;
+                    sampledTotalMilliseconds +=
+                        duration / 1_000_000.0;
                 }
+            }
+
+            if (frameMilliseconds is double frameDuration &&
+                sampledTotalMilliseconds > frameDuration * 1.05)
+            {
+                Array.Clear(passMilliseconds);
             }
 
             completedCaptures[submission.FrameNumber] =
@@ -590,6 +607,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     {
         _publishedTimingPlan = graph;
         Array.Clear(_lastGpuPassMilliseconds);
+        _cpuTimingCaptures.Clear();
         _lastRawGpuFrameMilliseconds = null;
         _lastComputeRawFrameMilliseconds = null;
         _lastGpuFrameMilliseconds = null;
@@ -598,6 +616,45 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         _gpuFrameHistoryCount = 0;
         _gpuFrameHistoryIndex = 0;
         PruneCompletedTimingCaptures(graph);
+    }
+
+    private void PublishCoherentPassTimings(
+        RenderPlan graph,
+        long frameNumber)
+    {
+        _cpuTimingCaptures.TryGetValue(
+            frameNumber,
+            out RenderPassTiming[]? cpuTimings);
+
+        var coherent = new RenderPassTiming[graph.Passes.Length];
+        for (int passIndex = 0;
+             passIndex < coherent.Length;
+             ++passIndex)
+        {
+            double cpuMilliseconds = cpuTimings != null &&
+                passIndex < cpuTimings.Length
+                ? cpuTimings[passIndex].CpuMilliseconds
+                : 0.0;
+            coherent[passIndex] = new RenderPassTiming(
+                graph.Passes[passIndex].Name,
+                cpuMilliseconds,
+                passIndex < _lastGpuPassMilliseconds.Length
+                    ? _lastGpuPassMilliseconds[passIndex]
+                    : null);
+        }
+        _lastPassTimings = coherent;
+    }
+
+    private void PruneCpuTimingCaptures()
+    {
+        long minimumFrame =
+            _executionNumber - CpuTimingHistoryCapacity;
+        foreach (long frameNumber in _cpuTimingCaptures.Keys
+                     .Where(frame => frame < minimumFrame)
+                     .ToArray())
+        {
+            _cpuTimingCaptures.Remove(frameNumber);
+        }
     }
 
     private void PruneCompletedTimingCaptures(RenderPlan graph)
@@ -664,6 +721,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         Array.Clear(_computeTimestampPoolSubmissions);
         _completedGraphicsTimings.Clear();
         _completedComputeTimings.Clear();
+        _cpuTimingCaptures.Clear();
         _timestampPassCount = 0;
         Array.Clear(_gpuFrameHistory);
         _gpuFrameHistoryCount = 0;
@@ -755,6 +813,21 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                                 RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
                                 RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store)
         => Recorder.BeginRenderPass(color, colorLoad, colorStore, depth, depthLoad, depthStore);
+
+    public void BeginRenderPass(
+        ReadOnlySpan<RhiTexture> colors,
+        RhiNative.LoadOp colorLoad,
+        RhiNative.StoreOp colorStore,
+        RhiTexture? depth = null,
+        RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
+        RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store)
+        => Recorder.BeginRenderPass(
+            colors,
+            colorLoad,
+            colorStore,
+            depth,
+            depthLoad,
+            depthStore);
 
     public void BeginDepthOnlyPass(
         RhiTexture depth,

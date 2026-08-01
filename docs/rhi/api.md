@@ -126,6 +126,16 @@ void    rhi_release_external_image_handle(void* handle);
 testing or `ALWAYS` for operations such as scissored shadow-atlas tile clears.
 The compare mode is pipeline state and is rebound with the graphics pipeline.
 
+Descriptor ABI 5 appends three color formats and an explicit attachment count.
+ABI 4 callers retain the original single `color_attachment_format` behavior.
+`RhiPipeline.CreateGraphicsMrt` currently exposes the two-target managed path;
+the native descriptor reserves four targets. `RHI_FORMAT_RG32_UINT` stores exact
+integer identifiers and `RHI_FORMAT_RG16_UNORM` stores two normalized 16-bit
+channels for visibility-buffer barycentrics.
+`RhiTexture.GetUncompressedBytesPerPixel` reports the byte width used by
+allocation and render-graph diagnostics, returning zero for compressed or
+undefined formats.
+
 `rhi_texture_export_external_image` is intended for editor/compositor interop,
 not general gameplay readback. The current Metal implementation supports
 BGRA8 render targets only and expects the source texture to be created with
@@ -164,6 +174,9 @@ The C# managed wrappers (`engine_cs/Engine.RHI/`) enforce this with the
 Managed code uses `RhiPipeline.CreateDepthOnly`,
 `RhiTexture.CreateDepth(..., shaderReadable: true)`, and
 `CommandRecorder.BeginDepthOnlyPass` for portable shadow-map rendering.
+`CommandRecorder.BeginRenderPass(ReadOnlySpan<RhiTexture>, ...)` records two to
+four color attachments with shared load/store operations and an optional depth
+attachment.
 
 ### Timestamp queries
 
@@ -188,14 +201,16 @@ int32_t rhi_timestamp_query_pool_read_frame_duration(
 
 Duration `i` is formed from samples `2*i` and `2*i+1`. Reads are non-blocking:
 `1` means ready, `0` means still in flight, and `-1` means unsupported or
-invalid. Metal records timestamp counters at draw and dispatch encoder
-boundaries and resolves them to shared memory. Metal correlates CPU and GPU
-clocks before submission and after completion, then converts each GPU delta
-using the measured clock-span ratio. A duration larger than the completed
-command buffer is rejected as invalid. The frame-duration read uses Metal's
-completed command-buffer GPU start and end times, so total GPU timing remains
-available independently of per-pass counter sampling. Vulkan can map the same
-API to query pools and `timestampPeriod`.
+invalid. Metal prefers explicit draw- and dispatch-boundary samples, falling
+back to stage-boundary attachments only when explicit boundary sampling is
+unavailable. This prevents unrelated encoders from resolving as duplicated or
+cumulative pass durations. Metal correlates CPU and GPU clocks before
+submission and after completion, then converts each GPU delta using the
+measured clock-span ratio. A duration larger than the completed command buffer,
+or a set of serial pass durations whose sum exceeds that buffer, is rejected as
+invalid. The frame-duration read uses Metal's completed command-buffer GPU
+start and end times. Vulkan can map the same API to query pools and
+`timestampPeriod`.
 
 ## Backend registration
 
@@ -243,7 +258,9 @@ ABI because they select existing render plans and camera constants rather than
 creating backend resources. `ViewportProjectionMode` supports Perspective and
 Orthographic; `ViewportDebugView` selects Lit, Wireframe, Depth, normal,
 material-channel, lighting, position, emissive, UV, tangent, and bitangent
-visualizations.
+visualizations, plus visibility-buffer identifier/barycentric and reconstructed
+position, normal, UV, material, instance, and tangent diagnostics. Visibility
+PBR compares the full raster path with 8×8 compute shading and amplified error.
 
 `IGameLoop.HasPendingRenderWork` reports whether renderer-owned incremental
 work needs another viewport frame. Low-power editor presentation consults it

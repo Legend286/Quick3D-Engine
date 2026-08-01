@@ -211,10 +211,14 @@ void computeMain(uint3 threadId : SV_DispatchThreadID)
             float3 axis = normalize(light.direction.xyz);
             float outerCos = clamp(light.shapeParams.y, 0.001, 0.999);
             float tanTheta = sqrt(max(1.0 - outerCos * outerCos, 0.0)) / outerCos;
-            intersects = SphereIntersectsCluster(light.position.xyz + axis * (light.position.w * 0.5), light.position.w * 0.5, planes);
-            if (intersects) {
-                intersects = FiniteConeIntersectsCluster(light.position.xyz, axis, light.position.w, tanTheta, corners, planes);
-            }
+            float halfRange = light.position.w * 0.5;
+            float capRadius = light.position.w * tanTheta;
+            float boundsRadius = sqrt(
+                halfRange * halfRange + capRadius * capRadius);
+            intersects = SphereIntersectsCluster(
+                light.position.xyz + axis * halfRange,
+                boundsRadius,
+                planes);
         }
 
         if (intersects) {

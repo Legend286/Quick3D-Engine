@@ -27,6 +27,16 @@ struct PartData {
     uint flags;
 };
 
+uint LoadPartVertexIndex(PartData part, uint elementIndex)
+{
+    if ((part.flags & 1u) != 0u)
+        return part.indices[elementIndex];
+    uint packed = part.indices[elementIndex / 2u];
+    return (elementIndex & 1u) == 0u
+        ? packed & 0xffffu
+        : packed >> 16u;
+}
+
 struct InstanceData {
     float4x4 modelMatrix;
     float4 aabbMin;
@@ -147,4 +157,5 @@ struct ScenePushData {
     int4*   DDGIProbeWorldKeys;
     uint*   DDGIWorldProbeHash;
     uint*   DDGIVolumeState;
+    uint4*  DDGIProbeStates;
 };

@@ -35,6 +35,8 @@ public static partial class RhiNative
         Bgra8Unorm = 4,
         Depth32Float = 5,
         Depth24Stencil8 = 6,
+        Rg16Unorm = 7,
+        Rg32Uint = 8,
         Bc1RgbUnormBlock = 20,
         Bc1RgbaUnormBlock = 21,
         Bc3UnormBlock = 22,
@@ -154,6 +156,10 @@ public static partial class RhiNative
         public int SampleCount;
         public uint PrimitiveTopology;
         public CompareOp DepthCompare;
+        public TextureFormat ColorFormat1;
+        public TextureFormat ColorFormat2;
+        public TextureFormat ColorFormat3;
+        public uint ColorAttachmentCount;
     }
 
     [StructLayout(LayoutKind.Sequential)]

@@ -2,6 +2,7 @@
 // Render pass base class. Subclasses declare resources in Setup() and record
 // commands in Execute().
 
+using System;
 using Engine.CBindings;
 using Engine.RHI;
 
@@ -32,6 +33,15 @@ public interface ICommandSink
                                 RhiTexture? depth = null,
                                 RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
                                 RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store);
+
+    /// <summary>Begin a render pass with multiple color attachments.</summary>
+    public void BeginRenderPass(
+        ReadOnlySpan<RhiTexture> colors,
+        RhiNative.LoadOp colorLoad,
+        RhiNative.StoreOp colorStore,
+        RhiTexture? depth = null,
+        RhiNative.LoadOp depthLoad = RhiNative.LoadOp.Clear,
+        RhiNative.StoreOp depthStore = RhiNative.StoreOp.Store);
 
     public void BeginDepthOnlyPass(
         RhiTexture depth,

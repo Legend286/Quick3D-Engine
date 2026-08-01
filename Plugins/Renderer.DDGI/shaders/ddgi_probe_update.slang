@@ -15,6 +15,8 @@ static const uint kRadianceConvergenceShift = 10u;
 static const uint kRadianceConvergenceSteps = 3u;
 static const uint kInitialRadianceAccumulation = 1u << 13u;
 static const float kVisibilityLobePower = 4.0;
+static const float kRadianceOutlierScale = 6.0;
+static const float kMinimumRadianceLimit = 0.5;
 
 struct UpdatePushData
 {
@@ -159,19 +161,81 @@ float3 EvaluateOneLight(
     return irradiance;
 }
 
+bool TraceVisibility(
+    float3 worldPosition,
+    float3 worldNormal,
+    float3 direction,
+    float traceDistance)
+{
+    RayDesc visibilityRay;
+    visibilityRay.Origin = worldPosition + worldNormal * 0.02;
+    visibilityRay.Direction = direction;
+    visibilityRay.TMin = 0.01;
+    visibilityRay.TMax = traceDistance;
+    RayQuery<
+        RAY_FLAG_FORCE_OPAQUE |
+        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+    query.TraceRayInline(
+        sceneTlas,
+        RAY_FLAG_FORCE_OPAQUE |
+            RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+        0xFF,
+        visibilityRay);
+    while (query.Proceed())
+    {
+    }
+    return query.CommittedStatus() != COMMITTED_TRIANGLE_HIT;
+}
+
+bool HasLightVisibility(
+    float3 worldPosition,
+    float3 worldNormal,
+    LightData light,
+    float sceneTraceDistance)
+{
+    if (light.direction.w == 0.0)
+    {
+        return TraceVisibility(
+            worldPosition,
+            worldNormal,
+            normalize(-light.direction.xyz),
+            sceneTraceDistance);
+    }
+    float3 toLight = light.position.xyz - worldPosition;
+    float lightDistance = length(toLight);
+    if (lightDistance <= 0.04)
+        return true;
+    return TraceVisibility(
+        worldPosition,
+        worldNormal,
+        toLight / lightDistance,
+        max(lightDistance - 0.04, 0.01));
+}
+
 float3 EvaluateLights(
     float3 shadingPos,
-    float3 shadingNormal)
+    float3 shadingNormal,
+    float sceneTraceDistance)
 {
     float3 directAccum = float3(0.0);
     for (uint lightIndex = 0u;
          lightIndex < push.lightCount;
          ++lightIndex)
     {
-        directAccum += EvaluateOneLight(
+        LightData light = push.lights[lightIndex];
+        float3 contribution = EvaluateOneLight(
             shadingPos,
             shadingNormal,
-            push.lights[lightIndex]);
+            light);
+        if (any(contribution > 0.0) &&
+            HasLightVisibility(
+                shadingPos,
+                shadingNormal,
+                light,
+                sceneTraceDistance))
+        {
+            directAccum += contribution;
+        }
     }
     return directAccum;
 }
@@ -264,6 +328,7 @@ groupshared float3 g_sZ[32];
 groupshared float3 g_sX[32];
 groupshared float3 g_rayDirection[32];
 groupshared float g_rayDistance[32];
+groupshared float g_radianceLimit;
 
 static const uint kVisibilityTileResolution = 4u;
 static const uint kVisibilityTexelsPerProbe = 16u;
@@ -308,7 +373,7 @@ void computeMain(
     if (raysPerProbe == 0) raysPerProbe = 32;
 
     float tMax = push.extent.x;
-    if (tMax <= 0.0) tMax = 8.0;
+    if (tMax <= 0.0) tMax = 64.0;
 
     float3 rayDir = StratifiedSphereDirection(
         rayIdx,
@@ -366,11 +431,19 @@ void computeMain(
             hitNormal,
             diffuseReflectance,
             emissiveRadiance);
-        float3 incidentLight = EvaluateLights(hitPos, hitNormal);
-        float3 skyIrradiance = GetSkyRadiance(
-            hitNormal,
-            diffuseSky.sunDirAndRadius.xyz,
-            diffuseSky) * 3.14159265;
+        float3 incidentLight = EvaluateLights(hitPos, hitNormal, tMax);
+        float3 skyIrradiance = float3(0.0);
+        if (TraceVisibility(
+                hitPos,
+                hitNormal,
+                hitNormal,
+                tMax))
+        {
+            skyIrradiance = GetSkyRadiance(
+                hitNormal,
+                diffuseSky.sunDirAndRadius.xyz,
+                diffuseSky) * 3.14159265;
+        }
         incident =
             (incidentLight + skyIrradiance) *
                 diffuseReflectance * (1.0 / 3.14159265) +
@@ -384,12 +457,44 @@ void computeMain(
             diffuseSky);
     }
 
+    if (any(isnan(incident)) || any(isinf(incident)))
+        incident = float3(0.0);
+    incident = max(incident, float3(0.0));
+    g_s0[rayIdx] = incident;
+    g_rayDirection[rayIdx] = rayDir;
+    g_rayDistance[rayIdx] = hit ? hit_t : tMax;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (rayIdx == 0u)
+    {
+        float meanLuminance = 0.0;
+        for (uint sampleIndex = 0u;
+             sampleIndex < 32u;
+             ++sampleIndex)
+        {
+            meanLuminance += dot(
+                g_s0[sampleIndex],
+                float3(0.2126, 0.7152, 0.0722));
+        }
+        meanLuminance *= 1.0 / 32.0;
+        g_radianceLimit = max(
+            meanLuminance * kRadianceOutlierScale,
+            kMinimumRadianceLimit);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    float sampleLuminance = dot(
+        incident,
+        float3(0.2126, 0.7152, 0.0722));
+    incident *= min(
+        1.0,
+        g_radianceLimit / max(sampleLuminance, 0.0001));
     g_s0[rayIdx] = incident;
     g_sY[rayIdx] = incident * rayDir.y;
     g_sZ[rayIdx] = incident * rayDir.z;
     g_sX[rayIdx] = incident * rayDir.x;
-    g_rayDirection[rayIdx] = rayDir;
-    g_rayDistance[rayIdx] = hit ? hit_t : tMax;
 
     GroupMemoryBarrierWithGroupSync();
 
@@ -426,7 +531,7 @@ void computeMain(
         }
         else if (lightingChanged)
         {
-            historyWeight = 0.50;
+            historyWeight = 0.75;
         }
         else if (convergenceSteps > 0u)
         {

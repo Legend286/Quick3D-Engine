@@ -1,26 +1,10 @@
 // SPDX-License-Identifier: MIT
-// Regression test for the cross-encoder state-leak class of bugs where
-// Metal stage-sampling backends record every render pass's end-of-fragment
-// into the previous pass's end slot, collapsing ImGui / OutlineMask /
-// OutlineComposite (and any other back-to-back lightweight pass) into
-// identical GPU durations in the render-graph diagnostics panel.
-//
-// The C RHI fix lives at engine_c/rhi/rhi_metal.mm in
-// metal_begin_render_pass and metal_begin_compute_pass: both now pin
-// attachment.{endOfFragmentSampleIndex, endOfEncoderSampleIndex} to
-// (cli->timing_start_index + 1) so each encoder self-aligns to its
-// canonical pair. The C# companion fix lives in BeginTimestampScope:
-// after the start write, the paired end slot is pre-staged at the
-// cmdlist so backends that don't auto-pair still see the right index
-// at encoder-open.
-//
-// This unit test pins the (i*2, i*2+1) pair invariant at the
-// RenderGraphExecutor call sites and the CommandRecorder API surface
-// so a future edit cannot silently drop one half of the pair.
 
+using System.IO;
+using System.Linq;
+using System.Reflection;
 using Engine.RHI;
 using Engine.RenderGraph;
-using System.Reflection;
 using Xunit;
 
 namespace Game.Tests;
@@ -141,6 +125,62 @@ public sealed class MetalTimingPairTests
         Assert.Equal(0.25, destination[1]);
         Assert.Equal(1.10, destination[2]);
         Assert.Null(destination[3]);
+    }
+
+    [Fact]
+    public void MetalBackend_PrefersExplicitPassBoundarySamples()
+    {
+        string source = ReadRepositoryFile(
+            "engine_c", "rhi", "rhi_metal.mm");
+
+        Assert.Contains(
+            "supports_stage_sampling &&\n                !cli->timing_pool->supports_draw_sampling",
+            source);
+        Assert.Contains(
+            "supports_stage_sampling &&\n                !cli->timing_pool->supports_dispatch_sampling",
+            source);
+        Assert.Contains(
+            "ri->render && cli->timing_pool->supports_draw_sampling",
+            source);
+        Assert.Contains(
+            "ri->compute &&\n                           cli->timing_pool->supports_dispatch_sampling",
+            source);
+    }
+
+    [Fact]
+    public void RenderGraphDiagnostics_RejectIncoherentGpuCaptures()
+    {
+        string executor = ReadRepositoryFile(
+            "engine_cs", "Engine.RenderGraph", "RenderGraphExecutor.cs");
+        string renderer = ReadRepositoryFile(
+            "engine_cs", "Engine.Renderer", "Renderer.cs");
+
+        Assert.Contains("_cpuTimingCaptures", executor);
+        Assert.Contains("CpuTimingHistoryCapacity = 32", executor);
+        Assert.Contains("PublishCoherentPassTimings", executor);
+        Assert.Contains(
+            "sampledTotalMilliseconds > frameDuration * 1.05",
+            executor);
+        Assert.Contains("Array.Clear(passMilliseconds)", executor);
+        Assert.Contains("LastGpuTimingFrameNumber", renderer);
+        Assert.Contains("LastRawGpuFrameMilliseconds", renderer);
+    }
+
+    private static string ReadRepositoryFile(params string[] parts)
+    {
+        string directory = AppDomain.CurrentDomain.BaseDirectory;
+        for (int depth = 0; depth < 10; ++depth)
+        {
+            string candidate = Path.Combine(
+                new[] { directory }.Concat(parts).ToArray());
+            if (File.Exists(candidate))
+                return File.ReadAllText(candidate);
+            DirectoryInfo? parent = Directory.GetParent(directory);
+            if (parent == null)
+                break;
+            directory = parent.FullName;
+        }
+        throw new FileNotFoundException(string.Join('/', parts));
     }
 
     private sealed class FakePool

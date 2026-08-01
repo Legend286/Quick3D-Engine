@@ -37,6 +37,8 @@
 static const uint kInvalidSlot = 0xFFFFFFFFu;
 static const uint kVisibilityTileResolution = 4u;
 static const uint kVisibilityTexelsPerProbe = 16u;
+static const uint kInitialRadianceAccumulation = 1u << 13u;
+
 uint FetchIrradianceSlot()
 {
     return (uint)push.DDGIAtlasParams.x;
@@ -105,7 +107,9 @@ float3 LookupProbeWorldPos(int sparseIdx)
 bool ProbeIsReady(int sparseIdx)
 {
     return sparseIdx >= 0 &&
-        push.DDGIProbePositions[sparseIdx].w > 0.5;
+        push.DDGIProbePositions[sparseIdx].w > 0.5 &&
+        (push.DDGIProbeStates[sparseIdx].x &
+            kInitialRadianceAccumulation) == 0u;
 }
 
 // MARK: SH eval
@@ -361,7 +365,8 @@ DDGIShadingResult EvaluateDDGIShading(
         float3(8.0));
     result.indirectDiffuse = clamp(
         result.irradiance * albedo *
-            (1.0 - metallic) * 0.318309886,
+            (1.0 - metallic) * 0.318309886 *
+            saturate(result.sampleConfidence),
         float3(0.0),
         float3(8.0));
     return result;
@@ -369,7 +374,8 @@ DDGIShadingResult EvaluateDDGIShading(
 
 float3 EvaluateDDGILightingOnly(DDGIShadingResult result)
 {
-    return result.irradiance * 0.318309886;
+    return result.irradiance * 0.318309886 *
+        saturate(result.sampleConfidence);
 }
 
 float3 ApplyDDGIAmbientPolicy(
@@ -386,6 +392,7 @@ float3 ApplyDDGIConsumerDebug(
 {
     uint consumerFlags = (uint)push.DDGIAtlasParams.z;
     if ((consumerFlags & 1u) != 0u)
-        return result.irradiance * 0.318309886;
+        return result.irradiance * 0.318309886 *
+            saturate(result.sampleConfidence);
     return shadedColor;
 }

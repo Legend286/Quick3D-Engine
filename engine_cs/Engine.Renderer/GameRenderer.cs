@@ -624,7 +624,8 @@ public sealed class GameRenderer : IDisposable
             tempWorld,
             null,
             clusteredPlugin: _renderer.ClusteredPlugin,
-            registerAsActive: false);
+            registerAsActive: false,
+            enableVisibilityBuffer: false);
         tempRenderer.ActiveCameraEntity = camEnt;
         tempRenderer.BuildThumbnailPlan(contentRoot);
         try

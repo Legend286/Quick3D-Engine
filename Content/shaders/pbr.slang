@@ -28,7 +28,7 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     PartData part = push.parts[iid];
     InstanceData inst = push.instances[part.instanceIdx];
     
-    uint index = part.indices[vid];
+    uint index = LoadPartVertexIndex(part, vid);
     
     Vertex v = part.vertices[index];
     
@@ -386,16 +386,29 @@ float3 EvaluateLightContribution(uint lightIndex, LightData light, float3 worldP
 #include "ddgi_sampling.slang"
 #endif
 
-[shader("fragment")]
-float4 fragmentMain(
+#ifdef VISIBILITY_COMPUTE
+uint VisibilityTileLightCount();
+uint VisibilityTileLightIndex(uint tileIndex);
+#endif
+
+float4 ShadePbrSurface(
     VertexOutput input,
-    float3 barycentrics : SV_Barycentrics) : SV_Target
+    float3 barycentrics,
+    float2 uvDx,
+    float2 uvDy,
+    float3 normalDx,
+    float3 normalDy,
+    float barycentricWidth)
 {
     MaterialData mat = push.materials[input.materialIdx];
     
     float3 albedo = mat.baseColor.rgb;
     if (mat.albedoTexIndex != 0xFFFFFFFF) {
-        float4 texColor = bindless.textures[mat.albedoTexIndex].Sample(tex_sampler, input.uv);
+        float4 texColor = bindless.textures[mat.albedoTexIndex].SampleGrad(
+            tex_sampler,
+            input.uv,
+            uvDx,
+            uvDy);
         albedo *= texColor.rgb;
     }
     
@@ -404,12 +417,20 @@ float4 fragmentMain(
     float ao = 1.0;
     
     if (mat.rmaTexIndex != 0xFFFFFFFF) {
-        float3 rma = bindless.textures[mat.rmaTexIndex].Sample(tex_sampler, input.uv).rgb;
+        float3 rma = bindless.textures[mat.rmaTexIndex].SampleGrad(
+            tex_sampler,
+            input.uv,
+            uvDx,
+            uvDy).rgb;
         roughness *= rma.g;
         metallic *= rma.b;
     }
     if (mat.occlusionTexIndex != 0xFFFFFFFF) {
-        ao = bindless.textures[mat.occlusionTexIndex].Sample(tex_sampler, input.uv).r;
+        ao = bindless.textures[mat.occlusionTexIndex].SampleGrad(
+            tex_sampler,
+            input.uv,
+            uvDx,
+            uvDy).r;
     }
 
     // Blend Layer 2 (evaluated first under Layer 1)
@@ -428,16 +449,18 @@ float4 fragmentMain(
         } else if (mat.layer2MaskType == 4) { // Turbulence Noise
             mask2 = smoothstep(tMin2, tMax2, turbulence3D(p2, 3));
         } else if (mat.layer2MaskType == 5) { // Cavity
-            float3 dNdx = ddx(input.normal);
-            float3 dNdy = ddy(input.normal);
-            float curvature = length(dNdx) + length(dNdy);
+            float curvature = length(normalDx) + length(normalDy);
             float cavityFromCurvature = smoothstep(0.02, 0.4, curvature);
             float cavityFromAO = 1.0 - ao;
             mask2 = clamp(cavityFromCurvature * 0.7 + cavityFromAO * 0.8, 0.0, 1.0);
         } else if (mat.layer2MaskType == 6) { // Height
             mask2 = smoothstep(-0.5, 0.5, input.worldPos.y);
         } else if (mat.layer2MaskType == 7 && mat.layer2MaskTexIndex != 0xFFFFFFFF) { // Texture Mask
-            mask2 = bindless.textures[mat.layer2MaskTexIndex].Sample(tex_sampler, input.uv).r;
+            mask2 = bindless.textures[mat.layer2MaskTexIndex].SampleGrad(
+                tex_sampler,
+                input.uv,
+                uvDx,
+                uvDy).r;
         }
 
         albedo = lerp(albedo, mat.layer2Color.rgb, mask2);
@@ -461,16 +484,18 @@ float4 fragmentMain(
         } else if (mat.topMaskType == 4) { // Turbulence Noise
             mask1 = smoothstep(tMin1, tMax1, turbulence3D(p1, 3));
         } else if (mat.topMaskType == 5) { // Cavity
-            float3 dNdx = ddx(input.normal);
-            float3 dNdy = ddy(input.normal);
-            float curvature = length(dNdx) + length(dNdy);
+            float curvature = length(normalDx) + length(normalDy);
             float cavityFromCurvature = smoothstep(0.02, 0.4, curvature);
             float cavityFromAO = 1.0 - ao;
             mask1 = clamp(cavityFromCurvature * 0.7 + cavityFromAO * 0.8, 0.0, 1.0);
         } else if (mat.topMaskType == 6) { // Height
             mask1 = smoothstep(-0.5, 0.5, input.worldPos.y);
         } else if (mat.topMaskType == 7 && mat.topMaskTexIndex != 0xFFFFFFFF) { // Texture Mask
-            mask1 = bindless.textures[mat.topMaskTexIndex].Sample(tex_sampler, input.uv).r;
+            mask1 = bindless.textures[mat.topMaskTexIndex].SampleGrad(
+                tex_sampler,
+                input.uv,
+                uvDx,
+                uvDy).r;
         }
 
         albedo = lerp(albedo, mat.topColor.rgb, mask1);
@@ -499,7 +524,11 @@ float4 fragmentMain(
     if (mat.normalTexIndex != 0xFFFFFFFF) {
         float3x3 TBN = float3x3(T, B, N);
         
-        float3 normalMap = bindless.textures[mat.normalTexIndex].Sample(tex_sampler, input.uv).rgb;
+        float3 normalMap = bindless.textures[mat.normalTexIndex].SampleGrad(
+            tex_sampler,
+            input.uv,
+            uvDx,
+            uvDy).rgb;
         normalMap = normalMap * 2.0 - 1.0;
         N = normalize(mul(normalMap, TBN));
         
@@ -512,7 +541,11 @@ float4 fragmentMain(
     
     float3 emissive = mat.emissiveColor.rgb;
     if (mat.emissiveTexIndex != 0xFFFFFFFF) {
-        float3 emTex = bindless.textures[mat.emissiveTexIndex].Sample(tex_sampler, input.uv).rgb;
+        float3 emTex = bindless.textures[mat.emissiveTexIndex].SampleGrad(
+            tex_sampler,
+            input.uv,
+            uvDx,
+            uvDy).rgb;
         emissive *= emTex;
     }
 
@@ -521,7 +554,7 @@ float4 fragmentMain(
         float edgeDistance = min(
             barycentrics.x,
             min(barycentrics.y, barycentrics.z));
-        float edgeWidth = max(fwidth(edgeDistance), 0.0001);
+        float edgeWidth = max(barycentricWidth, 0.0001);
         float edge = 1.0 - smoothstep(
             edgeWidth,
             edgeWidth * 1.75,
@@ -587,6 +620,36 @@ float4 fragmentMain(
     float3 Lo = float3(0.0);
     float3 lightingOnlyLo = float3(0.0);
 
+#ifdef VISIBILITY_COMPUTE
+    uint tileLightCount = VisibilityTileLightCount();
+    for (uint tileLight = 0u;
+         tileLight < tileLightCount;
+         ++tileLight)
+    {
+        uint lightIndex = VisibilityTileLightIndex(tileLight);
+        Lo += EvaluateLightContribution(
+            lightIndex,
+            push.lights[lightIndex],
+            input.worldPos,
+            dmat,
+            N,
+            V,
+            T,
+            B);
+        if (debugView == 7u)
+        {
+            lightingOnlyLo += EvaluateLightContribution(
+                lightIndex,
+                push.lights[lightIndex],
+                input.worldPos,
+                lightingOnlyMaterial,
+                N,
+                V,
+                T,
+                B);
+        }
+    }
+#else
     bool useClusters = push.clusterGrid.w > 0.0 && push.clusterParams.y > 0.0;
     if (useClusters) {
         uint gridX = (uint)push.clusterGrid.x;
@@ -628,6 +691,7 @@ float4 fragmentMain(
                     B);
         }
     }
+#endif
     
     float3 ambient = float3(0.03, 0.03, 0.03) * albedo * ao;
 
@@ -674,4 +738,21 @@ float4 fragmentMain(
     color = pow(color, float3(1.0/2.2, 1.0/2.2, 1.0/2.2));
     
     return float4(color, 1.0);
+}
+
+[shader("fragment")]
+float4 fragmentMain(
+    VertexOutput input,
+    float3 barycentrics : SV_Barycentrics) : SV_Target
+{
+    return ShadePbrSurface(
+        input,
+        barycentrics,
+        ddx(input.uv),
+        ddy(input.uv),
+        ddx(input.normal),
+        ddy(input.normal),
+        fwidth(min(
+            barycentrics.x,
+            min(barycentrics.y, barycentrics.z))));
 }

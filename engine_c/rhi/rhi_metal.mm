@@ -534,6 +534,8 @@ static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, Rh
             case RHI_FORMAT_BGRA8_UNORM:             fmt = MTLPixelFormatBGRA8Unorm; break;
             case RHI_FORMAT_DEPTH32_FLOAT:           fmt = MTLPixelFormatDepth32Float; break;
             case RHI_FORMAT_DEPTH24_STENCIL8:        fmt = MTLPixelFormatDepth24Unorm_Stencil8; break;
+            case RHI_FORMAT_RG16_UNORM:              fmt = MTLPixelFormatRG16Unorm; break;
+            case RHI_FORMAT_RG32_UINT:               fmt = MTLPixelFormatRG32Uint; break;
             case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:     fmt = MTLPixelFormatBC1_RGBA; break;
             case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:    fmt = MTLPixelFormatBC1_RGBA; break;
             case RHI_FORMAT_BC3_UNORM_BLOCK:         fmt = MTLPixelFormatBC3_RGBA; break;
@@ -905,15 +907,36 @@ static int32_t metal_create_graphics_pipeline(RhiDevice* d,
         MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
         pd.vertexFunction   = vs->fn;
         pd.fragmentFunction = fs->fn;
-        if (desc->color_attachment_format != RHI_FORMAT_UNDEFINED) {
-            MTLPixelFormat color = MTLPixelFormatBGRA8Unorm;
-            switch (desc->color_attachment_format) {
+        RhiTextureFormat color_formats[4] = {
+            desc->color_attachment_format,
+            RHI_FORMAT_UNDEFINED,
+            RHI_FORMAT_UNDEFINED,
+            RHI_FORMAT_UNDEFINED
+        };
+        uint32_t color_count =
+            desc->color_attachment_format == RHI_FORMAT_UNDEFINED ? 0u : 1u;
+        if (desc->abi >= 5u) {
+            color_formats[1] = desc->color_attachment_format_1;
+            color_formats[2] = desc->color_attachment_format_2;
+            color_formats[3] = desc->color_attachment_format_3;
+            color_count = desc->color_attachment_count > 4u
+                ? 4u
+                : desc->color_attachment_count;
+        }
+        for (uint32_t color_index = 0u;
+             color_index < color_count;
+             ++color_index) {
+            MTLPixelFormat color = MTLPixelFormatInvalid;
+            switch (color_formats[color_index]) {
                 case RHI_FORMAT_RGBA8_UNORM:  color = MTLPixelFormatRGBA8Unorm; break;
                 case RHI_FORMAT_BGRA8_UNORM:  color = MTLPixelFormatBGRA8Unorm; break;
                 case RHI_FORMAT_RGBA8_SRGB:   color = MTLPixelFormatRGBA8Unorm_sRGB; break;
+                case RHI_FORMAT_RGBA16_FLOAT: color = MTLPixelFormatRGBA16Float; break;
+                case RHI_FORMAT_RG16_UNORM:   color = MTLPixelFormatRG16Unorm; break;
+                case RHI_FORMAT_RG32_UINT:    color = MTLPixelFormatRG32Uint; break;
                 default: break;
             }
-            pd.colorAttachments[0].pixelFormat = color;
+            pd.colorAttachments[color_index].pixelFormat = color;
         }
         if (desc->enable_blend) {
             pd.colorAttachments[0].blendingEnabled = YES;
@@ -1034,6 +1057,8 @@ static int32_t metal_create_texture_from_heap(RhiDevice* d, RhiHeap* h, const Rh
             case RHI_FORMAT_BGRA8_UNORM:             fmt = MTLPixelFormatBGRA8Unorm; break;
             case RHI_FORMAT_DEPTH32_FLOAT:           fmt = MTLPixelFormatDepth32Float; break;
             case RHI_FORMAT_DEPTH24_STENCIL8:        fmt = MTLPixelFormatDepth24Unorm_Stencil8; break;
+            case RHI_FORMAT_RG16_UNORM:              fmt = MTLPixelFormatRG16Unorm; break;
+            case RHI_FORMAT_RG32_UINT:               fmt = MTLPixelFormatRG32Uint; break;
             case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:     fmt = MTLPixelFormatBC1_RGBA; break;
             case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:    fmt = MTLPixelFormatBC1_RGBA; break;
             case RHI_FORMAT_BC3_UNORM_BLOCK:         fmt = MTLPixelFormatBC3_RGBA; break;
@@ -1806,7 +1831,10 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
             attachment.endOfVertexSampleIndex = MTLCounterDontSample;
             attachment.startOfFragmentSampleIndex = MTLCounterDontSample;
             attachment.endOfFragmentSampleIndex = MTLCounterDontSample;
-            if (cli->timing_pool->supports_stage_sampling) {
+            bool use_stage_sampling =
+                cli->timing_pool->supports_stage_sampling &&
+                !cli->timing_pool->supports_draw_sampling;
+            if (use_stage_sampling) {
                 if (!cli->timing_started) {
                     attachment.startOfVertexSampleIndex =
                         cli->timing_start_index;
@@ -1850,7 +1878,6 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
         if (cli->timing_pool &&
             !cli->timing_started &&
             cli->timing_pool->samples &&
-            !cli->timing_pool->supports_stage_sampling &&
             cli->timing_pool->supports_draw_sampling) {
             [enc sampleCountersInBuffer:cli->timing_pool->samples
                           atSampleIndex:cli->timing_start_index
@@ -1873,7 +1900,10 @@ static RhiEncoder* metal_begin_compute_pass(RhiCommandList* cl, const char* name
             attachment.sampleBuffer = cli->timing_pool->samples;
             attachment.startOfEncoderSampleIndex = MTLCounterDontSample;
             attachment.endOfEncoderSampleIndex = MTLCounterDontSample;
-            if (cli->timing_pool->supports_stage_sampling) {
+            bool use_stage_sampling =
+                cli->timing_pool->supports_stage_sampling &&
+                !cli->timing_pool->supports_dispatch_sampling;
+            if (use_stage_sampling) {
                 if (!cli->timing_started) {
                     attachment.startOfEncoderSampleIndex =
                         cli->timing_start_index;
@@ -1907,7 +1937,6 @@ static RhiEncoder* metal_begin_compute_pass(RhiCommandList* cl, const char* name
         if (cli->timing_pool &&
             !cli->timing_started &&
             cli->timing_pool->samples &&
-            !cli->timing_pool->supports_stage_sampling &&
             cli->timing_pool->supports_dispatch_sampling) {
             [enc sampleCountersInBuffer:cli->timing_pool->samples
                           atSampleIndex:cli->timing_start_index
@@ -1925,8 +1954,7 @@ static void metal_end_pass(RhiEncoder* enc) {
         RhiCommandListImpl* cli = ri->command_list;
         if (cli && cli->timing_pool && cli->timing_end_requested) {
             if (cli->timing_started &&
-                cli->timing_pool->samples &&
-                !cli->timing_pool->supports_stage_sampling) {
+                cli->timing_pool->samples) {
                 if (ri->render && cli->timing_pool->supports_draw_sampling) {
                     [ri->render sampleCountersInBuffer:cli->timing_pool->samples
                                          atSampleIndex:cli->timing_end_index

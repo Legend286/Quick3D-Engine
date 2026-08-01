@@ -9,6 +9,15 @@ round-tripping through the editor and scene JSON.
   forward shading.
 - `RasterComputePass`: Issues compute shader-driven frustum culling, clustered
   light assignment, and indirect draw generation on async compute.
+- `VisibilityBufferPass`: Records raster-instance and primitive indices in
+  `RG32Uint`, barycentric X/Y in `RG16Unorm`, and opaque depth for the future
+  compute-shading path.
+- `VisibilityBufferDebugPass`: Replaces the final scene colour in Visibility
+  Buffer mode with the identifier/barycentric split diagnostic.
+- `VisibilityReconstructionPass`: Reconstructs position, normal, UV, material,
+  instance, and tangent diagnostics in 8×8 compute tiles.
+- `VisibilityReferencePass`: Rasterizes the corresponding Forward PBR
+  attributes for split-screen reconstruction comparison.
 - `PbrPass`: Issues bindless PBR geometry rendering.
 - `GridPass`: Renders the editor wireframe infinite/fade grid. Runs concurrently with or after the PBR pass.
 - `ImGuiPass`: Renders UI overlays.
@@ -17,16 +26,43 @@ round-tripping through the editor and scene JSON.
 - `pbr.slang`: Forward renderer processing bindless geometry, textures, clustered light records, and Disney PBR material evaluation.
 - `cull.slang`: Compute shader responsible for AABB-frustum intersection checks. Emits multi-draw indirect `RhiDrawCmd` arrays.
 - `cluster_lights.slang`: Compute shader assigning scene lights into fixed-size per-cluster light-index lists.
+- `visibility_buffer.slang`: Minimal opaque raster shader producing exact
+  geometry identifiers and quantized barycentrics through two color targets.
+- `visibility_buffer_debug.slang`: Reads visibility textures and depth for the
+  fullscreen viewport diagnostic.
+- `visibility_debug_common.slang`: Shares stable identifier hashing and split
+  presentation with the path-tracing debug mirror.
+- `visibility_reconstruct.slang`: Fetches triangle vertices and interpolates
+  selected attributes from visibility-buffer data, including tangent-space
+  normal maps sampled with reconstructed UV gradients.
+- `visibility_reference.slang`: Produces the Forward PBR raster side of the
+  attribute comparison.
 - `grid.slang`: Line-list rendering of a standard 3D grid.
 
 ## Data Structures
 Uses `PbrPushData` to send buffer addresses (materials, instances, models) globally via push constants. Eliminates per-draw CPU binding overhead.
 
+Phase-one visibility uses the existing indirect draw ABI. Its stored raster
+instance is a `PartData` index; `PartData.instanceIdx` resolves the scene
+instance, and the stored primitive index selects one triangle within that part.
+The third barycentric coordinate is reconstructed as `1 - x - y`.
+
 ## Clustered Forward+ Notes
 - Cluster records are ordinary RHI storage buffers referenced through `ScenePushData`.
 - The first implementation uses 32x32 screen tiles, 16 depth slices, and fixed 64-light slots per cluster.
-- Directional lights are assigned to every cluster. Point lights use sphere-vs-cluster tests; spot lights use finite-cone tests against cluster corners, edges, caps, and axis intervals.
+- Directional lights are assigned to every cluster. Point lights use
+  sphere-vs-cluster tests. Spot lights use a conservative sphere enclosing the
+  complete finite outer cone, including its cap radius. The deliberate
+  over-admission prevents a soft spotlight edge from being clipped at a
+  cluster boundary; the per-pixel cone attenuation remains authoritative.
 - A later RHI count-buffer/compaction pass can replace fixed slots without changing the PBR fragment interface.
+
+The visibility-buffer validation path calls the same `ShadePbrSurface`
+implementation from 8×8 compute groups. Each group unions and deduplicates the
+existing Forward+ cluster lists represented by its covered depth slices in
+group-shared memory. This reduces repeated cluster-list reads while preserving
+the same per-pixel BRDF, coloured radiance, soft spotlight attenuation,
+shadows, and DDGI evaluation as forward raster shading.
 
 ## Directional Shadows
 - The first directional light with `CastShadows` enabled owns the raster shadow

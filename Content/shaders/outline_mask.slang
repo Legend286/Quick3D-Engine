@@ -16,7 +16,7 @@ VertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     PartData part = push.parts[iid];
     InstanceData inst = push.instances[part.instanceIdx];
     
-    uint index = part.indices[vid];
+    uint index = LoadPartVertexIndex(part, vid);
     Vertex v = part.vertices[index];
     
     float3 vPos =

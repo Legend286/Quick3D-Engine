@@ -134,6 +134,7 @@ public struct ScenePushData
     public ulong DDGIProbeWorldKeys;
     public ulong DDGIWorldProbeHash;
     public ulong DDGIVolumeState;
+    public ulong DDGIProbeStates;
 }
 
 [StructLayout(LayoutKind.Sequential)]

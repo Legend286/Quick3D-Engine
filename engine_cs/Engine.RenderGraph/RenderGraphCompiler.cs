@@ -25,6 +25,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Engine.CBindings;
+using Engine.RHI;
 
 namespace Engine.RenderGraph;
 
@@ -187,8 +188,10 @@ public sealed class RenderGraphCompiler
         if (decl.Kind == ResourceKind.Buffer) return decl.Buffer!.Size;
         if (decl.Kind == ResourceKind.Texture)
         {
-            ulong bpp = 4;
-            if (decl.Texture!.Format == RhiNative.TextureFormat.Rgba16Float) bpp = 8;
+            ulong bpp = RhiTexture.GetUncompressedBytesPerPixel(
+                decl.Texture!.Format);
+            if (bpp == 0)
+                bpp = 4;
             return (ulong)decl.Texture.Width * (ulong)decl.Texture.Height * bpp;
         }
         return 0;

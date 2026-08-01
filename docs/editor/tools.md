@@ -174,7 +174,19 @@ while still allowing bounded caches to converge on battery-powered systems.
 
 The debug selector is shared by PBR and path tracing. It currently exposes Lit,
 Wireframe, Depth, Vertex Normal, Pixel Normal, Albedo, RMA, Lighting Only,
-World Position, Emissive, UV, Tangent, Bitangent, and plugin-registered views.
+World Position, Emissive, UV, Tangent, Bitangent, Visibility Buffer,
+Visibility PBR, and plugin-registered views. Visibility Buffer displays a
+vivid stable colour per
+part/triangle pair on the left half and reconstructed barycentric RGB on the
+right half. Visibility PBR compares raster PBR on the left with 8×8 tiled
+compute PBR on the right and amplifies mismatch in red. Reconstructed Position,
+Normal, UV, Material ID, Instance ID, and Tangent show a Forward PBR raster
+reference on the left and the 8×8 visibility
+compute result on the right. A yellow divider marks the split, while amplified
+error blends the reconstructed side toward red. Normal and tangent validation
+includes tangent-space normal maps and the rebuilt tangent frame.
+Visibility PBR validation is raster-only; the path tracer treats that selector
+value as its normal lit view.
 Debug modes are mutually exclusive: selecting a
 built-in surface view disables probe overlays, and selecting a plugin overlay
 returns the surface view to Lit. The renderer and debug selectors do not retain
@@ -262,18 +274,19 @@ no swapchain, secondary device, scene renderer, or CPU bitmap.
 
 ### Performance Characteristics
 The explorer refreshes at 4 Hz. Per-pass CPU timestamps are collected during
-normal graph execution. Metal GPU timings use stage-boundary counter samples
-on Apple silicon and draw/dispatch-boundary samples where supported elsewhere.
-The required sample buffer is attached to every measured pass descriptor.
-Results and the completed command-buffer validation span resolve
-asynchronously through a triple-buffered timestamp pool; the render thread
-never waits for profiling results. Unsupported backends keep GPU fields
-explicitly pending.
+normal graph execution. Metal prefers explicit draw- and dispatch-boundary
+counter samples and uses stage boundaries only as a capability fallback. The
+required sample buffer is attached to every measured pass descriptor. Results
+resolve asynchronously through a triple-buffered timestamp pool; the render
+thread never waits for profiling results. Unsupported or internally
+inconsistent captures keep GPU fields explicitly unsampled.
 
-The GPU frame readout uses the lower median of the latest 15 summed graphics
-pass-marker workloads. Swapchain waits and fullscreen presentation pacing are
-outside those marker scopes, so they cannot inflate the render-work readout or
-throttle adaptive shadow updates.
+The frame number, CPU pass costs, GPU pass costs, and raw GPU frame span shown
+by one explorer capture all come from the same completed render-graph frame.
+When graphics and asynchronous compute both execute, the displayed raw span is
+the longer command-buffer path rather than their overlapping sum.
+The scheduler separately retains a lower-median history for budget stability;
+that smoothed value is not displayed as if it belonged to the captured frame.
 
 The Transient Heap metric reports the physical alias heap allocated by the
 render graph. GPU Committed reports live RHI allocation ownership. The

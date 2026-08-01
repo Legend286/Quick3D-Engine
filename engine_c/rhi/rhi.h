@@ -58,7 +58,7 @@ typedef enum RhiQueueType {
  * Texture formats. Additions are binary-compatible; unknown values fall through
  * on consumers that don't know the new code.
  *
- * Uncompressed formats 0-6. Block-compressed formats start at 20 so an enum
+ * Uncompressed formats 0-19. Block-compressed formats start at 20 so an enum
  * value added later in the uncompressed range (e.g. Vulkan format 7-19
  * eventually landing here) doesn't collide with a new compressed entry.
  */
@@ -70,6 +70,8 @@ typedef enum RhiTextureFormat {
     RHI_FORMAT_BGRA8_UNORM           = 4,
     RHI_FORMAT_DEPTH32_FLOAT         = 5,
     RHI_FORMAT_DEPTH24_STENCIL8      = 6,
+    RHI_FORMAT_RG16_UNORM            = 7,
+    RHI_FORMAT_RG32_UINT             = 8,
     RHI_FORMAT_BC1_RGB_UNORM_BLOCK   = 20,
     RHI_FORMAT_BC1_RGBA_UNORM_BLOCK  = 21,
     RHI_FORMAT_BC3_UNORM_BLOCK       = 22,
@@ -166,6 +168,10 @@ typedef struct RhiGraphicsPipelineDesc {
     int32_t           sample_count;       /* MSAA; 1 = off */
     uint32_t          primitive_topology; /* RhiPrimitiveTopology */
     uint32_t          depth_compare;      /* RhiCompareOp */
+    RhiTextureFormat  color_attachment_format_1;
+    RhiTextureFormat  color_attachment_format_2;
+    RhiTextureFormat  color_attachment_format_3;
+    uint32_t          color_attachment_count;
 } RhiGraphicsPipelineDesc;
 
 typedef enum RhiCompareOp {

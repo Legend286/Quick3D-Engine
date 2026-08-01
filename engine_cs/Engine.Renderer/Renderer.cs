@@ -26,6 +26,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
 {
     private readonly int _renderThreadId;
     private readonly bool _participatesInGlobalExtensions;
+    private readonly bool _enableVisibilityBuffer;
     private readonly ConcurrentQueue<Action<Renderer>>
         _renderThreadActions = new();
 
@@ -80,6 +81,14 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         Engine.RenderGraph.RenderGraphResources.DepthBufferHandle;
     public static readonly ResourceHandle OutlineMaskHandle =
         Engine.RenderGraph.RenderGraphResources.OutlineMaskHandle;
+    public static readonly ResourceHandle VisibilityIdentifiersHandle =
+        Engine.RenderGraph.RenderGraphResources.VisibilityIdentifiersHandle;
+    public static readonly ResourceHandle VisibilityBarycentricsHandle =
+        Engine.RenderGraph.RenderGraphResources.VisibilityBarycentricsHandle;
+    public static readonly ResourceHandle VisibilityReconstructionHandle =
+        Engine.RenderGraph.RenderGraphResources.VisibilityReconstructionHandle;
+    public static readonly ResourceHandle VisibilityReferenceHandle =
+        Engine.RenderGraph.RenderGraphResources.VisibilityReferenceHandle;
     private const uint DirectionalShadowMapHandleBase = 0x80000003;
 
     /// <summary>The well-known identifier of the canonical Forward+
@@ -159,6 +168,10 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
 
     private RhiTexture? _depthTexture;
     private RhiTexture? _outlineMaskTexture;
+    private RhiTexture? _visibilityIdentifiersTexture;
+    private RhiTexture? _visibilityBarycentricsTexture;
+    private RhiTexture? _visibilityReconstructionTexture;
+    private RhiTexture? _visibilityReferenceTexture;
     private uint _depthWidth, _depthHeight;
 
     private ulong _selectedEntity;
@@ -308,10 +321,12 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         ImGuiRenderer? imguiRenderer = null,
         IRendererPlanPlugin? clusteredPlugin = null,
         IRendererPlanPlugin? pathTracingPlugin = null,
-        bool registerAsActive = true)
+        bool registerAsActive = true,
+        bool enableVisibilityBuffer = true)
     {
         _renderThreadId = Environment.CurrentManagedThreadId;
         _participatesInGlobalExtensions = registerAsActive;
+        _enableVisibilityBuffer = enableVisibilityBuffer;
         if (registerAsActive)
             s_active = this;
         _device = device;
@@ -924,6 +939,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 RenderSky = _renderSky,
                 EnableGlobalExtensions =
                     _participatesInGlobalExtensions,
+                EnableVisibilityBuffer = _enableVisibilityBuffer,
                 ShaderCliArgs = _activeShaderCliArgs,
                 ShaderIncludeDirs = _activeShaderIncludeDirs,
                 SharedShaderCache = _compileCache
@@ -958,6 +974,16 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         if (_renderGrid)
         {
             passes.Add(new GridPass(_device, _world, contentRoot, this, clearScreen: scene.Passes.Count == 0));
+        }
+
+        if (!usePathTracer &&
+            _enableVisibilityBuffer &&
+            scene.Passes.Count > 0)
+        {
+            passes.Add(new VisibilityBufferDebugPass(
+                _device,
+                contentRoot,
+                this));
         }
 
         passes.AddRange(extPostPasses);
@@ -1018,6 +1044,106 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _punctualShadowPass = null;
     }
 
+    private void EnsureVisibilityBufferResources()
+    {
+        bool required = false;
+        if (_plan != null)
+        {
+            foreach (IReadOnlyList<AccessDecl> accesses in _plan.PassAccesses)
+            {
+                foreach (AccessDecl access in accesses)
+                {
+                    if (access.Resource == VisibilityIdentifiersHandle ||
+                        access.Resource == VisibilityBarycentricsHandle ||
+                        access.Resource == VisibilityReconstructionHandle ||
+                        access.Resource == VisibilityReferenceHandle)
+                    {
+                        required = true;
+                        break;
+                    }
+                }
+                if (required)
+                    break;
+            }
+        }
+
+        if (!required)
+        {
+            _visibilityIdentifiersTexture?.Dispose();
+            _visibilityIdentifiersTexture = null;
+            _visibilityBarycentricsTexture?.Dispose();
+            _visibilityBarycentricsTexture = null;
+            _visibilityReconstructionTexture?.Dispose();
+            _visibilityReconstructionTexture = null;
+            _visibilityReferenceTexture?.Dispose();
+            _visibilityReferenceTexture = null;
+            _graphExecutor.UnbindTexture(VisibilityIdentifiersHandle);
+            _graphExecutor.UnbindTexture(VisibilityBarycentricsHandle);
+            _graphExecutor.UnbindTexture(VisibilityReconstructionHandle);
+            _graphExecutor.UnbindTexture(VisibilityReferenceHandle);
+            return;
+        }
+
+        if (_visibilityIdentifiersTexture == null)
+        {
+            _visibilityIdentifiersTexture = RhiTexture.CreateRenderTarget(
+                _device,
+                _depthWidth,
+                _depthHeight,
+                Engine.CBindings.RhiNative.TextureFormat.Rg32Uint);
+            _visibilityIdentifiersTexture.SetDebugName(
+                "Visibility Identifiers",
+                "Visibility Buffer");
+        }
+        if (_visibilityBarycentricsTexture == null)
+        {
+            _visibilityBarycentricsTexture = RhiTexture.CreateRenderTarget(
+                _device,
+                _depthWidth,
+                _depthHeight,
+                Engine.CBindings.RhiNative.TextureFormat.Rg16Unorm);
+            _visibilityBarycentricsTexture.SetDebugName(
+                "Visibility Barycentrics",
+                "Visibility Buffer");
+        }
+        bool comparisonRequired =
+            _debugView == ViewportDebugView.VisibilityBuffer ||
+            VisibilityReconstructionPass.IsReconstructionView(_debugView) ||
+            VisibilityShadingPass.IsShadingView(_debugView);
+        if (!comparisonRequired)
+        {
+            _visibilityReconstructionTexture?.Dispose();
+            _visibilityReconstructionTexture = null;
+            _visibilityReferenceTexture?.Dispose();
+            _visibilityReferenceTexture = null;
+            _graphExecutor.UnbindTexture(VisibilityReconstructionHandle);
+            _graphExecutor.UnbindTexture(VisibilityReferenceHandle);
+            return;
+        }
+        if (_visibilityReconstructionTexture == null)
+        {
+            _visibilityReconstructionTexture = RhiTexture.CreateStorage(
+                _device,
+                _depthWidth,
+                _depthHeight,
+                Engine.CBindings.RhiNative.TextureFormat.Rgba16Float);
+            _visibilityReconstructionTexture.SetDebugName(
+                "Visibility Reconstruction",
+                "Visibility Buffer");
+        }
+        if (_visibilityReferenceTexture == null)
+        {
+            _visibilityReferenceTexture = RhiTexture.CreateRenderTarget(
+                _device,
+                _depthWidth,
+                _depthHeight,
+                Engine.CBindings.RhiNative.TextureFormat.Rgba16Float);
+            _visibilityReferenceTexture.SetDebugName(
+                "Visibility Raster Reference",
+                "Visibility Buffer");
+        }
+    }
+
     public void RenderFrame(RhiTexture backBuffer, uint width, uint height, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0)
     {
         AssertRenderThread();
@@ -1028,6 +1154,14 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         {
             _depthTexture?.Dispose();
             _outlineMaskTexture?.Dispose();
+            _visibilityIdentifiersTexture?.Dispose();
+            _visibilityBarycentricsTexture?.Dispose();
+            _visibilityReconstructionTexture?.Dispose();
+            _visibilityReferenceTexture?.Dispose();
+            _visibilityIdentifiersTexture = null;
+            _visibilityBarycentricsTexture = null;
+            _visibilityReconstructionTexture = null;
+            _visibilityReferenceTexture = null;
 
             _depthWidth = width > 0 ? width : 1;
             _depthHeight = height > 0 ? height : 1;
@@ -1046,12 +1180,42 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             _outlineMaskTexture = RhiTexture.CreateRenderTarget(_device, _depthWidth, _depthHeight, Engine.CBindings.RhiNative.TextureFormat.Bgra8Unorm);
         }
 
+        EnsureVisibilityBufferResources();
+
         _graphExecutor.SetViewportSize(width, height);
         _graphExecutor.BindSwapchain(backBuffer, BackBufferHandle, ResourceState.RenderTarget);
         if (_depthTexture != null)
             _graphExecutor.BindSwapchain(_depthTexture, DepthBufferHandle, ResourceState.DepthStencil);
         if (_outlineMaskTexture != null)
             _graphExecutor.BindSwapchain(_outlineMaskTexture, OutlineMaskHandle, ResourceState.RenderTarget);
+        if (_visibilityIdentifiersTexture != null)
+        {
+            _graphExecutor.BindSwapchain(
+                _visibilityIdentifiersTexture,
+                VisibilityIdentifiersHandle,
+                ResourceState.RenderTarget);
+        }
+        if (_visibilityBarycentricsTexture != null)
+        {
+            _graphExecutor.BindSwapchain(
+                _visibilityBarycentricsTexture,
+                VisibilityBarycentricsHandle,
+                ResourceState.RenderTarget);
+        }
+        if (_visibilityReconstructionTexture != null)
+        {
+            _graphExecutor.BindSwapchain(
+                _visibilityReconstructionTexture,
+                VisibilityReconstructionHandle,
+                ResourceState.UnorderedAccess);
+        }
+        if (_visibilityReferenceTexture != null)
+        {
+            _graphExecutor.BindSwapchain(
+                _visibilityReferenceTexture,
+                VisibilityReferenceHandle,
+                ResourceState.RenderTarget);
+        }
         if (_directionalShadowState != null)
         {
             int pageCount = Math.Min(
@@ -1318,6 +1482,14 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
 
                 ulong importedSize = IsShadowPageHandle(access.Resource)
                     ? ShadowAtlas.BytesPerPage
+                    : access.Resource == VisibilityIdentifiersHandle
+                        ? (ulong)_depthWidth * _depthHeight * 8ul
+                    : access.Resource == VisibilityBarycentricsHandle
+                        ? (ulong)_depthWidth * _depthHeight * 4ul
+                    : access.Resource == VisibilityReconstructionHandle
+                        ? (ulong)_depthWidth * _depthHeight * 8ul
+                    : access.Resource == VisibilityReferenceHandle
+                        ? (ulong)_depthWidth * _depthHeight * 8ul
                     : access.Resource == BackBufferHandle ||
                         access.Resource == DepthBufferHandle ||
                         access.Resource == OutlineMaskHandle
@@ -1357,9 +1529,11 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             GpuResourceRegistry.Capture();
         return new RenderGraphDiagnosticsSnapshot(
             _renderPlanVersion,
-            _renderedFrameCount,
+            _graphExecutor.LastGpuTimingFrameNumber >= 0
+                ? _graphExecutor.LastGpuTimingFrameNumber
+                : _renderedFrameCount,
             cpuTotal,
-            _graphExecutor.LastGpuFrameMilliseconds,
+            _graphExecutor.LastRawGpuFrameMilliseconds,
             _plan.Aliasing.TotalHeapSize,
             allocations.Aggregate(
                 0ul,
@@ -1423,6 +1597,14 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         if (handle == BackBufferHandle) return "Back Buffer";
         if (handle == DepthBufferHandle) return "Scene Depth";
         if (handle == OutlineMaskHandle) return "Outline Mask";
+        if (handle == VisibilityIdentifiersHandle)
+            return "Visibility Identifiers";
+        if (handle == VisibilityBarycentricsHandle)
+            return "Visibility Barycentrics";
+        if (handle == VisibilityReconstructionHandle)
+            return "Visibility Reconstruction";
+        if (handle == VisibilityReferenceHandle)
+            return "Visibility Raster Reference";
         if (IsShadowPageHandle(handle))
         {
             uint pageIndex = GetShadowPageIndex(handle);
@@ -1449,9 +1631,10 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         if (declaration.Texture == null)
             return 0;
 
-        ulong bytesPerPixel = declaration.Texture.Format == Engine.CBindings.RhiNative.TextureFormat.Rgba16Float
-            ? 8ul
-            : 4ul;
+        ulong bytesPerPixel = RhiTexture.GetUncompressedBytesPerPixel(
+            declaration.Texture.Format);
+        if (bytesPerPixel == 0)
+            bytesPerPixel = 4;
         return (ulong)declaration.Texture.Width *
             declaration.Texture.Height *
             bytesPerPixel;
@@ -1501,6 +1684,14 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _depthTexture = null;
         _outlineMaskTexture?.Dispose();
         _outlineMaskTexture = null;
+        _visibilityIdentifiersTexture?.Dispose();
+        _visibilityIdentifiersTexture = null;
+        _visibilityBarycentricsTexture?.Dispose();
+        _visibilityBarycentricsTexture = null;
+        _visibilityReconstructionTexture?.Dispose();
+        _visibilityReconstructionTexture = null;
+        _visibilityReferenceTexture?.Dispose();
+        _visibilityReferenceTexture = null;
         _graphExecutor.Dispose();
         _shadowAtlasPreviewRenderer?.Dispose();
         _shadowAtlasPreviewRenderer = null;

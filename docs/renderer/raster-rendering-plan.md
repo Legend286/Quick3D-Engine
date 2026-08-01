@@ -240,6 +240,32 @@ solve entry and exit analytically before stepping.
 6. All advanced modes expose legends in viewport chrome and publish their
    backing resources to the Render Graph Explorer.
 
+## Phase 11: Visibility-Buffer Shading
+
+1. Rasterize exact `PartData` and primitive indices into `RG32Uint`, with
+   barycentric X and Y in `RG16Unorm` and coverage represented by scene depth.
+   This phase is implemented as an additive prepass using the existing
+   GPU-generated indirect commands.
+2. Reconstruct the third barycentric component as `1 - x - y`, then fetch
+   indices, vertices, instance transforms, and materials from the existing
+   scene buffers. Position, tangent-space mapped normal, UV, material ID,
+   instance ID, and rebuilt tangent reconstruction are implemented as
+   debug-only 8x8 compute work. Each mode compares a Forward PBR raster
+   reference on the left against compute reconstruction on the right, with
+   mode-specific amplified error shown in red.
+3. Validate opaque PBR in 8x8 compute shading tiles before replacing the
+   duplicate Forward+ draw. The validation path is implemented: it unions and
+   deduplicates existing cluster light lists in group-shared memory and shows
+   raster PBR on the left against compute PBR plus amplified error on the
+   right. Default-path replacement and cooperative DDGI probe/SH caching remain
+   pending visual and performance confirmation.
+4. Keep clustered Forward+ for transparent geometry, where a visibility
+   buffer cannot represent multiple ordered surfaces without extra storage.
+5. Publish identifiers, barycentrics, reconstructed attributes, and tile probe
+   lists as selectable render-graph debug resources. Hashed identifiers,
+   barycentric RGB, reconstructed attributes, and compute-PBR comparison are
+   implemented; explicit tile probe-list inspection remains pending.
+
 ## Usage Example
 
 ```csharp

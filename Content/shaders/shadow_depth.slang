@@ -12,7 +12,7 @@ ShadowVertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
 {
     PartData part = push.parts[iid];
     InstanceData inst = push.instances[part.instanceIdx];
-    uint index = part.indices[vid];
+    uint index = LoadPartVertexIndex(part, vid);
     Vertex vertex = part.vertices[index];
     float3 localPosition =
         float3(vertex.px, vertex.py, vertex.pz) +
