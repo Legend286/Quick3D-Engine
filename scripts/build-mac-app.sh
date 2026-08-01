@@ -32,6 +32,24 @@ PUBLISH_OUT_DIR="${PUBLISH_OUT_DIR:-out/publish/${DOTNET_RUNTIME_ID}}"
 APP_BUNDLE_DIR="${PUBLISH_OUT_DIR}/${APP_DISPLAY_NAME}.app"
 APP_BUNDLE_ZIP="${PUBLISH_OUT_DIR}/${APP_DISPLAY_NAME}.zip"
 
+if [[ -z "${PUBLISH_OUT_DIR}" || "${PUBLISH_OUT_DIR}" == "/" ]]; then
+    printf 'ERROR: refusing to clean an empty or root publish path.\n' >&2
+    exit 1
+fi
+if [[ "${PUBLISH_OUT_DIR}" = /* ]]; then
+    CLEAN_PUBLISH_OUT_DIR="${PUBLISH_OUT_DIR}"
+else
+    CLEAN_PUBLISH_OUT_DIR="${PROJECT_ROOT}/${PUBLISH_OUT_DIR}"
+fi
+case "${CLEAN_PUBLISH_OUT_DIR}" in
+    "${PROJECT_ROOT}/out/publish/"*) ;;
+    *)
+        printf 'ERROR: refusing to clean publish path outside %s/out/publish.\n' "${PROJECT_ROOT}" >&2
+        exit 1
+        ;;
+esac
+rm -rf -- "${CLEAN_PUBLISH_OUT_DIR}"
+
 # ---- logging helpers --------------------------------------------------------
 log_section() { printf "\n=== %s ===\n" "${1}"; }
 log_warn()    { printf "WARN: %s\n" "${1}"; }
