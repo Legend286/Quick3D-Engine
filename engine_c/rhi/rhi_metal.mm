@@ -50,6 +50,9 @@
 
 namespace {
 
+static constexpr uint8_t kTimingSampleBegin = 1;
+static constexpr uint8_t kTimingSampleEnd = 2;
+
 // Backing impl structs. ARC '__strong' so the Objective-C objects vanish when
 // the impl is freed.
 
@@ -86,7 +89,9 @@ struct RhiTimestampQueryPoolImpl {
     __strong id<MTLBuffer> results;
     __strong id<MTLCommandBuffer> pending;
     std::vector<uint8_t> sampled;
+    std::vector<uint8_t> sample_roles;
     uint32_t sample_count;
+    uint32_t samples_per_duration;
     uint32_t resolved_count;
     bool supports_stage_sampling;
     bool supports_draw_sampling;
@@ -156,9 +161,8 @@ struct RhiCommandListImpl {
     __strong id<MTLCommandBuffer> buf;
     __strong id<CAMetalDrawable> drawable_to_present;
     RhiTimestampQueryPoolImpl* timing_pool;
-    uint32_t timing_start_index;
-    uint32_t timing_end_index;
-    bool timing_started;
+    uint32_t timing_next_sample_index;
+    uint32_t timing_scope_end_index;
     bool timing_end_requested;
 };
 
@@ -173,6 +177,7 @@ struct RhiEncoderImpl {
     uint64_t active_index_buffer_offset;
     bool active_index_buffer_is_32bit;
     RhiCommandListImpl* command_list;
+    uint32_t timing_end_sample_index;
 };
 
 // ----- trampolines (no overloads; all explicit argument lists) -----
@@ -202,6 +207,8 @@ static int32_t  metal_create_buffer_from_heap(RhiDevice* d, RhiHeap* h, const Rh
 static int32_t  metal_create_fence(RhiDevice* d, RhiFence** out);
 static int32_t  metal_create_timestamp_query_pool(
     RhiDevice* d, uint32_t sample_count, RhiTimestampQueryPool** out);
+static int32_t  metal_timestamp_query_pool_set_samples_per_duration(
+    RhiTimestampQueryPool* pool, uint32_t sample_count);
 
 static void  metal_destroy_buffer(RhiBuffer* b);
 static void  metal_destroy_texture(RhiTexture* t);
@@ -1176,7 +1183,9 @@ static int32_t metal_create_timestamp_query_pool(
             pool->results = results;
             pool->pending = nil;
             pool->sampled.resize(sample_count, 0);
+            pool->sample_roles.resize(sample_count, 0);
             pool->sample_count = sample_count;
+            pool->samples_per_duration = 2;
             pool->resolved_count = 0;
             pool->supports_stage_sampling = supports_stage;
             pool->supports_draw_sampling = supports_draw;
@@ -1188,6 +1197,16 @@ static int32_t metal_create_timestamp_query_pool(
         }
     }
     return -1;
+}
+
+static int32_t metal_timestamp_query_pool_set_samples_per_duration(
+    RhiTimestampQueryPool* pool, uint32_t sample_count) {
+    if (!pool || sample_count < 2 || (sample_count & 1u) != 0) return -1;
+    RhiTimestampQueryPoolImpl* pi =
+        reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
+    if (pi->pending || pi->sample_count % sample_count != 0) return -1;
+    pi->samples_per_duration = sample_count;
+    return 0;
 }
 
 struct RhiSamplerImpl {
@@ -1567,9 +1586,8 @@ static RhiCommandList* metal_begin_cmdlist(RhiDevice* device, RhiQueueType queue
         RhiCommandListImpl* cli = new RhiCommandListImpl();
         cli->buf = cb;
         cli->timing_pool = nullptr;
-        cli->timing_start_index = 0;
-        cli->timing_end_index = 0;
-        cli->timing_started = false;
+        cli->timing_next_sample_index = 0;
+        cli->timing_scope_end_index = 0;
         cli->timing_end_requested = false;
         return reinterpret_cast<RhiCommandList*>(cli);
     }
@@ -1631,17 +1649,25 @@ static int32_t metal_cmd_write_timestamp(
             RhiTimestampQueryPoolImpl* pi =
                 reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
             if (sample_index >= pi->sample_count || pi->pending) return -1;
-            if ((sample_index & 1u) == 0) {
+            uint32_t samples_per_duration =
+                pi->samples_per_duration;
+            if ((sample_index % samples_per_duration) == 0) {
+                if (sample_index + samples_per_duration >
+                    pi->sample_count) return -1;
                 if (sample_index == 0) {
                     std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
+                    std::fill(
+                        pi->sample_roles.begin(),
+                        pi->sample_roles.end(),
+                        0);
                 }
                 cli->timing_pool = pi;
-                cli->timing_start_index = sample_index;
-                cli->timing_end_index = sample_index + 1;
-                cli->timing_started = false;
+                cli->timing_next_sample_index = sample_index;
+                cli->timing_scope_end_index =
+                    sample_index + samples_per_duration - 1;
                 cli->timing_end_requested = false;
             } else if (cli->timing_pool == pi &&
-                       cli->timing_end_index == sample_index) {
+                       cli->timing_scope_end_index == sample_index) {
                 cli->timing_end_requested = true;
             }
             return 0;
@@ -1691,7 +1717,8 @@ static int32_t metal_timestamp_query_pool_read_durations(
             if (pi->pending.status < MTLCommandBufferStatusCompleted) return 0;
             if (!pi->samples ||
                 pi->pending.status == MTLCommandBufferStatusError ||
-                duration_count * 2 > pi->resolved_count) {
+                duration_count * pi->samples_per_duration >
+                    pi->resolved_count) {
                 pi->pending = nil;
                 std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
                 return -1;
@@ -1732,9 +1759,6 @@ static int32_t metal_timestamp_query_pool_read_durations(
                         gpu_reference_end -
                         pi->gpu_reference_start)
                     : 0.0;
-            double command_gpu_nanoseconds =
-                (pi->pending.GPUEndTime - pi->pending.GPUStartTime) *
-                1000000000.0;
             if (cpu_span <= 0.0 || gpu_span <= 0.0) {
                 pi->pending = nil;
                 std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
@@ -1742,26 +1766,38 @@ static int32_t metal_timestamp_query_pool_read_durations(
             }
             double nanoseconds_per_gpu_tick = cpu_span / gpu_span;
             for (uint32_t i = 0; i < duration_count; ++i) {
-                uint64_t begin = values[i * 2].timestamp;
-                uint64_t end = values[i * 2 + 1].timestamp;
-                if (!pi->sampled[i * 2] ||
-                    !pi->sampled[i * 2 + 1] ||
-                    begin == MTLCounterErrorValue ||
-                    end == MTLCounterErrorValue ||
-                    end < begin) {
-                    out_duration_nanoseconds[i] = UINT64_MAX;
-                    continue;
+                uint32_t block_start =
+                    i * pi->samples_per_duration;
+                uint32_t block_end =
+                    block_start + pi->samples_per_duration;
+                double duration = 0.0;
+                bool has_duration = false;
+                for (uint32_t sample_index = block_start;
+                     sample_index + 1 < block_end;
+                     sample_index += 2) {
+                    uint32_t end_index = sample_index + 1;
+                    if (pi->sample_roles[sample_index] !=
+                            kTimingSampleBegin ||
+                        pi->sample_roles[end_index] !=
+                            kTimingSampleEnd ||
+                        !pi->sampled[sample_index] ||
+                        !pi->sampled[end_index]) {
+                        continue;
+                    }
+                    uint64_t begin = values[sample_index].timestamp;
+                    uint64_t end = values[end_index].timestamp;
+                    if (begin == MTLCounterErrorValue ||
+                        end == MTLCounterErrorValue ||
+                        end < begin) {
+                        continue;
+                    }
+                    duration += static_cast<double>(end - begin) *
+                        nanoseconds_per_gpu_tick;
+                    has_duration = true;
                 }
-                double duration =
-                    static_cast<double>(end - begin) *
-                    nanoseconds_per_gpu_tick;
-                if (command_gpu_nanoseconds <= 0.0 ||
-                    duration > command_gpu_nanoseconds * 1.05) {
-                    out_duration_nanoseconds[i] = UINT64_MAX;
-                    continue;
-                }
-                out_duration_nanoseconds[i] =
-                    static_cast<uint64_t>(duration);
+                out_duration_nanoseconds[i] = has_duration
+                    ? static_cast<uint64_t>(duration)
+                    : UINT64_MAX;
             }
             pi->pending = nil;
             std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
@@ -1786,6 +1822,33 @@ static int32_t metal_timestamp_query_pool_read_frame_duration(
             duration > 0.0 ? static_cast<uint64_t>(duration) : 0;
         return 1;
     }
+}
+
+static bool metal_allocate_timing_samples(
+    RhiCommandListImpl* command_list,
+    uint32_t count,
+    uint32_t* out_first_sample) {
+    if (!command_list || !out_first_sample ||
+        !command_list->timing_pool ||
+        !command_list->timing_pool->samples ||
+        count == 0 ||
+        command_list->timing_next_sample_index + count - 1 >
+            command_list->timing_scope_end_index) {
+        return false;
+    }
+    *out_first_sample = command_list->timing_next_sample_index;
+    command_list->timing_next_sample_index += count;
+    return true;
+}
+
+static void metal_mark_timing_pair(
+    RhiTimestampQueryPoolImpl* pool,
+    uint32_t begin_sample,
+    uint32_t end_sample) {
+    pool->sampled[begin_sample] = 1;
+    pool->sampled[end_sample] = 1;
+    pool->sample_roles[begin_sample] = kTimingSampleBegin;
+    pool->sample_roles[end_sample] = kTimingSampleEnd;
 }
 
 static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc* desc) {
@@ -1823,6 +1886,8 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
             }
             pd.depthAttachment.clearDepth   = 1.0;
         }
+        bool use_stage_timing = false;
+        uint32_t stage_timing_first = UINT32_MAX;
         if (cli->timing_pool && cli->timing_pool->samples) {
             MTLRenderPassSampleBufferAttachmentDescriptor* attachment =
                 pd.sampleBufferAttachments[0];
@@ -1831,34 +1896,26 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
             attachment.endOfVertexSampleIndex = MTLCounterDontSample;
             attachment.startOfFragmentSampleIndex = MTLCounterDontSample;
             attachment.endOfFragmentSampleIndex = MTLCounterDontSample;
-            bool use_stage_sampling =
+            use_stage_timing =
                 cli->timing_pool->supports_stage_sampling &&
                 !cli->timing_pool->supports_draw_sampling;
-            if (use_stage_sampling) {
-                if (!cli->timing_started) {
-                    attachment.startOfVertexSampleIndex =
-                        cli->timing_start_index;
-                    cli->timing_pool->sampled[
-                        cli->timing_start_index] = 1;
-                    cli->timing_started = true;
-                }
-                // Pin end-of-fragment to (start_index + 1). cli->timing_end_index
-                // at encoder-open time still carries the previous pass's
-                // value (the C# EndTimestampScope has not flushed yet, so
-                // its write to cli->timing_end_index arrives AFTER this
-                // encoder-open call), which means trusting cli->timing_end_index
-                // here would record pass A's end-of-fragment into pass
-                // (i-1)'s end slot. Then read_durations would fetch identical
-                // (begin, end) pairs for lightweight passes (ImGui,
-                // OutlineMask, OutlineComposite) because every encoder
-                // overwrites its predecessor's end slot.
-                uint32_t paired_end_index =
-                    cli->timing_start_index + 1;
-                cli->timing_end_index = paired_end_index;
-                attachment.endOfFragmentSampleIndex =
-                    paired_end_index;
-                cli->timing_pool->sampled[
-                    paired_end_index] = 1;
+            if (use_stage_timing &&
+                metal_allocate_timing_samples(
+                    cli,
+                    4,
+                    &stage_timing_first)) {
+                attachment.startOfVertexSampleIndex = stage_timing_first;
+                attachment.endOfVertexSampleIndex = stage_timing_first + 1;
+                attachment.startOfFragmentSampleIndex = stage_timing_first + 2;
+                attachment.endOfFragmentSampleIndex = stage_timing_first + 3;
+                metal_mark_timing_pair(
+                    cli->timing_pool,
+                    stage_timing_first,
+                    stage_timing_first + 1);
+                metal_mark_timing_pair(
+                    cli->timing_pool,
+                    stage_timing_first + 2,
+                    stage_timing_first + 3);
             }
         }
         id<MTLRenderCommandEncoder> enc = [cli->buf renderCommandEncoderWithDescriptor:pd];
@@ -1875,15 +1932,22 @@ static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc
         ri->compute = nil;
         ri->is_compute = false;
         ri->command_list = cli;
+        ri->timing_end_sample_index = UINT32_MAX;
         if (cli->timing_pool &&
-            !cli->timing_started &&
             cli->timing_pool->samples &&
-            cli->timing_pool->supports_draw_sampling) {
+            cli->timing_pool->supports_draw_sampling &&
+            !use_stage_timing) {
+            uint32_t first_sample = UINT32_MAX;
+            if (metal_allocate_timing_samples(cli, 2, &first_sample)) {
             [enc sampleCountersInBuffer:cli->timing_pool->samples
-                          atSampleIndex:cli->timing_start_index
+                          atSampleIndex:first_sample
                             withBarrier:YES];
-            cli->timing_pool->sampled[cli->timing_start_index] = 1;
-            cli->timing_started = true;
+                metal_mark_timing_pair(
+                    cli->timing_pool,
+                    first_sample,
+                    first_sample + 1);
+                ri->timing_end_sample_index = first_sample + 1;
+            }
         }
         return reinterpret_cast<RhiEncoder*>(ri);
     }
@@ -1894,36 +1958,28 @@ static RhiEncoder* metal_begin_compute_pass(RhiCommandList* cl, const char* name
         RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
         MTLComputePassDescriptor* pd =
             [MTLComputePassDescriptor computePassDescriptor];
+        bool use_stage_timing = false;
         if (cli->timing_pool && cli->timing_pool->samples) {
             MTLComputePassSampleBufferAttachmentDescriptor* attachment =
                 pd.sampleBufferAttachments[0];
             attachment.sampleBuffer = cli->timing_pool->samples;
             attachment.startOfEncoderSampleIndex = MTLCounterDontSample;
             attachment.endOfEncoderSampleIndex = MTLCounterDontSample;
-            bool use_stage_sampling =
+            use_stage_timing =
                 cli->timing_pool->supports_stage_sampling &&
                 !cli->timing_pool->supports_dispatch_sampling;
-            if (use_stage_sampling) {
-                if (!cli->timing_started) {
-                    attachment.startOfEncoderSampleIndex =
-                        cli->timing_start_index;
-                    cli->timing_pool->sampled[
-                        cli->timing_start_index] = 1;
-                    cli->timing_started = true;
-                }
-                // Mirror fix from metal_begin_render_pass: pin end-of-encoder
-                // to (start_index + 1) so compute-pass GPU durations read
-                // back as the canonical begin/end pair instead of colliding
-                // with the prior encoder's end slot. Same root cause: the
-                // C# deferred-end mechanism hasn't refreshed cli->timing_end_index
-                // between encoders.
-                uint32_t paired_end_index =
-                    cli->timing_start_index + 1;
-                cli->timing_end_index = paired_end_index;
-                attachment.endOfEncoderSampleIndex =
-                    paired_end_index;
-                cli->timing_pool->sampled[
-                    paired_end_index] = 1;
+            uint32_t first_sample = UINT32_MAX;
+            if (use_stage_timing &&
+                metal_allocate_timing_samples(
+                    cli,
+                    2,
+                    &first_sample)) {
+                attachment.startOfEncoderSampleIndex = first_sample;
+                attachment.endOfEncoderSampleIndex = first_sample + 1;
+                metal_mark_timing_pair(
+                    cli->timing_pool,
+                    first_sample,
+                    first_sample + 1);
             }
         }
         id<MTLComputeCommandEncoder> enc =
@@ -1934,15 +1990,22 @@ static RhiEncoder* metal_begin_compute_pass(RhiCommandList* cl, const char* name
         ri->compute = enc;
         ri->is_compute = true;
         ri->command_list = cli;
+        ri->timing_end_sample_index = UINT32_MAX;
         if (cli->timing_pool &&
-            !cli->timing_started &&
             cli->timing_pool->samples &&
-            cli->timing_pool->supports_dispatch_sampling) {
+            cli->timing_pool->supports_dispatch_sampling &&
+            !use_stage_timing) {
+            uint32_t first_sample = UINT32_MAX;
+            if (metal_allocate_timing_samples(cli, 2, &first_sample)) {
             [enc sampleCountersInBuffer:cli->timing_pool->samples
-                          atSampleIndex:cli->timing_start_index
+                          atSampleIndex:first_sample
                             withBarrier:YES];
-            cli->timing_pool->sampled[cli->timing_start_index] = 1;
-            cli->timing_started = true;
+                metal_mark_timing_pair(
+                    cli->timing_pool,
+                    first_sample,
+                    first_sample + 1);
+                ri->timing_end_sample_index = first_sample + 1;
+            }
         }
         return reinterpret_cast<RhiEncoder*>(ri);
     }
@@ -1952,24 +2015,20 @@ static void metal_end_pass(RhiEncoder* enc) {
     @autoreleasepool {
         RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
         RhiCommandListImpl* cli = ri->command_list;
-        if (cli && cli->timing_pool && cli->timing_end_requested) {
-            if (cli->timing_started &&
-                cli->timing_pool->samples) {
-                if (ri->render && cli->timing_pool->supports_draw_sampling) {
-                    [ri->render sampleCountersInBuffer:cli->timing_pool->samples
-                                         atSampleIndex:cli->timing_end_index
-                                           withBarrier:YES];
-                    cli->timing_pool->sampled[cli->timing_end_index] = 1;
-                } else if (ri->compute &&
-                           cli->timing_pool->supports_dispatch_sampling) {
-                    [ri->compute sampleCountersInBuffer:cli->timing_pool->samples
-                                          atSampleIndex:cli->timing_end_index
-                                            withBarrier:YES];
-                    cli->timing_pool->sampled[cli->timing_end_index] = 1;
-                }
+        if (cli && cli->timing_pool &&
+            ri->timing_end_sample_index != UINT32_MAX) {
+            if (ri->render) {
+                [ri->render sampleCountersInBuffer:cli->timing_pool->samples
+                                     atSampleIndex:ri->timing_end_sample_index
+                                       withBarrier:YES];
+            } else if (ri->compute) {
+                [ri->compute sampleCountersInBuffer:cli->timing_pool->samples
+                                      atSampleIndex:ri->timing_end_sample_index
+                                        withBarrier:YES];
             }
+        }
+        if (cli && cli->timing_pool && cli->timing_end_requested) {
             cli->timing_pool = nullptr;
-            cli->timing_started = false;
             cli->timing_end_requested = false;
         }
         [ri->render  endEncoding];
@@ -2693,6 +2752,8 @@ extern "C" void rhi_metal_register(void) {
     b.create_buffer_from_heap    = metal_create_buffer_from_heap;
     b.create_fence               = metal_create_fence;
     b.create_timestamp_query_pool = metal_create_timestamp_query_pool;
+    b.timestamp_query_pool_set_samples_per_duration =
+        metal_timestamp_query_pool_set_samples_per_duration;
     b.destroy_buffer             = metal_destroy_buffer;
     b.destroy_texture            = metal_destroy_texture;
     b.destroy_shader             = metal_destroy_shader;

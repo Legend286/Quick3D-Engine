@@ -45,17 +45,21 @@ This allows the C# Path Tracer to only manage the high-level TLAS without mainta
 
 Render-graph pass timings use the timestamp counter set exposed by Metal.
 Apple silicon normally supports `MTLCounterSamplingPointAtStageBoundary`, so
-render and compute pass descriptors attach the counter sample buffer and write
-the logical pass's first and last stage-boundary samples. GPUs that expose draw
-or dispatch boundaries instead use encoder sampling commands with the same
-sample buffer attached to the pass descriptor.
+render and compute descriptors attach a counter sample buffer. Each logical
+render-graph pass owns a 64-sample block. Every internal encoder consumes
+unique adjacent pairs from that block, preventing multi-cascade shadows and
+other multi-encoder passes from overwriting earlier samples.
 
-One logical render-graph pass may open multiple Metal encoders. The first
-encoder writes the start sample and every encoder writes the shared end slot;
-the final encoder therefore leaves the complete logical-pass interval in that
-slot. The backend samples correlated CPU and GPU clocks before submission and
-again after completion, then converts each GPU timestamp delta using the
-resulting clock-span ratio. Command-buffer duration is only a sanity ceiling,
-not a scale factor for the sampled interval. Samples resolve asynchronously
-through rotating pools. Command-buffer `GPUStartTime` and `GPUEndTime` provide
-total frame duration, but are not presented as per-pass measurements.
+Stage-only render encoders record separate vertex and fragment begin/end
+pairs. Their logical-pass cost is the sum of those stage durations across all
+encoders. Compute encoders record one begin/end pair. GPUs that expose draw or
+dispatch boundaries use explicit encoder samples with the same unique-pair
+allocation. A block can represent up to sixteen four-sample render encoders or
+thirty-two two-sample compute encoders; excess encoders remain explicitly
+unsampled instead of corrupting existing pairs.
+
+The backend samples correlated CPU and GPU clocks before submission and after
+completion, then converts each GPU timestamp delta using the resulting
+clock-span ratio. Samples resolve asynchronously through rotating pools.
+Command-buffer `GPUStartTime` and `GPUEndTime` remain available as wall-span
+diagnostics but do not drive the cadence-independent GPU-work readout.

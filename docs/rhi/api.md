@@ -184,6 +184,8 @@ attachment.
 int32_t rhi_create_timestamp_query_pool(
     RhiDevice* device, uint32_t sample_count,
     RhiTimestampQueryPool** out_pool);
+int32_t rhi_timestamp_query_pool_set_samples_per_duration(
+    RhiTimestampQueryPool* pool, uint32_t sample_count);
 void rhi_destroy_timestamp_query_pool(RhiTimestampQueryPool* pool);
 int32_t rhi_cmd_write_timestamp(
     RhiCommandList* command_list, RhiTimestampQueryPool* pool,
@@ -199,18 +201,19 @@ int32_t rhi_timestamp_query_pool_read_frame_duration(
     uint64_t* out_duration_nanoseconds);
 ```
 
-Duration `i` is formed from samples `2*i` and `2*i+1`. Reads are non-blocking:
-`1` means ready, `0` means still in flight, and `-1` means unsupported or
-invalid. Metal prefers explicit draw- and dispatch-boundary samples, falling
-back to stage-boundary attachments only when explicit boundary sampling is
-unavailable. This prevents unrelated encoders from resolving as duplicated or
-cumulative pass durations. Metal correlates CPU and GPU clocks before
-submission and after completion, then converts each GPU delta using the
-measured clock-span ratio. A duration larger than the completed command buffer,
-or a set of serial pass durations whose sum exceeds that buffer, is rejected as
-invalid. The frame-duration read uses Metal's completed command-buffer GPU
-start and end times. Vulkan can map the same API to query pools and
-`timestampPeriod`.
+Pools default to one adjacent pair per duration. The renderer configures 64
+samples for duration `i` through
+`rhi_timestamp_query_pool_set_samples_per_duration`. Metal assigns adjacent
+begin/end pairs within that block to the pass's internal encoders and reduces
+the valid pairs into one duration. Reads are non-blocking: `1` means ready, `0`
+means still in flight, and `-1` means unsupported or invalid. Metal prefers
+explicit draw- and dispatch-boundary samples, falling back to stage-boundary
+attachments only when explicit boundary sampling is unavailable. Metal
+correlates CPU and GPU clocks before submission and after completion, then
+converts each GPU delta using the measured clock-span ratio. The frame-duration
+read uses Metal's completed command-buffer GPU start and end times as a raw wall
+span. Vulkan can map the same API to query pools and `timestampPeriod` while
+retaining the logical duration contract.
 
 ## Backend registration
 
@@ -298,8 +301,10 @@ void    rhi_cmd_signal_fence(RhiCommandList* cmd, RhiFence* fence);
 
 `CommandRecorder.BeginTimestampScope` and
 `CommandRecorder.EndTimestampScope` bracket one logical render-graph pass.
-Backends sample the first and final internal encoders rather than reusing the
-same counter slot at every internal encoder boundary.
+The Metal backend gives each logical pass a fixed sample block and assigns a
+unique pair to every internal encoder. Stage-only render timing sums separate
+vertex and fragment pairs; compute and explicit draw/dispatch timing use one
+pair per encoder.
 
 `GpuResourceRegistry` records live committed managed RHI allocations.
 `RhiBuffer.SetDebugName` and `RhiTexture.SetDebugName` attach diagnostic names

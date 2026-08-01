@@ -23,7 +23,10 @@ public sealed class RhiTimestampQueryPool : IDisposable
     /// <summary>
     /// Attempts to create a timestamp pool, returning null when unsupported.
     /// </summary>
-    public static RhiTimestampQueryPool? TryCreate(RhiDevice device, uint sampleCount)
+    public static RhiTimestampQueryPool? TryCreate(
+        RhiDevice device,
+        uint sampleCount,
+        uint samplesPerDuration = 2)
     {
         if (sampleCount == 0)
             return null;
@@ -32,16 +35,24 @@ public sealed class RhiTimestampQueryPool : IDisposable
             device.Handle,
             sampleCount,
             out IntPtr handle);
-        return result == 0 && handle != IntPtr.Zero
-            ? new RhiTimestampQueryPool(handle, sampleCount)
-            : null;
+        if (result != 0 || handle == IntPtr.Zero)
+            return null;
+        if (RhiNative.RhiTimestampQueryPoolSetSamplesPerDuration(
+                handle,
+                samplesPerDuration) != 0)
+        {
+            RhiNative.RhiDestroyTimestampQueryPool(handle);
+            return null;
+        }
+        return new RhiTimestampQueryPool(handle, sampleCount);
     }
 
     /// <summary>
-    /// Reads adjacent sample-pair durations without waiting for completion.
+    /// Reads logical pass durations without waiting for completion.
     /// Once the C++ side resolves the command buffer's timestamps into
     /// <c>pi->results</c>, only one successful read is meaningful — the
-    /// native side clears <c>pi->pending</c> after consumption, so a
+    /// native side reduces each pass's encoder pairs and clears
+    /// <c>pi->pending</c> after consumption, so a
     /// subsequent poll with <see cref="HasPendingResults"/> still true
     /// would otherwise silently re-read the same resolved buffer and
     /// collapse the per-pass deltas into the whole-frame value.

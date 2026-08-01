@@ -381,6 +381,10 @@ ENGINE_API int32_t rhi_create_timestamp_query_pool(
     RhiDevice* device,
     uint32_t sample_count,
     RhiTimestampQueryPool** out_pool);
+/** Set the number of counter samples reserved for one reported duration. */
+ENGINE_API int32_t rhi_timestamp_query_pool_set_samples_per_duration(
+    RhiTimestampQueryPool* pool,
+    uint32_t sample_count);
 ENGINE_API void rhi_destroy_timestamp_query_pool(RhiTimestampQueryPool* pool);
 
 ENGINE_API int32_t  rhi_create_heap(RhiDevice* device,

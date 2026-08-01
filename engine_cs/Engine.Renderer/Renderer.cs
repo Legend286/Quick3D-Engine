@@ -1533,7 +1533,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 ? _graphExecutor.LastGpuTimingFrameNumber
                 : _renderedFrameCount,
             cpuTotal,
-            _graphExecutor.LastRawGpuFrameMilliseconds,
+            _graphExecutor.LastGpuWorkMilliseconds,
             _plan.Aliasing.TotalHeapSize,
             allocations.Aggregate(
                 0ul,

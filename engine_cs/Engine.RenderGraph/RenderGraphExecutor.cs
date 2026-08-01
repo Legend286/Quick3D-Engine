@@ -20,6 +20,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 {
     private const int GpuFrameHistoryCapacity = 15;
     private const int CpuTimingHistoryCapacity = 32;
+    private const int TimestampSamplesPerPass = 64;
 
     private sealed record TimestampPoolSubmission(
         RenderPlan Plan,
@@ -58,6 +59,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
     private int _gpuFrameHistoryIndex;
     private double? _lastRawGpuFrameMilliseconds;
     private double? _lastComputeRawFrameMilliseconds;
+    private double? _lastGpuWorkMilliseconds;
     private double? _lastGpuFrameMilliseconds;
     private long _lastGpuTimingFrameNumber = -1;
     private int _timestampPassCount;
@@ -87,6 +89,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             ? Math.Max(graphics, compute)
             : _lastRawGpuFrameMilliseconds ??
                 _lastComputeRawFrameMilliseconds;
+    public double? LastGpuWorkMilliseconds => _lastGpuWorkMilliseconds;
     public double? LastGpuFrameMilliseconds => _lastGpuFrameMilliseconds;
     public long LastGpuTimingFrameNumber => _lastGpuTimingFrameNumber;
     public bool EnableGpuTiming { get; set; }
@@ -217,7 +220,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                 {
                     passTimestampStarted = recorder.BeginTimestampScope(
                         onAsyncCompute ? computeTimestampPool! : timestampPool!,
-                        (uint)(i * 2));
+                        (uint)(i * TimestampSamplesPerPass));
                     if (onAsyncCompute)
                         recordingComputeGpuTimestamps = passTimestampStarted;
                     else
@@ -244,7 +247,8 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                 {
                     bool recorded = recorder.EndTimestampScope(
                         onAsyncCompute ? computeTimestampPool! : timestampPool!,
-                        (uint)(i * 2 + 1));
+                        (uint)(
+                            (i + 1) * TimestampSamplesPerPass - 1));
                     if (onAsyncCompute)
                     {
                         recordingComputeGpuTimestamps = recorded;
@@ -269,7 +273,8 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                 recordingComputeGpuTimestamps &&
                 computeRecorder!.ResolveTimestamps(
                     computeTimestampPool!,
-                    (uint)(graph.Passes.Length * 2)))
+                    (uint)(
+                        graph.Passes.Length * TimestampSamplesPerPass)))
             {
                 int submittedPool = Array.IndexOf(
                     _computeTimestampPools,
@@ -288,7 +293,8 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
             if (recordingGpuTimestamps &&
                 graphicsRecorder.ResolveTimestamps(
                     timestampPool!,
-                    (uint)(graph.Passes.Length * 2)))
+                    (uint)(
+                        graph.Passes.Length * TimestampSamplesPerPass)))
             {
                 int submittedPool = Array.IndexOf(_timestampPools, timestampPool);
                 if (submittedPool >= 0)
@@ -418,12 +424,19 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         DisposeTimestampPools();
         _timestampPassCount = passCount;
         _lastGpuPassMilliseconds = new double?[passCount];
-        uint sampleCount = checked((uint)(passCount * 2));
+        uint sampleCount = checked(
+            (uint)(passCount * TimestampSamplesPerPass));
         for (int i = 0; i < _timestampPools.Length; ++i)
         {
-            _timestampPools[i] = RhiTimestampQueryPool.TryCreate(_device, sampleCount);
+            _timestampPools[i] = RhiTimestampQueryPool.TryCreate(
+                _device,
+                sampleCount,
+                TimestampSamplesPerPass);
             _computeTimestampPools[i] =
-                RhiTimestampQueryPool.TryCreate(_device, sampleCount);
+                RhiTimestampQueryPool.TryCreate(
+                    _device,
+                    sampleCount,
+                    TimestampSamplesPerPass);
         }
     }
 
@@ -489,17 +502,21 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         _lastComputeRawFrameMilliseconds = matchingCompute?.FrameMilliseconds;
         PublishCoherentPassTimings(graph, newestGraphics.FrameNumber);
 
-        double graphicsPathMilliseconds =
-            newestGraphics.FrameMilliseconds ?? passMaxMilliseconds;
-        double computePathMilliseconds =
-            matchingCompute?.FrameMilliseconds ?? 0.0;
-        double frameMilliseconds = Math.Max(
-            graphicsPathMilliseconds,
-            computePathMilliseconds);
-        if (frameMilliseconds <= 0.0)
-            frameMilliseconds = passMaxMilliseconds;
-        if (frameMilliseconds > 0.0)
-            _lastGpuFrameMilliseconds = RecordGpuFrameDuration(frameMilliseconds);
+        double graphicsWorkMilliseconds = SumPassTimings(
+            newestGraphics.PassMilliseconds);
+        double computeWorkMilliseconds = matchingCompute != null
+            ? SumPassTimings(matchingCompute.PassMilliseconds)
+            : 0.0;
+        double frameWorkMilliseconds = Math.Max(
+            graphicsWorkMilliseconds,
+            computeWorkMilliseconds);
+        if (frameWorkMilliseconds <= 0.0)
+            frameWorkMilliseconds = passMaxMilliseconds;
+        _lastGpuWorkMilliseconds = frameWorkMilliseconds > 0.0
+            ? frameWorkMilliseconds
+            : null;
+        if (_lastGpuWorkMilliseconds is double gpuWork)
+            _lastGpuFrameMilliseconds = RecordGpuFrameDuration(gpuWork);
 
         PruneCompletedTimingCaptures(graph);
     }
@@ -534,7 +551,6 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 
             var passMilliseconds =
                 new double?[submission.SampledPasses.Length];
-            double sampledTotalMilliseconds = 0.0;
             for (int passIndex = 0;
                  passIndex < passMilliseconds.Length;
                  ++passIndex)
@@ -545,15 +561,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                 {
                     passMilliseconds[passIndex] =
                         duration / 1_000_000.0;
-                    sampledTotalMilliseconds +=
-                        duration / 1_000_000.0;
                 }
-            }
-
-            if (frameMilliseconds is double frameDuration &&
-                sampledTotalMilliseconds > frameDuration * 1.05)
-            {
-                Array.Clear(passMilliseconds);
             }
 
             completedCaptures[submission.FrameNumber] =
@@ -603,6 +611,21 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         return maximumMilliseconds;
     }
 
+    private static double SumPassTimings(double?[] timings)
+    {
+        double totalMilliseconds = 0.0;
+        foreach (double? timing in timings)
+        {
+            if (timing is double milliseconds &&
+                double.IsFinite(milliseconds) &&
+                milliseconds >= 0.0)
+            {
+                totalMilliseconds += milliseconds;
+            }
+        }
+        return totalMilliseconds;
+    }
+
     private void ResetPublishedGpuTimings(RenderPlan graph)
     {
         _publishedTimingPlan = graph;
@@ -610,6 +633,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         _cpuTimingCaptures.Clear();
         _lastRawGpuFrameMilliseconds = null;
         _lastComputeRawFrameMilliseconds = null;
+        _lastGpuWorkMilliseconds = null;
         _lastGpuFrameMilliseconds = null;
         _lastGpuTimingFrameNumber = -1;
         Array.Clear(_gpuFrameHistory);
@@ -728,6 +752,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         _gpuFrameHistoryIndex = 0;
         _lastRawGpuFrameMilliseconds = null;
         _lastComputeRawFrameMilliseconds = null;
+        _lastGpuWorkMilliseconds = null;
         _lastGpuFrameMilliseconds = null;
         _lastGpuTimingFrameNumber = -1;
         _publishedTimingPlan = null;

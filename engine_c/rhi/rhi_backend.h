@@ -45,6 +45,8 @@ typedef struct RhiBackend {
     int32_t (*create_fence)(RhiDevice *d, RhiFence **out);
     int32_t (*create_timestamp_query_pool)(RhiDevice *d, uint32_t sample_count,
                                            RhiTimestampQueryPool **out);
+    int32_t (*timestamp_query_pool_set_samples_per_duration)(
+        RhiTimestampQueryPool *pool, uint32_t sample_count);
     void (*destroy_buffer)(RhiBuffer *buf);
     void (*destroy_texture)(RhiTexture *tex);
     void (*destroy_shader)(RhiShader *sh);

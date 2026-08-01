@@ -103,6 +103,15 @@ int32_t rhi_create_timestamp_query_pool(RhiDevice* d, uint32_t sample_count,
     if (g_active < 0 || !g_backends[g_active].create_timestamp_query_pool) return -1;
     return g_backends[g_active].create_timestamp_query_pool(d, sample_count, out);
 }
+int32_t rhi_timestamp_query_pool_set_samples_per_duration(
+    RhiTimestampQueryPool* pool, uint32_t sample_count) {
+    if (g_active < 0 ||
+        !g_backends[g_active].timestamp_query_pool_set_samples_per_duration) {
+        return -1;
+    }
+    return g_backends[g_active].timestamp_query_pool_set_samples_per_duration(
+        pool, sample_count);
+}
 
 int32_t rhi_create_heap(RhiDevice* d, const RhiHeapDesc* desc, RhiHeap** out) {
     return g_backends[g_active].create_heap(d, desc, out);

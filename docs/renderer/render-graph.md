@@ -44,13 +44,15 @@ remain renderer-scoped. The executor captures CPU command-recording duration
 for each pass.
 
 GPU timing uses three reusable timestamp-query pools per active queue. Metal
-records pass samples at draw and dispatch encoder boundaries. The displayed
-graphics workload is the sum of serial graphics pass-marker durations, which
-excludes swapchain fences and presentation pacing encoded outside render
-work. The frame resolves each pool once, and a later frame polls it without
-waiting. If all pools are still in flight, the executor skips that frame's GPU
-capture rather than blocking rendering. Backends without timestamp support
-leave the nullable GPU fields empty.
+assigns unique counter pairs to each encoder inside a 64-sample logical-pass
+block. Explicit draw and dispatch boundaries are preferred; stage-only render
+timing sums vertex and fragment intervals. The displayed workload sums sampled
+passes per queue and selects the longer asynchronous queue, excluding swapchain
+fences and presentation pacing outside measured encoders. The frame resolves
+each pool once, and a later frame polls it without waiting. If all pools are
+still in flight, the executor skips that frame's GPU capture rather than
+blocking rendering. Backends without timestamp support leave the nullable GPU
+fields empty.
 
 Each completed capture is associated with its exact compiled plan, execution
 frame, queue, and successfully recorded pass slots. Graphics and asynchronous

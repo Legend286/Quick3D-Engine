@@ -342,6 +342,11 @@ public static partial class RhiNative
     [LibraryImport(Library, EntryPoint = "rhi_destroy_timestamp_query_pool")]
     public static partial void RhiDestroyTimestampQueryPool(IntPtr pool);
 
+    [LibraryImport(Library, EntryPoint = "rhi_timestamp_query_pool_set_samples_per_duration")]
+    public static partial int RhiTimestampQueryPoolSetSamplesPerDuration(
+        IntPtr pool,
+        uint sampleCount);
+
     [LibraryImport(Library, EntryPoint = "rhi_destroy_heap")]
     public static partial void RhiDestroyHeap(IntPtr h);
     

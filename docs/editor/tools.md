@@ -281,12 +281,14 @@ resolve asynchronously through a triple-buffered timestamp pool; the render
 thread never waits for profiling results. Unsupported or internally
 inconsistent captures keep GPU fields explicitly unsampled.
 
-The frame number, CPU pass costs, GPU pass costs, and raw GPU frame span shown
-by one explorer capture all come from the same completed render-graph frame.
-When graphics and asynchronous compute both execute, the displayed raw span is
-the longer command-buffer path rather than their overlapping sum.
-The scheduler separately retains a lower-median history for budget stability;
-that smoothed value is not displayed as if it belonged to the captured frame.
+The frame number, CPU pass costs, GPU pass costs, and GPU-work total shown by
+one explorer capture all come from the same completed render-graph frame. The
+work total sums sampled passes on each queue and selects the longer queue when
+graphics and asynchronous compute overlap. Presentation cadence, drawable
+waiting, and unsampled command-buffer gaps do not inflate it. Raw command-buffer
+wall spans remain internal diagnostics. The scheduler separately retains a
+lower-median history for budget stability; that smoothed value is not displayed
+as if it belonged to the captured frame.
 
 The Transient Heap metric reports the physical alias heap allocated by the
 render graph. GPU Committed reports live RHI allocation ownership. The

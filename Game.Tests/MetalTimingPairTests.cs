@@ -12,35 +12,30 @@ namespace Game.Tests;
 public sealed class MetalTimingPairTests
 {
     [Fact]
-    public void BeginEnd_PairIndices_AreStartPlusOne()
+    public void LogicalPassSampleBlocks_DoNotOverlap()
     {
-        for (uint startSampleIndex = 0; startSampleIndex < 32; startSampleIndex += 2)
+        const uint samplesPerPass = 64;
+        for (uint passIndex = 0; passIndex < 16; ++passIndex)
         {
-            uint pairedEndSampleIndex = startSampleIndex + 1;
-            // Slot layout: begin on even indices, end on odd indices.
-            Assert.True(startSampleIndex % 2 == 0);
-            Assert.True(pairedEndSampleIndex % 2 == 1);
-            // Pair spans exactly two adjacent slots.
-            Assert.Equal(startSampleIndex + 1, pairedEndSampleIndex);
-            // No cross-pair overlap: pair i's end is pair (i+1)'s start minus 1.
-            uint nextStart = startSampleIndex + 2;
-            Assert.NotEqual(pairedEndSampleIndex, nextStart);
+            uint startSampleIndex = passIndex * samplesPerPass;
+            uint endSampleIndex =
+                (passIndex + 1) * samplesPerPass - 1;
+            uint nextStart = (passIndex + 1) * samplesPerPass;
+            Assert.Equal(samplesPerPass - 1, endSampleIndex - startSampleIndex);
+            Assert.Equal(endSampleIndex + 1, nextStart);
         }
     }
 
     [Fact]
-    public void RenderGraphExecutor_UsesAdjacentSlotPair()
+    public void RenderGraphExecutor_UsesPerPassSampleBlocks()
     {
-        // RenderGraphExecutor calls BeginTimestampScope(pool, i*2) and
-        // EndTimestampScope(pool, i*2+1). Pin that the consumer does
-        // not accidentally collapse both calls onto the same slot (the
-        // bug we just fixed). The (i*2, i*2+1) shape must equal the
-        // (start, start+1) invariant the C RHI fix relies on.
+        const uint samplesPerPass = 64;
         for (int passIndex = 0; passIndex < 16; ++passIndex)
         {
-            uint expectedStart = (uint)(passIndex * 2);
-            uint expectedEnd = (uint)(passIndex * 2 + 1);
-            Assert.Equal(expectedStart + 1, expectedEnd);
+            uint expectedStart = (uint)passIndex * samplesPerPass;
+            uint expectedEnd =
+                (uint)(passIndex + 1) * samplesPerPass - 1;
+            Assert.True(expectedEnd > expectedStart);
         }
     }
 
@@ -148,7 +143,7 @@ public sealed class MetalTimingPairTests
     }
 
     [Fact]
-    public void RenderGraphDiagnostics_RejectIncoherentGpuCaptures()
+    public void RenderGraphDiagnostics_PublishesSampledGpuWork()
     {
         string executor = ReadRepositoryFile(
             "engine_cs", "Engine.RenderGraph", "RenderGraphExecutor.cs");
@@ -158,12 +153,49 @@ public sealed class MetalTimingPairTests
         Assert.Contains("_cpuTimingCaptures", executor);
         Assert.Contains("CpuTimingHistoryCapacity = 32", executor);
         Assert.Contains("PublishCoherentPassTimings", executor);
-        Assert.Contains(
-            "sampledTotalMilliseconds > frameDuration * 1.05",
-            executor);
-        Assert.Contains("Array.Clear(passMilliseconds)", executor);
+        Assert.Contains("TimestampSamplesPerPass = 64", executor);
+        Assert.Contains("SumPassTimings", executor);
+        Assert.Contains("LastGpuWorkMilliseconds", executor);
+        Assert.DoesNotContain("sampledTotalMilliseconds", executor);
         Assert.Contains("LastGpuTimingFrameNumber", renderer);
         Assert.Contains("LastRawGpuFrameMilliseconds", renderer);
+        Assert.Contains("LastGpuWorkMilliseconds", renderer);
+    }
+
+    [Fact]
+    public void MetalBackend_AssignsUniqueEncoderPairsWithinPassBlock()
+    {
+        string source = ReadRepositoryFile(
+            "engine_c", "rhi", "rhi_metal.mm");
+        string header = ReadRepositoryFile(
+            "engine_c", "rhi", "rhi.h");
+        string bindings = ReadRepositoryFile(
+            "OutOfBand", "Engine.CBindings", "Rhi.cs");
+
+        Assert.Contains("samples_per_duration", source);
+        Assert.Contains("metal_allocate_timing_samples", source);
+        Assert.Contains("metal_mark_timing_pair", source);
+        Assert.Contains("sample_roles", source);
+        Assert.Contains("stage_timing_first + 3", source);
+        Assert.Contains(
+            "rhi_timestamp_query_pool_set_samples_per_duration",
+            header);
+        Assert.Contains(
+            "RhiTimestampQueryPoolSetSamplesPerDuration",
+            bindings);
+    }
+
+    [Fact]
+    public void SumPassTimings_IgnoresUnsampledAndInvalidValues()
+    {
+        MethodInfo sum = typeof(RenderGraphExecutor).GetMethod(
+            "SumPassTimings",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        var timings = new double?[] { 0.25, null, 1.5, double.NaN, -2.0 };
+
+        double result = (double)sum.Invoke(null, new object[] { timings })!;
+
+        Assert.Equal(1.75, result);
     }
 
     private static string ReadRepositoryFile(params string[] parts)

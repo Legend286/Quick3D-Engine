@@ -201,15 +201,9 @@ public sealed class CommandRecorder : IDisposable
     /// logical render-graph pass.
     /// </summary>
     /// <remarks>
-    /// Single EVEN write_timestamp call — the ODD sample is now written
-    /// exclusively by EndTimestampScope. Earlier revisions pre-paired the
-    /// end here on Metal, which prematurely flipped
-    /// <c>metal_cmd_write_timestamp</c>'s ODD branch and made
-    /// <c>metal_end_pass</c>'s flag-reset strip the second-and-later encoder's
-    /// sample buffer attachments, collapsing tail durations into the head.
-    /// TODO(rhi): re-introduce an RHI-backend-conditional pre-pair when
-    /// Vulkan lands — Metal records via stage sampling so the pre-pair is
-    /// actively harmful here.
+    /// The start index identifies a backend-owned sample block for one
+    /// logical pass. Metal assigns unique pairs from that block to each
+    /// internal encoder so multi-encoder passes do not overwrite counters.
     /// </remarks>
     public bool BeginTimestampScope(
         RhiTimestampQueryPool pool,
@@ -224,7 +218,6 @@ public sealed class CommandRecorder : IDisposable
                 startSampleIndex) == 0;
         if (started)
         {
-            // sole ODD writer is EndTimestampScope — keep that contract intact.
             _timestampScopeActive = true;
         }
         return started;
@@ -234,10 +227,8 @@ public sealed class CommandRecorder : IDisposable
     /// Ends a logical render-graph timestamp scope at its final encoder.
     /// </summary>
     /// <remarks>
-    /// Sole ODD writer paired with BeginTimestampScope — the
-    /// RhiCmdWriteTimestamp call MUST happen before CloseCurrentEncoder
-    /// so that on Metal stage sampling, the encoder-close flag-reset
-    /// picks up the true end-of-fragment pair index.
+    /// The end index closes the backend-owned sample block and is written
+    /// before the final encoder closes.
     /// </remarks>
     public bool EndTimestampScope(
         RhiTimestampQueryPool pool,

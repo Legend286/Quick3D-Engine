@@ -40,7 +40,7 @@
         </Border>
         <Border Classes="MetricCard" Margin="0,0,6,0">
           <StackPanel>
-            <TextBlock Classes="MetricLabel" Text="GPU FRAME" />
+            <TextBlock Classes="MetricLabel" Text="GPU WORK" />
             <TextBlock Classes="MetricValue" Text="{Binding GpuText}" Foreground="#7AA2F7" />
           </StackPanel>
         </Border>
