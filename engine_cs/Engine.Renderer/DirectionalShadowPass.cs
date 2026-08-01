@@ -4,6 +4,7 @@ using System;
 using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using Engine.CBindings;
 using Engine.RHI;
 using Engine.RenderGraph;
@@ -182,101 +183,120 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
             frameData,
             _candidateViewProjections,
             _candidateSceneSignatures);
-        int cascadeIndex = SelectCascade(
-            context.FrameNumber,
+        Span<int> dirtyCascades =
+            stackalloc int[DirectionalShadowState.CascadeCount];
+        int dirtyCascadeCount = CollectDirtyCascades(
             _candidateSceneSignatures,
             _candidateViewProjections,
-            out int dirtyCascadeCount);
-        if (cascadeIndex < 0)
+            dirtyCascades);
+        if (dirtyCascadeCount == 0)
             return;
 
-        bool forced =
-            !_state.ValidCascades[cascadeIndex] ||
-            context.FrameNumber - _state.LastUpdatedFrames[cascadeIndex] >=
-                GetMaximumStaleFrames(cascadeIndex);
-        if (!_workScheduler.TryAdmit(GpuWorkDomain.Shadows, forced))
-        {
-            _workScheduler.Defer(
+        if (!_workScheduler.TryAdmit(
                 GpuWorkDomain.Shadows,
-                dirtyCascadeCount - 1);
+                dirtyCascadeCount,
+                forced: true))
             return;
-        }
-        _workScheduler.Defer(
-            GpuWorkDomain.Shadows,
-            dirtyCascadeCount - 1);
 
         EnsureDrawCommandBuffer(
-            (ulong)frameData.Parts.Count * DrawIndirectCommandSizeBytes);
+            (ulong)dirtyCascadeCount *
+            (ulong)frameData.Parts.Count *
+            DrawIndirectCommandSizeBytes);
 
-        ScenePushData push = _sceneCache.PushData;
-        push.DirectionalShadowViewProj =
-            _candidateViewProjections[cascadeIndex];
-        ShadowCullPushData cullPush = new()
-        {
-            Instances = _sceneCache.InstanceBuffer.DeviceAddress,
-            Parts = _sceneCache.PartBuffer.DeviceAddress,
-            DrawCommands = _drawCommandBuffer.DeviceAddress,
-            CascadeViewProjection =
-                _candidateViewProjections[cascadeIndex],
-            CascadeCullRegion = BuildCascadeCullRegion(
-                frameData.Camera,
-                candidateSplits,
-                cascadeIndex,
-                _candidateMaximumCasterDisplacement),
-            PartCount = (uint)frameData.Parts.Count,
-        };
         sink.BeginComputePass("Directional Shadow Culling");
         sink.BindPipeline(_cullPipeline);
         sink.UseBuffer(_sceneCache.InstanceBuffer, 1);
         sink.UseBuffer(_sceneCache.PartBuffer, 1);
         sink.UseBuffer(_drawCommandBuffer, 2);
-        sink.PushConstants(
-            0,
-            (uint)sizeof(ShadowCullPushData),
-            (IntPtr)(&cullPush));
-        sink.Dispatch(((uint)frameData.Parts.Count + 63) / 64, 1, 1);
+        for (int workIndex = 0;
+             workIndex < dirtyCascadeCount;
+             ++workIndex)
+        {
+            int cascadeIndex = dirtyCascades[workIndex];
+            ulong drawOffset = GetDrawCommandOffset(
+                workIndex,
+                frameData.Parts.Count);
+            ShadowCullPushData cullPush = new()
+            {
+                Instances = _sceneCache.InstanceBuffer.DeviceAddress,
+                Parts = _sceneCache.PartBuffer.DeviceAddress,
+                DrawCommands =
+                    _drawCommandBuffer.DeviceAddress + drawOffset,
+                CascadeViewProjection =
+                    _candidateViewProjections[cascadeIndex],
+                CascadeCullRegion = BuildCascadeCullRegion(
+                    frameData.Camera,
+                    candidateSplits,
+                    cascadeIndex,
+                    _candidateMaximumCasterDisplacement),
+                PartCount = (uint)frameData.Parts.Count,
+            };
+            sink.PushConstants(
+                0,
+                (uint)sizeof(ShadowCullPushData),
+                (IntPtr)(&cullPush));
+            sink.Dispatch(
+                ((uint)frameData.Parts.Count + 63) / 64,
+                1,
+                1);
+        }
         sink.EndComputePass();
 
-        sink.BeginDepthOnlyPass(
-            _state.Textures[cascadeIndex],
-            RhiNative.LoadOp.Clear);
-        sink.SetViewport(
-            0,
-            0,
-            DirectionalShadowState.PageSize,
-            DirectionalShadowState.PageSize);
-        sink.SetScissor(
-            0,
-            0,
-            DirectionalShadowState.PageSize,
-            DirectionalShadowState.PageSize);
-        sink.BindPipeline(_pipeline);
-        sink.UseBuffer(_sceneCache.InstanceBuffer, 1);
-        sink.UseBuffer(_sceneCache.PartBuffer, 1);
-        sink.UseBuffer(_drawCommandBuffer, 1);
-        foreach (var mesh in frameData.UniqueMeshes)
+        for (int workIndex = 0;
+             workIndex < dirtyCascadeCount;
+             ++workIndex)
         {
-            sink.UseBuffer(mesh.VertexBuffer, 1);
-            sink.UseBuffer(mesh.IndexBuffer, 1);
-        }
-        sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&push));
-        sink.DrawIndirect(
-            _drawCommandBuffer,
-            0,
-            (uint)frameData.Parts.Count,
-            (uint)DrawIndirectCommandSizeBytes);
-        sink.EndPass();
+            int cascadeIndex = dirtyCascades[workIndex];
+            ScenePushData push = _sceneCache.PushData;
+            push.DirectionalShadowViewProj =
+                _candidateViewProjections[cascadeIndex];
+            sink.BeginDepthOnlyPass(
+                _state.Textures[cascadeIndex],
+                RhiNative.LoadOp.Clear);
+            sink.SetViewport(
+                0,
+                0,
+                DirectionalShadowState.PageSize,
+                DirectionalShadowState.PageSize);
+            sink.SetScissor(
+                0,
+                0,
+                DirectionalShadowState.PageSize,
+                DirectionalShadowState.PageSize);
+            sink.BindPipeline(_pipeline);
+            sink.UseBuffer(_sceneCache.InstanceBuffer, 1);
+            sink.UseBuffer(_sceneCache.PartBuffer, 1);
+            sink.UseBuffer(_drawCommandBuffer, 1);
+            foreach (var mesh in frameData.UniqueMeshes)
+            {
+                sink.UseBuffer(mesh.VertexBuffer, 1);
+                sink.UseBuffer(mesh.IndexBuffer, 1);
+            }
+            sink.PushConstants(
+                0,
+                (uint)sizeof(ScenePushData),
+                (IntPtr)(&push));
+            sink.DrawIndirect(
+                _drawCommandBuffer,
+                GetDrawCommandOffset(
+                    workIndex,
+                    frameData.Parts.Count),
+                (uint)frameData.Parts.Count,
+                (uint)DrawIndirectCommandSizeBytes);
+            sink.EndPass();
 
-        _state.ValidCascades[cascadeIndex] = true;
-        _state.LastUpdatedFrames[cascadeIndex] = context.FrameNumber;
-        _state.SceneSignatures[cascadeIndex] =
-            _candidateSceneSignatures[cascadeIndex];
-        _state.ViewProjections[cascadeIndex] =
-            _candidateViewProjections[cascadeIndex];
-        _state.Splits = SetComponent(
-            _state.Splits,
-            cascadeIndex,
-            GetComponent(candidateSplits, cascadeIndex));
+            _state.ValidCascades[cascadeIndex] = true;
+            _state.LastUpdatedFrames[cascadeIndex] =
+                context.FrameNumber;
+            _state.SceneSignatures[cascadeIndex] =
+                _candidateSceneSignatures[cascadeIndex];
+            _state.ViewProjections[cascadeIndex] =
+                _candidateViewProjections[cascadeIndex];
+            _state.Splits = SetComponent(
+                _state.Splits,
+                cascadeIndex,
+                GetComponent(candidateSplits, cascadeIndex));
+        }
         _state.Parameters = new Vector4(
             Array.TrueForAll(_state.ValidCascades, valid => valid)
                 ? 1.0f
@@ -286,7 +306,7 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
             DirectionalShadowState.MaxDistance);
         int historyIndex = (int)(context.FrameNumber & 15);
         _renderedFrames[historyIndex] = context.FrameNumber;
-        _renderedCascadeCounts[historyIndex] = 1;
+        _renderedCascadeCounts[historyIndex] = dirtyCascadeCount;
     }
 
     public bool TryGetRenderedCascadeCount(long frameNumber, out int count)
@@ -296,15 +316,12 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
         return _renderedFrames[historyIndex] == frameNumber;
     }
 
-    private int SelectCascade(
-        long frameNumber,
+    private int CollectDirtyCascades(
         int[] sceneSignatures,
         Matrix4x4[] candidates,
-        out int dirtyCascadeCount)
+        Span<int> dirtyCascades)
     {
-        dirtyCascadeCount = 0;
-        int selected = -1;
-        double selectedScore = double.NegativeInfinity;
+        int dirtyCascadeCount = 0;
         for (int cascadeIndex = 0;
              cascadeIndex < DirectionalShadowState.CascadeCount;
              ++cascadeIndex)
@@ -318,42 +335,10 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
                     candidates[cascadeIndex]);
             if (!dirty)
                 continue;
-            dirtyCascadeCount++;
-
-            long age = _state.ValidCascades[cascadeIndex]
-                ? frameNumber - _state.LastUpdatedFrames[cascadeIndex]
-                : long.MaxValue;
-            double score = !_state.ValidCascades[cascadeIndex]
-                ? 1000.0 - cascadeIndex
-                : (double)age / GetTargetInterval(cascadeIndex);
-            if (age >= GetMaximumStaleFrames(cascadeIndex))
-                score += 100.0;
-            if (score > selectedScore)
-            {
-                selected = cascadeIndex;
-                selectedScore = score;
-            }
+            dirtyCascades[dirtyCascadeCount++] = cascadeIndex;
         }
-        return selected;
+        return dirtyCascadeCount;
     }
-
-    private static int GetTargetInterval(int cascadeIndex)
-        => cascadeIndex switch
-        {
-            0 => 1,
-            1 => 2,
-            2 => 4,
-            _ => 8,
-        };
-
-    private static int GetMaximumStaleFrames(int cascadeIndex)
-        => cascadeIndex switch
-        {
-            0 => 2,
-            1 => 6,
-            2 => 12,
-            _ => 24,
-        };
 
     private static bool MatrixNearlyEqual(Matrix4x4 left, Matrix4x4 right)
     {
@@ -382,9 +367,10 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
         Matrix4x4[] cascadeViewProjections,
         int[] signatures)
     {
-        for (int cascadeIndex = 0;
-             cascadeIndex < DirectionalShadowState.CascadeCount;
-             ++cascadeIndex)
+        Parallel.For(
+            0,
+            DirectionalShadowState.CascadeCount,
+            cascadeIndex =>
         {
             var hash = new HashCode();
             int overlappingInstanceCount = 0;
@@ -404,7 +390,7 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
             }
             hash.Add(overlappingInstanceCount);
             signatures[cascadeIndex] = hash.ToHashCode();
-        }
+        });
     }
 
     private static bool IntersectsClipVolume(
@@ -746,6 +732,14 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
             newSize,
             RhiNative.BufferUsage.Storage | RhiNative.BufferUsage.Indirect);
     }
+
+    internal static ulong GetDrawCommandOffset(
+        int workIndex,
+        int partCount)
+        => checked(
+            (ulong)workIndex *
+            (ulong)partCount *
+            DrawIndirectCommandSizeBytes);
 
     public void Dispose()
     {

@@ -34,6 +34,8 @@ internal sealed class PunctualShadowState : IDisposable
         public int[] LightSignatures { get; } = new int[6];
         public int[] StaticSceneSignatures { get; } = new int[6];
         public int[] DynamicSceneSignatures { get; } = new int[6];
+        public int[] CandidateStaticSceneSignatures { get; } = new int[6];
+        public int[] CandidateDynamicSceneSignatures { get; } = new int[6];
         public bool[] CameraRelevant { get; } = new bool[6];
         public long[] LastUpdatedFrames { get; } =
             { -1, -1, -1, -1, -1, -1 };
@@ -454,14 +456,10 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
     private readonly RhiPipeline _depthPipeline;
     private readonly RhiPipeline _cullPipeline;
     private readonly RhiPipeline _clearPipeline;
-    private readonly RhiBuffer[] _pointDrawCommands =
-        new RhiBuffer[2];
-    private readonly RhiBuffer[] _pointCullJobs =
-        new RhiBuffer[2];
-    private readonly RhiBuffer[] _spotDrawCommands =
-        new RhiBuffer[2];
-    private readonly RhiBuffer[] _spotCullJobs =
-        new RhiBuffer[2];
+    private readonly List<RhiBuffer> _pointDrawCommands = new();
+    private readonly List<RhiBuffer> _pointCullJobs = new();
+    private readonly List<RhiBuffer> _spotDrawCommands = new();
+    private readonly List<RhiBuffer> _spotCullJobs = new();
     private readonly long[] _renderedFrames = new long[16];
     private readonly int[] _renderedUnitCounts = new int[16];
 
@@ -526,24 +524,12 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             _clearFragmentShader);
         for (int batchIndex = 0; batchIndex < 2; ++batchIndex)
         {
-            _pointDrawCommands[batchIndex] = RhiBuffer.Create(
-                device,
-                4096 * DrawCommandSize,
-                RhiNative.BufferUsage.Storage |
-                    RhiNative.BufferUsage.Indirect);
-            _pointCullJobs[batchIndex] = RhiBuffer.Create(
-                device,
-                32 * (ulong)sizeof(PunctualShadowCullJobData),
-                RhiNative.BufferUsage.Storage);
-            _spotDrawCommands[batchIndex] = RhiBuffer.Create(
-                device,
-                4096 * DrawCommandSize,
-                RhiNative.BufferUsage.Storage |
-                    RhiNative.BufferUsage.Indirect);
-            _spotCullJobs[batchIndex] = RhiBuffer.Create(
-                device,
-                32 * (ulong)sizeof(PunctualShadowCullJobData),
-                RhiNative.BufferUsage.Storage);
+            AddBatchBuffers(
+                _pointDrawCommands,
+                _pointCullJobs);
+            AddBatchBuffers(
+                _spotDrawCommands,
+                _spotCullJobs);
         }
     }
 
@@ -573,12 +559,6 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             return;
         _scheduler.BeginFrame(context.FrameNumber);
 
-        int staticSignature = ComputeSceneSignature(
-            frameData,
-            staticCasters: true);
-        int dynamicSignature = ComputeSceneSignature(
-            frameData,
-            staticCasters: false);
         _state.BeginFrame(context.FrameNumber);
         var candidates = BuildCandidates(frameData);
         var lightWork = new List<LightWork>();
@@ -620,12 +600,21 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                 Matrix4x4 candidateViewProjection =
                     entry.CandidateViewProjections[faceIndex];
                 bool faceCanAffectCamera =
-                    entry.FaceCount == 6 ||
                     FaceCanAffectCamera(
                         candidateViewProjection,
                         frameData.Camera);
                 entry.CameraRelevant[faceIndex] = faceCanAffectCamera;
                 cameraRelevant |= faceCanAffectCamera;
+                entry.CandidateStaticSceneSignatures[faceIndex] =
+                    ComputeSceneSignature(
+                        frameData,
+                        candidateViewProjection,
+                        staticCasters: true);
+                entry.CandidateDynamicSceneSignatures[faceIndex] =
+                    ComputeSceneSignature(
+                        frameData,
+                        candidateViewProjection,
+                        staticCasters: false);
                 lightDirty |=
                     !entry.StaticValid[faceIndex] ||
                     !entry.DynamicValid[faceIndex] ||
@@ -633,10 +622,10 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                         candidate.LightSignature;
                 staticDirty |=
                     entry.StaticSceneSignatures[faceIndex] !=
-                        staticSignature;
+                        entry.CandidateStaticSceneSignatures[faceIndex];
                 dynamicDirty |=
                     entry.DynamicSceneSignatures[faceIndex] !=
-                        dynamicSignature;
+                        entry.CandidateDynamicSceneSignatures[faceIndex];
                 oldestUpdatedFrame = Math.Min(
                     oldestUpdatedFrame,
                     entry.LastUpdatedFrames[faceIndex]);
@@ -647,9 +636,11 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                 ? long.MaxValue
                 : context.FrameNumber - oldestUpdatedFrame;
             bool updateDue =
-                invalid ||
-                resolutionDirty ||
-                framesSinceUpdate >= candidate.UpdateIntervalFrames;
+                invalid || lightDirty || staticDirty || dynamicDirty ||
+                (resolutionDirty &&
+                    framesSinceUpdate >= candidate.UpdateIntervalFrames);
+            bool forced =
+                invalid || lightDirty || staticDirty || dynamicDirty;
             if (cameraRelevant &&
                 updateDue &&
                 (lightDirty ||
@@ -672,7 +663,8 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                     lightDirty,
                     staticDirty,
                     dynamicDirty,
-                    resolutionDirty));
+                    resolutionDirty,
+                    forced));
             }
         }
 
@@ -689,10 +681,30 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         int frameFaceLimit = _scheduler.GetUnitAllowance(
             GpuWorkDomain.PunctualShadows,
             minimumAtomicFaces);
+        var selectedWork = new List<LightWork>();
+        int selectedFaceCount = 0;
+        bool hasForcedWork = false;
+        foreach (LightWork work in lightWork)
+        {
+            if (!work.Forced)
+                continue;
+            selectedWork.Add(work);
+            selectedFaceCount += work.Entry.FaceCount;
+            hasForcedWork = true;
+        }
+        if (!hasForcedWork)
+        {
+            foreach (LightWork work in lightWork)
+            {
+                int faceCount = work.Entry.FaceCount;
+                if (selectedFaceCount + faceCount > frameFaceLimit)
+                    continue;
+                selectedWork.Add(work);
+                selectedFaceCount += faceCount;
+            }
+        }
         List<List<LightWork>> batches =
-            BuildHomogeneousBatches(
-                lightWork,
-                frameFaceLimit);
+            BuildHomogeneousBatches(selectedWork);
         int batchFaceCount = 0;
         int dirtyFaceCount = 0;
         foreach (LightWork work in lightWork)
@@ -707,7 +719,8 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             batchFaceCount > 0 &&
             _scheduler.TryAdmit(
                 GpuWorkDomain.PunctualShadows,
-                batchFaceCount);
+                batchFaceCount,
+                forced: hasForcedWork);
         _scheduler.Defer(
             GpuWorkDomain.PunctualShadows,
             dirtyFaceCount - batchFaceCount);
@@ -778,13 +791,13 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                         {
                             entry.StaticValid[faceIndex] = true;
                             entry.StaticSceneSignatures[faceIndex] =
-                                staticSignature;
+                                entry.CandidateStaticSceneSignatures[faceIndex];
                         }
                         if (updateDynamic)
                         {
                             entry.DynamicValid[faceIndex] = true;
                             entry.DynamicSceneSignatures[faceIndex] =
-                                dynamicSignature;
+                                entry.CandidateDynamicSceneSignatures[faceIndex];
                         }
                         entry.LastUpdatedFrames[faceIndex] =
                             context.FrameNumber;
@@ -991,7 +1004,8 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         bool LightDirty,
         bool StaticDirty,
         bool DynamicDirty,
-        bool ResolutionDirty);
+        bool ResolutionDirty,
+        bool Forced);
 
     private readonly record struct TileRenderJob(
         ShadowAtlasAllocation Tile,
@@ -1049,18 +1063,12 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
     }
 
     private static List<List<LightWork>> BuildHomogeneousBatches(
-        List<LightWork> work,
-        int frameFaceLimit)
+        List<LightWork> work)
     {
         var batches = new List<List<LightWork>>(2);
-        int admittedFaces = 0;
         foreach (LightWork candidate in work)
         {
             int facesPerLight = candidate.Entry.FaceCount;
-            if (admittedFaces + facesPerLight > frameFaceLimit)
-            {
-                continue;
-            }
             List<LightWork>? batch = null;
             foreach (List<LightWork> existingBatch in batches)
             {
@@ -1079,7 +1087,6 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                 batches.Add(batch);
             }
             batch.Add(candidate);
-            admittedFaces += facesPerLight;
         }
         return batches;
     }
@@ -1448,13 +1455,15 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
 
     private static int ComputeSceneSignature(
         SceneFrameData frameData,
+        Matrix4x4 viewProjection,
         bool staticCasters)
     {
         var hash = new HashCode();
         foreach (InstanceData instance in frameData.Instances)
         {
             bool isStatic = (instance.Flags & 1u) != 0;
-            if (isStatic != staticCasters)
+            if (isStatic != staticCasters ||
+                !InstanceIntersectsFrustum(instance, viewProjection))
                 continue;
             hash.Add(instance.ModelMatrix);
             hash.Add(instance.EntityIdLow);
@@ -1463,28 +1472,94 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         return hash.ToHashCode();
     }
 
+    private static bool InstanceIntersectsFrustum(
+        InstanceData instance,
+        Matrix4x4 viewProjection)
+    {
+        Vector3 localMin = new(
+            instance.AabbMin.X,
+            instance.AabbMin.Y,
+            instance.AabbMin.Z);
+        Vector3 localMax = new(
+            instance.AabbMax.X,
+            instance.AabbMax.Y,
+            instance.AabbMax.Z);
+        bool outsideLeft = true;
+        bool outsideRight = true;
+        bool outsideBottom = true;
+        bool outsideTop = true;
+        bool outsideNear = true;
+        bool outsideFar = true;
+        for (int cornerIndex = 0; cornerIndex < 8; ++cornerIndex)
+        {
+            Vector3 localCorner = new(
+                (cornerIndex & 1) == 0 ? localMin.X : localMax.X,
+                (cornerIndex & 2) == 0 ? localMin.Y : localMax.Y,
+                (cornerIndex & 4) == 0 ? localMin.Z : localMax.Z);
+            Vector4 worldCorner = Vector4.Transform(
+                new Vector4(localCorner, 1.0f),
+                instance.ModelMatrix);
+            Vector4 clipCorner = Vector4.Transform(
+                worldCorner,
+                viewProjection);
+            outsideLeft &= clipCorner.X < -clipCorner.W;
+            outsideRight &= clipCorner.X > clipCorner.W;
+            outsideBottom &= clipCorner.Y < -clipCorner.W;
+            outsideTop &= clipCorner.Y > clipCorner.W;
+            outsideNear &= clipCorner.Z < 0.0f;
+            outsideFar &= clipCorner.Z > clipCorner.W;
+        }
+        return !(outsideLeft ||
+            outsideRight ||
+            outsideBottom ||
+            outsideTop ||
+            outsideNear ||
+            outsideFar);
+    }
+
     private unsafe void EnsureBatchBuffers(
         int partCount,
         int jobCount,
         bool pointLights,
         int batchIndex)
     {
-        if (pointLights)
+        List<RhiBuffer> drawCommandBuffers = pointLights
+            ? _pointDrawCommands
+            : _spotDrawCommands;
+        List<RhiBuffer> cullJobBuffers = pointLights
+            ? _pointCullJobs
+            : _spotCullJobs;
+        while (drawCommandBuffers.Count <= batchIndex)
         {
-            EnsureBatchBuffers(
-                ref _pointDrawCommands[batchIndex],
-                ref _pointCullJobs[batchIndex],
-                partCount,
-                jobCount);
+            AddBatchBuffers(
+                drawCommandBuffers,
+                cullJobBuffers);
         }
-        else
-        {
-            EnsureBatchBuffers(
-                ref _spotDrawCommands[batchIndex],
-                ref _spotCullJobs[batchIndex],
-                partCount,
-                jobCount);
-        }
+
+        RhiBuffer drawCommands = drawCommandBuffers[batchIndex];
+        RhiBuffer cullJobs = cullJobBuffers[batchIndex];
+        EnsureBatchBuffers(
+            ref drawCommands,
+            ref cullJobs,
+            partCount,
+            jobCount);
+        drawCommandBuffers[batchIndex] = drawCommands;
+        cullJobBuffers[batchIndex] = cullJobs;
+    }
+
+    private unsafe void AddBatchBuffers(
+        List<RhiBuffer> drawCommandBuffers,
+        List<RhiBuffer> cullJobBuffers)
+    {
+        drawCommandBuffers.Add(RhiBuffer.Create(
+            _device,
+            4096 * DrawCommandSize,
+            RhiNative.BufferUsage.Storage |
+                RhiNative.BufferUsage.Indirect));
+        cullJobBuffers.Add(RhiBuffer.Create(
+            _device,
+            32 * (ulong)sizeof(PunctualShadowCullJobData),
+            RhiNative.BufferUsage.Storage));
     }
 
     private unsafe void EnsureBatchBuffers(
@@ -1527,13 +1602,14 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
 
     public void Dispose()
     {
-        for (int batchIndex = 0; batchIndex < 2; ++batchIndex)
-        {
-            _spotCullJobs[batchIndex].Dispose();
-            _spotDrawCommands[batchIndex].Dispose();
-            _pointCullJobs[batchIndex].Dispose();
-            _pointDrawCommands[batchIndex].Dispose();
-        }
+        foreach (RhiBuffer buffer in _spotCullJobs)
+            buffer.Dispose();
+        foreach (RhiBuffer buffer in _spotDrawCommands)
+            buffer.Dispose();
+        foreach (RhiBuffer buffer in _pointCullJobs)
+            buffer.Dispose();
+        foreach (RhiBuffer buffer in _pointDrawCommands)
+            buffer.Dispose();
         _clearPipeline.Dispose();
         _cullPipeline.Dispose();
         _depthPipeline.Dispose();

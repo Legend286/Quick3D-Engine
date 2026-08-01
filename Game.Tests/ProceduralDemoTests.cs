@@ -2,6 +2,8 @@
 
 using System.Numerics;
 using Engine.RHI;
+using Engine.Renderer;
+using Engine.Scene;
 using Xunit;
 
 namespace Engine.Game.Tests;
@@ -46,5 +48,44 @@ public sealed class ProceduralDemoTests
             orbit.Center.Y + orbit.OrbitHeight,
             position.Y,
             4);
+    }
+
+    [Fact]
+    public void StressDefaults_MixCachedAndDynamicShadowWork()
+    {
+        var definition = new ProceduralDemoDefinition();
+
+        Assert.True(
+            definition.AnimatedPointLightCount <
+            definition.PointLightCount);
+        Assert.True(
+            definition.AnimatedSpotLightCount <
+            definition.SpotLightCount);
+        Assert.True(definition.AnimateObjects);
+        Assert.InRange(definition.MovingObjectCount, 1, 63);
+    }
+
+    [Fact]
+    public void EvaluateOscillation_StaysWithinConfiguredAmplitude()
+    {
+        var motion = new OscillatingModelComponent
+        {
+            Origin = new Vector3(2.0f, 3.0f, -4.0f),
+            Axis = Vector3.UnitY,
+            Amplitude = 2.5f,
+            Frequency = 0.75f,
+            Phase = 0.3f,
+        };
+
+        Vector3 position = GameRenderer.EvaluateOscillation(
+            motion,
+            8.0f);
+
+        Assert.Equal(motion.Origin.X, position.X, 5);
+        Assert.Equal(motion.Origin.Z, position.Z, 5);
+        Assert.InRange(
+            MathF.Abs(position.Y - motion.Origin.Y),
+            0.0f,
+            motion.Amplitude);
     }
 }

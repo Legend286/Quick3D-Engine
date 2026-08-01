@@ -153,13 +153,19 @@ internal static class ProceduralDemoSceneBuilder
             for (int column = 0; column < 8; ++column)
             {
                 int index = row * 8 + column;
-                CreateModelEntity(
+                Vector3 position = new(
+                    (column - 3.5f) * 8.0f,
+                    0.75f + (index % 3) * 0.35f,
+                    (row - 1.5f) * 8.0f);
+                bool moving = definition.AnimateObjects &&
+                    index < Math.Clamp(
+                        definition.MovingObjectCount,
+                        0,
+                        64);
+                ulong entity = CreateModelEntity(
                     world,
                     modelIds[2, (index + 5) % materials.Length],
-                    new Vector3(
-                        (column - 3.5f) * 8.0f,
-                        0.75f + (index % 3) * 0.35f,
-                        (row - 1.5f) * 8.0f),
+                    position,
                     Quaternion.CreateFromYawPitchRoll(
                         index * 0.19f,
                         index * 0.11f,
@@ -167,7 +173,22 @@ internal static class ProceduralDemoSceneBuilder
                     new Vector3(
                         1.4f + (index % 4) * 0.35f,
                         1.2f + (index % 5) * 0.45f,
-                        1.4f + ((index + 2) % 4) * 0.35f));
+                        1.4f + ((index + 2) % 4) * 0.35f),
+                    staticShadowCaster: !moving);
+                if (moving)
+                {
+                    world.Set(entity, new OscillatingModelComponent
+                    {
+                        Origin = position,
+                        Axis = index % 2 == 0
+                            ? Vector3.UnitY
+                            : Vector3.Normalize(
+                                new Vector3(0.4f, 1.0f, 0.2f)),
+                        Amplitude = 1.0f + (index % 4) * 0.35f,
+                        Frequency = 0.45f + (index % 5) * 0.08f,
+                        Phase = index * 0.67f,
+                    });
+                }
             }
         }
 
@@ -204,15 +225,18 @@ internal static class ProceduralDemoSceneBuilder
         return AssetRegistry.RegisterModel(model);
     }
 
-    private static void CreateModelEntity(
+    private static ulong CreateModelEntity(
         IEntityStore world,
         ulong modelId,
         Vector3 position,
         Quaternion rotation,
-        Vector3 scale)
+        Vector3 scale,
+        bool staticShadowCaster = true)
     {
         ulong entity = world.CreateEntity();
-        world.Set(entity, ModelComponent.Create(modelId));
+        world.Set(
+            entity,
+            ModelComponent.Create(modelId, staticShadowCaster));
         world.Set(entity, new Transform
         {
             Position = position,
@@ -220,6 +244,7 @@ internal static class ProceduralDemoSceneBuilder
             Scale = scale,
         });
         MarkProcedural(world, entity);
+        return entity;
     }
 
     private static void CreateLights(
@@ -234,6 +259,18 @@ internal static class ProceduralDemoSceneBuilder
             definition.SpotLightCount,
             0,
             64);
+        int animatedPointLightCount = definition.AnimateLights
+            ? Math.Clamp(
+                definition.AnimatedPointLightCount,
+                0,
+                pointLightCount)
+            : 0;
+        int animatedSpotLightCount = definition.AnimateLights
+            ? Math.Clamp(
+                definition.AnimatedSpotLightCount,
+                0,
+                spotLightCount)
+            : 0;
         for (int index = 0; index < pointLightCount; ++index)
         {
             float phase =
@@ -268,7 +305,7 @@ internal static class ProceduralDemoSceneBuilder
                 SourceRadius = 0.18f + (index % 3) * 0.06f,
                 CastShadows = true,
             });
-            if (definition.AnimateLights)
+            if (index < animatedPointLightCount)
                 world.Set(entity, orbit);
             MarkProcedural(world, entity);
         }
@@ -310,7 +347,7 @@ internal static class ProceduralDemoSceneBuilder
                 SourceRadius = 0.12f,
                 CastShadows = true,
             });
-            if (definition.AnimateLights)
+            if (index < animatedSpotLightCount)
                 world.Set(entity, orbit);
             MarkProcedural(world, entity);
         }

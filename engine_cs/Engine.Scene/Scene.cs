@@ -26,6 +26,10 @@ public sealed class ProceduralDemoDefinition
     [JsonPropertyName("point_light_count")] public int PointLightCount { get; set; } = 28;
     [JsonPropertyName("spot_light_count")] public int SpotLightCount { get; set; } = 8;
     [JsonPropertyName("animate_lights")] public bool AnimateLights { get; set; } = true;
+    [JsonPropertyName("animated_point_light_count")] public int AnimatedPointLightCount { get; set; } = 8;
+    [JsonPropertyName("animated_spot_light_count")] public int AnimatedSpotLightCount { get; set; } = 4;
+    [JsonPropertyName("animate_objects")] public bool AnimateObjects { get; set; } = true;
+    [JsonPropertyName("moving_object_count")] public int MovingObjectCount { get; set; } = 12;
 }
 
 public sealed class ScenePass

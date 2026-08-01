@@ -32,6 +32,10 @@
     "enabled": true,
     "point_light_count": 28,
     "spot_light_count": 8,
-    "animate_lights": true
+    "animate_lights": true,
+    "animated_point_light_count": 8,
+    "animated_spot_light_count": 4,
+    "animate_objects": true,
+    "moving_object_count": 12
   }
 }

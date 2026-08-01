@@ -25,8 +25,8 @@ state that also maps cleanly to Vulkan.
 - Extract directional shadows into a graph-visible pass and share scene GPU
   uploads between shadow and forward rendering.
 - Add four stable cascades backed by dedicated 4096x4096 depth pages.
-- Persist cascade pages across frames and update at most one dirty page per
-  frame under the shadow work budget.
+- Persist cascade pages across frames, batch all dirty cascades through one
+  culling encoder, and force camera/scene-invalidated pages in the same frame.
 - Use camera-centred XZ clipmap radii of 5, 25, 125, and 500 metres so vertical
   camera movement does not reduce ground shadow quality.
 - Cull transformed part bounds against each selected light clip volume before
@@ -112,11 +112,16 @@ dispatch-indirect for GPU-adaptive workloads.
 3. Spot shadows use lazily allocated page tiers, cached static depth, and a
    separately refreshed movable overlay.
 4. Point shadows atomically allocate six faces from one tier. Visible point
-   lights retain every face and schedule invalid or oldest faces first,
-   preventing moving-light update starvation. Spotlights retain conservative
-   camera-frustum versus shadow-frustum rejection.
+   lights retain every face and batch four lights per 24-face submission.
+   Point and spot faces use camera-frustum versus shadow-frustum rejection;
+   scene signatures include only overlapping static or movable casters.
+   Light or caster transforms force every affected face in the current frame.
 5. Add shadow receiver sampling to clustered light records so only shadowed
    lights pay shadow lookup cost.
+
+The base punctual budget is 6 ms. Unused estimated time carries into later
+frames up to a bounded burst ceiling; optional resolution maintenance obeys
+that allowance, while transform invalidation bypasses it for correctness.
 
 Shadow pages are sampled through the existing bindless texture heap. Do not
 expose Metal-specific argument-buffer concepts through C#.
@@ -210,6 +215,10 @@ solve entry and exit analytically before stepping.
    pending.
 5. Lighting Only removes albedo while retaining direct, indirect, emissive,
    visibility, and path-traced lighting consistently across both renderers.
+   Renderer-plugin geometry overlays are disabled while this surface mode is
+   selected. The DDGI plugin registers DDGI Indirect and supplies its shader
+   implementation through the `DDGI_PLUGIN` include, exposing raw received
+   probe irradiance without material modulation.
 6. Add world position, emissive, material ID, entity/part ID, UV, tangent, and
    bitangent views where the required data already exists. World position,
    emissive, UV, tangent, and bitangent are implemented. Stable material and
