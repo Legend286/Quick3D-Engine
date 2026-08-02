@@ -156,6 +156,11 @@ The dispatch runs in a compute encoder on the graphics queue because it consumes
 the same-frame visibility raster. The earlier culling and cluster assignment
 remain eligible for async compute ahead of graphics work.
 
+The compute shader fixes its direct texture registers at `t4`, `t5`, `t6`,
+and `u7`, matching the RHI calls that bind identifiers, barycentrics, depth,
+and output. Vulkan descriptor bindings use the same numbers; the explicit
+Slang registers prevent Metal from compacting them to texture slots 0–3.
+
 The default renderer does not schedule the Forward PBR reference or expose
 this transitional mode. All ordinary lit and material debug modes present
 compute shading directly without a second opaque draw.

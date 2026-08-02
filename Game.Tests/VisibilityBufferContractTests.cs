@@ -261,6 +261,10 @@ public sealed class VisibilityBufferContractTests
 
         Assert.Contains("[numthreads(8, 8, 1)]", shader);
         Assert.Contains("RWTexture2D<float4> reconstructionOutput", shader);
+        Assert.Contains("visibilityIdentifiers : register(t4)", shader);
+        Assert.Contains("visibilityBarycentrics : register(t5)", shader);
+        Assert.Contains("sceneDepth : register(t6)", shader);
+        Assert.Contains("reconstructionOutput : register(u7)", shader);
         Assert.Contains("LoadPartVertexIndex(part, triangleOffset)", shader);
         Assert.Contains("part.localOffset.xyz", shader);
         Assert.Contains("instance.modelMatrix", shader);
@@ -373,6 +377,10 @@ public sealed class VisibilityBufferContractTests
             "VisibilityReferencePass.cs");
 
         Assert.Contains("[numthreads(8, 8, 1)]", shader);
+        Assert.Contains("visibilityIdentifiers : register(t4)", shader);
+        Assert.Contains("visibilityBarycentrics : register(t5)", shader);
+        Assert.Contains("sceneDepth : register(t6)", shader);
+        Assert.Contains("visibilityShadingOutput : register(u7)", shader);
         Assert.Contains("groupshared uint g_tileDepthSliceMask", shader);
         Assert.Contains("groupshared uint g_tileHasGeometry", shader);
         Assert.Contains("groupshared uint g_tileLightHash", shader);

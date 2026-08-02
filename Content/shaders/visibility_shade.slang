@@ -3,10 +3,14 @@
 #include "pbr.slang"
 #include "nishita_sky.slang"
 
-[[vk::binding(4, 0)]] Texture2D<uint2> visibilityIdentifiers;
-[[vk::binding(5, 0)]] Texture2D<float2> visibilityBarycentrics;
-[[vk::binding(6, 0)]] Texture2D<float> sceneDepth;
-[[vk::binding(7, 0)]] RWTexture2D<float4> visibilityShadingOutput;
+[[vk::binding(4, 0)]]
+Texture2D<uint2> visibilityIdentifiers : register(t4);
+[[vk::binding(5, 0)]]
+Texture2D<float2> visibilityBarycentrics : register(t5);
+[[vk::binding(6, 0)]]
+Texture2D<float> sceneDepth : register(t6);
+[[vk::binding(7, 0)]]
+RWTexture2D<float4> visibilityShadingOutput : register(u7);
 
 static const uint kTileWidth = 8u;
 static const uint kTileThreadCount = 64u;
