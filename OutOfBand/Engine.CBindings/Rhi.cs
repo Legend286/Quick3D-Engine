@@ -455,6 +455,22 @@ public static partial class RhiNative
     [LibraryImport(Library, EntryPoint = "rhi_cmd_wait_fence")]
     public static partial void RhiCmdWaitFence(IntPtr cmdlist, IntPtr fence, ulong value);
 
+    [LibraryImport(Library, EntryPoint = "rhi_fence_get_completed_value")]
+    public static partial ulong RhiFenceGetCompletedValue(IntPtr fence);
+
+    [LibraryImport(Library, EntryPoint = "rhi_cmd_copy_texture_to_buffer")]
+    public static partial int RhiCmdCopyTextureToBuffer(
+        IntPtr cmdlist,
+        IntPtr source,
+        uint sourceX,
+        uint sourceY,
+        uint width,
+        uint height,
+        uint sourceMipLevel,
+        IntPtr destination,
+        ulong destinationOffset,
+        uint destinationBytesPerRow);
+
     [LibraryImport(Library, EntryPoint = "rhi_cmd_write_timestamp")]
     public static partial int RhiCmdWriteTimestamp(
         IntPtr cmdlist,
@@ -502,6 +518,12 @@ public static partial class RhiNative
                                                 ulong offset,
                                                 IntPtr outBytes,
                                                 ulong outSize);
+
+    [LibraryImport(Library, EntryPoint = "rhi_buffer_read_mapped")]
+    public static partial int RhiBufferReadMapped(IntPtr buf,
+                                                  ulong offset,
+                                                  IntPtr outBytes,
+                                                  ulong outSize);
 
     [LibraryImport(Library, EntryPoint = "rhi_texture_readback")]
     public static partial int RhiTextureReadback(IntPtr tex,

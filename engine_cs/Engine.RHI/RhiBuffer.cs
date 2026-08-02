@@ -120,6 +120,27 @@ public sealed class RhiBuffer : IDisposable
     }
 
     /// <summary>
+    /// Reads one value directly from CPU-visible buffer storage without
+    /// submitting or waiting for GPU work.
+    /// </summary>
+    public T ReadMapped<T>(ulong offsetBytes = 0) where T : unmanaged
+    {
+        unsafe
+        {
+            T result = default;
+            int rc = RhiNative.RhiBufferReadMapped(
+                GetLiveHandle(),
+                offsetBytes,
+                (IntPtr)(&result),
+                (ulong)sizeof(T));
+            if (rc != 0)
+                throw new InvalidOperationException(
+                    $"rhi_buffer_read_mapped rc={rc}");
+            return result;
+        }
+    }
+
+    /// <summary>
     /// Assigns an allocation label and category shown by GPU diagnostics.
     /// </summary>
     public void SetDebugName(string name, string category = "Buffer")

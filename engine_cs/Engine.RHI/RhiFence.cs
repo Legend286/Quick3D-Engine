@@ -15,6 +15,12 @@ public sealed class RhiFence : IDisposable
 
     public IntPtr Handle { get; private set; }
 
+    /// <summary>Gets the latest GPU-completed timeline value without waiting.</summary>
+    public ulong CompletedValue =>
+        Handle == IntPtr.Zero
+            ? 0
+            : RhiNative.RhiFenceGetCompletedValue(Handle);
+
     public RhiFence(RhiDevice device)
     {
         int rc = RhiNative.RhiCreateFence(device.Handle, out IntPtr h);

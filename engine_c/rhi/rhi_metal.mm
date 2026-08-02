@@ -219,6 +219,8 @@ static void  metal_destroy_fence(RhiFence* f);static int32_t metal_buffer_upload
 static void  metal_destroy_timestamp_query_pool(RhiTimestampQueryPool* pool);
 static int32_t metal_buffer_readback(RhiBuffer* buf, uint64_t offset_bytes,
                                       void* out_bytes, uint64_t out_size);
+static int32_t metal_buffer_read_mapped(RhiBuffer* buf, uint64_t offset_bytes,
+                                         void* out_bytes, uint64_t out_size);
 static int32_t metal_texture_readback(RhiTexture* t, void* out, uint64_t out_size, uint32_t stride);
 static int32_t metal_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride);
 static int32_t metal_texture_upload_mip(RhiTexture* t, uint32_t mip_level,
@@ -240,6 +242,13 @@ static void            metal_cmd_pipeline_barrier(RhiCommandList* cl,
                                                    const RhiBarrier* barriers);
 static void            metal_cmd_signal_fence(RhiCommandList* cl, RhiFence* f, uint64_t value);
 static void            metal_cmd_wait_fence(RhiCommandList* cl, RhiFence* f, uint64_t value);
+static uint64_t        metal_fence_get_completed_value(RhiFence* f);
+static int32_t         metal_cmd_copy_texture_to_buffer(
+    RhiCommandList* cl, RhiTexture* source,
+    uint32_t source_x, uint32_t source_y,
+    uint32_t width, uint32_t height,
+    uint32_t source_mip_level, RhiBuffer* destination,
+    uint64_t destination_offset, uint32_t destination_bytes_per_row);
 static int32_t         metal_cmd_write_timestamp(
     RhiCommandList* cl, RhiTimestampQueryPool* pool, uint32_t sample_index);
 static int32_t         metal_cmd_resolve_timestamps(
@@ -1426,6 +1435,25 @@ static int32_t metal_buffer_readback(RhiBuffer* buf,
     }
 }
 
+static int32_t metal_buffer_read_mapped(RhiBuffer* buf,
+                                         uint64_t offset_bytes,
+                                         void* out_bytes,
+                                         uint64_t out_size) {
+    @autoreleasepool {
+        if (!buf || !out_bytes || out_size == 0) return -1;
+        RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
+        if (!bi->buf || bi->buf.storageMode != MTLStorageModeShared ||
+            offset_bytes > (uint64_t)bi->buf.length ||
+            out_size > (uint64_t)bi->buf.length - offset_bytes) {
+            return -1;
+        }
+        memcpy(out_bytes,
+               (const uint8_t*)bi->buf.contents + offset_bytes,
+               (size_t)out_size);
+        return 0;
+    }
+}
+
 static int32_t metal_texture_readback(RhiTexture* t, void* out,
                                         uint64_t out_size, uint32_t stride) {
     @autoreleasepool {
@@ -1637,6 +1665,82 @@ static void metal_cmd_wait_fence(RhiCommandList* cl, RhiFence* f, uint64_t value
         RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
         RhiFenceImpl* fi = reinterpret_cast<RhiFenceImpl*>(f);
         [cli->buf encodeWaitForEvent:fi->event value:value];
+    }
+}
+
+static uint64_t metal_fence_get_completed_value(RhiFence* f) {
+    if (!f) return 0;
+    @autoreleasepool {
+        RhiFenceImpl* fi = reinterpret_cast<RhiFenceImpl*>(f);
+        return fi->event ? fi->event.signaledValue : 0;
+    }
+}
+
+static uint32_t metal_uncompressed_bytes_per_pixel(RhiTextureFormat format) {
+    switch (format) {
+        case RHI_FORMAT_RGBA8_UNORM:
+        case RHI_FORMAT_RGBA8_SRGB:
+        case RHI_FORMAT_BGRA8_UNORM:
+        case RHI_FORMAT_DEPTH32_FLOAT:
+        case RHI_FORMAT_DEPTH24_STENCIL8:
+        case RHI_FORMAT_RG16_UNORM:
+            return 4;
+        case RHI_FORMAT_RGBA16_FLOAT:
+        case RHI_FORMAT_RG32_UINT:
+            return 8;
+        default:
+            return 0;
+    }
+}
+
+static int32_t metal_cmd_copy_texture_to_buffer(
+    RhiCommandList* cl, RhiTexture* source,
+    uint32_t source_x, uint32_t source_y,
+    uint32_t width, uint32_t height,
+    uint32_t source_mip_level, RhiBuffer* destination,
+    uint64_t destination_offset, uint32_t destination_bytes_per_row) {
+    if (!cl || !source || !destination || width == 0 || height == 0)
+        return -1;
+    @autoreleasepool {
+        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
+        RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(source);
+        RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(destination);
+        if (!cli->buf || !ti->tex || !bi->buf ||
+            source_mip_level >= ti->tex.mipmapLevelCount)
+            return -1;
+
+        uint32_t bytes_per_pixel =
+            metal_uncompressed_bytes_per_pixel(ti->format);
+        NSUInteger mip_width = MAX((NSUInteger)1,
+            ti->tex.width >> source_mip_level);
+        NSUInteger mip_height = MAX((NSUInteger)1,
+            ti->tex.height >> source_mip_level);
+        uint64_t required_row_bytes = (uint64_t)width * bytes_per_pixel;
+        uint64_t required_size = destination_offset +
+            (uint64_t)(height - 1) * destination_bytes_per_row +
+            required_row_bytes;
+        if (bytes_per_pixel == 0 ||
+            source_x + width > mip_width ||
+            source_y + height > mip_height ||
+            destination_bytes_per_row < required_row_bytes ||
+            (destination_bytes_per_row & 255u) != 0 ||
+            (destination_offset & 255u) != 0 ||
+            required_size > (uint64_t)bi->buf.length)
+            return -1;
+
+        id<MTLBlitCommandEncoder> blit = [cli->buf blitCommandEncoder];
+        if (!blit) return -1;
+        [blit copyFromTexture:ti->tex
+                  sourceSlice:0
+                  sourceLevel:source_mip_level
+                 sourceOrigin:MTLOriginMake(source_x, source_y, 0)
+                   sourceSize:MTLSizeMake(width, height, 1)
+                     toBuffer:bi->buf
+            destinationOffset:(NSUInteger)destination_offset
+       destinationBytesPerRow:destination_bytes_per_row
+     destinationBytesPerImage:(NSUInteger)destination_bytes_per_row * height];
+        [blit endEncoding];
+        return 0;
     }
 }
 
@@ -2763,6 +2867,7 @@ extern "C" void rhi_metal_register(void) {
     b.destroy_timestamp_query_pool = metal_destroy_timestamp_query_pool;
     b.buffer_upload              = metal_buffer_upload;
     b.buffer_readback             = metal_buffer_readback;
+    b.buffer_read_mapped          = metal_buffer_read_mapped;
     b.texture_readback           = metal_texture_readback;
     b.texture_upload             = metal_texture_upload;
     b.texture_upload_mip         = metal_texture_upload_mip;
@@ -2780,6 +2885,8 @@ extern "C" void rhi_metal_register(void) {
     b.cmd_pipeline_barrier       = metal_cmd_pipeline_barrier;
     b.cmd_signal_fence           = metal_cmd_signal_fence;
     b.cmd_wait_fence             = metal_cmd_wait_fence;
+    b.fence_get_completed_value  = metal_fence_get_completed_value;
+    b.cmd_copy_texture_to_buffer = metal_cmd_copy_texture_to_buffer;
     b.cmd_write_timestamp        = metal_cmd_write_timestamp;
     b.cmd_resolve_timestamps     = metal_cmd_resolve_timestamps;
     b.timestamp_query_pool_read_durations =

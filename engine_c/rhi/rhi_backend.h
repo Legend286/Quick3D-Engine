@@ -57,6 +57,8 @@ typedef struct RhiBackend {
     int32_t (*buffer_upload)(RhiBuffer *buf, const void *data, uint64_t size);
     int32_t (*buffer_readback)(RhiBuffer *buf, uint64_t offset_bytes,
                                 void *out_bytes, uint64_t out_size);
+    int32_t (*buffer_read_mapped)(RhiBuffer *buf, uint64_t offset_bytes,
+                                  void *out_bytes, uint64_t out_size);
     int32_t (*texture_readback)(RhiTexture *tex, void *out, uint64_t out_size, uint32_t stride);
     int32_t (*texture_upload)(RhiTexture *tex, const void *data, uint64_t size, uint32_t stride);
     int32_t (*texture_upload_mip)(RhiTexture *tex, uint32_t mip_level,
@@ -78,6 +80,17 @@ typedef struct RhiBackend {
     void (*cmd_pipeline_barrier)(RhiCommandList *cl, uint32_t count, const RhiBarrier *barriers);
     void (*cmd_signal_fence)(RhiCommandList *cl, RhiFence *f, uint64_t value);
     void (*cmd_wait_fence)(RhiCommandList *cl, RhiFence *f, uint64_t value);
+    uint64_t (*fence_get_completed_value)(RhiFence *f);
+    int32_t (*cmd_copy_texture_to_buffer)(RhiCommandList *cl,
+                                          RhiTexture *source,
+                                          uint32_t source_x,
+                                          uint32_t source_y,
+                                          uint32_t width,
+                                          uint32_t height,
+                                          uint32_t source_mip_level,
+                                          RhiBuffer *destination,
+                                          uint64_t destination_offset,
+                                          uint32_t destination_bytes_per_row);
     int32_t (*cmd_write_timestamp)(RhiCommandList *cl, RhiTimestampQueryPool *pool,
                                    uint32_t sample_index);
     int32_t (*cmd_resolve_timestamps)(RhiCommandList *cl, RhiTimestampQueryPool *pool,

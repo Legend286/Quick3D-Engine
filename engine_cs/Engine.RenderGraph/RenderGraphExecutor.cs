@@ -916,6 +916,30 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
                           uint threadsX = 64, uint threadsY = 1, uint threadsZ = 1)
         => Recorder.Dispatch(groupsX, groupsY, groupsZ, threadsX, threadsY, threadsZ);
 
+    public void CopyTextureToBuffer(
+        RhiTexture source,
+        uint sourceX,
+        uint sourceY,
+        uint width,
+        uint height,
+        RhiBuffer destination,
+        ulong destinationOffset,
+        uint destinationBytesPerRow,
+        uint sourceMipLevel = 0)
+        => Recorder.CopyTextureToBuffer(
+            source,
+            sourceX,
+            sourceY,
+            width,
+            height,
+            destination,
+            destinationOffset,
+            destinationBytesPerRow,
+            sourceMipLevel);
+
+    public void SignalFence(RhiFence fence, ulong value)
+        => Recorder.SignalFence(fence, value);
+
     public void Dispose()
     {
         DisposeTimestampPools();

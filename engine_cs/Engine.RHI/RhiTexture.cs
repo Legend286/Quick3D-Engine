@@ -45,7 +45,9 @@ public sealed class RhiTexture : IDisposable
             Height = h,
             MipLevels = 1,
             Format = format,
-            UsageFlags = RhiNative.TextureRenderTarget | RhiNative.TextureShaderRead,
+            UsageFlags = RhiNative.TextureRenderTarget |
+                RhiNative.TextureShaderRead |
+                RhiNative.TextureCopySrc,
         };
         int rc = RhiNative.RhiCreateTexture(device.Handle, in desc, out IntPtr tex);
         if (rc != 0) throw new InvalidOperationException($"rhi_create_texture rc={rc}");
@@ -230,6 +232,7 @@ public sealed class RhiTexture : IDisposable
             MipLevels = 1,
             Format = RhiNative.TextureFormat.Depth32Float,
             UsageFlags = RhiNative.TextureRenderTarget |
+                RhiNative.TextureCopySrc |
                 (shaderReadable ? RhiNative.TextureShaderRead : 0),
         };
         int rc = RhiNative.RhiCreateTexture(device.Handle, in desc, out IntPtr tex);

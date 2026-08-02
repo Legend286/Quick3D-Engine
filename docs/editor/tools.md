@@ -75,7 +75,12 @@ preview screenshots (Phase 3+).
 
 The Editor implements a hardware-accelerated object selection and outline rendering pipeline:
 
-1. `IdPickingPass`: Renders the entity ID (`uint64_t`) into a dedicated texture format (`R32Uint`). The Editor reads back this texture at the cursor coordinate on mouse click to resolve selections in O(1) time regardless of scene complexity.
+1. `VisibilityPickingPass`: Copies the clicked `RG32Uint` visibility texel and
+   matching depth texel into a ring of shared readback buffers. A timeline
+   fence is polled on later editor updates, so clicking never waits for GPU
+   completion or redraws scene geometry. The copied part index resolves
+   through a same-frame part-to-instance snapshot to preserve 64-bit entity
+   IDs and local submesh indices even when scene ordering changes.
 2. `OutlineSelectionDepthPass`: Finds the selected entity in the shared raster
    scene cache and rasterizes only its existing indirect part range into a
    shader-readable depth target. It allocates no duplicate scene, camera, or
@@ -327,10 +332,9 @@ vertical space for the content browser and diagnostics tools than the previous
 300-pixel layout.
 
 ### Related Files
-- `Game/IdPickingPass.cs`
+- `Engine.Renderer/VisibilityPickingPass.cs`
 - `Engine.Renderer/OutlineSelectionDepthPass.cs`
 - `Engine.Renderer/OutlineCompositePass.cs`
-- `Content/shaders/id_picking.slang`
 - `Content/shaders/outline_selection_depth.slang`
 - `Content/shaders/outline_composite.slang`
 

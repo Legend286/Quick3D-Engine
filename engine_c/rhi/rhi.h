@@ -479,6 +479,13 @@ ENGINE_API int32_t  rhi_buffer_upload(RhiBuffer* buf, const void* data, uint64_t
 ENGINE_API int32_t  rhi_buffer_readback(RhiBuffer* buf, uint64_t offset_bytes,
                                          void* out_bytes, uint64_t out_size);
 
+/** Copy bytes directly from a CPU-visible buffer without submitting GPU work.
+ * The caller must establish completion of prior GPU writes before calling. */
+ENGINE_API int32_t rhi_buffer_read_mapped(RhiBuffer* buf,
+                                          uint64_t offset_bytes,
+                                          void* out_bytes,
+                                          uint64_t out_size);
+
 /** Read a texture back to CPU bytes. Used for Avalonia viewport display. */
 ENGINE_API int32_t  rhi_texture_readback(RhiTexture* tex,
                                          void* out_bytes, uint64_t out_size,
@@ -527,6 +534,22 @@ ENGINE_API void            rhi_cmd_pipeline_barrier(RhiCommandList* cl,
 
 ENGINE_API void            rhi_cmd_signal_fence(RhiCommandList* cl, RhiFence* fence, uint64_t value);
 ENGINE_API void            rhi_cmd_wait_fence(RhiCommandList* cl, RhiFence* fence, uint64_t value);
+
+/** Return the most recently completed timeline value without waiting. */
+ENGINE_API uint64_t        rhi_fence_get_completed_value(RhiFence* fence);
+
+/** Copy a 2D texture region into a buffer on the current command list. */
+ENGINE_API int32_t         rhi_cmd_copy_texture_to_buffer(
+    RhiCommandList* cl,
+    RhiTexture* source,
+    uint32_t source_x,
+    uint32_t source_y,
+    uint32_t width,
+    uint32_t height,
+    uint32_t source_mip_level,
+    RhiBuffer* destination,
+    uint64_t destination_offset,
+    uint32_t destination_bytes_per_row);
 ENGINE_API int32_t         rhi_cmd_write_timestamp(
     RhiCommandList* cl,
     RhiTimestampQueryPool* pool,

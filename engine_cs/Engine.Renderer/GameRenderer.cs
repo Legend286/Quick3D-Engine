@@ -9,6 +9,7 @@ using Engine.Scene.Components;
 using Camera = Engine.Scene.Components.Camera;
 using Engine.RenderGraph;
 using ImGuizmoNET;
+using System.Collections.Generic;
 
 namespace Engine.Renderer;
 
@@ -46,6 +47,9 @@ public sealed class GameRenderer : IDisposable
     private bool _gizmoConsumesPointer;
     private ulong _gizmoEntity;
     private float _sceneAnimationTime;
+    private ulong _selectionPickRequest;
+    private readonly Dictionary<ulong, string>
+        _pendingSubmeshMaterials = new();
 
     // Preview state
     private ulong _previewMatId;
@@ -384,6 +388,7 @@ public sealed class GameRenderer : IDisposable
     public void Update(InputState input, uint lastWidth, uint lastHeight)
     {
         AssertRenderThread();
+        DrainPickResults();
         EnsureCamera();
         _renderer.UpdateProjectionTransition(input.DeltaTime);
         UpdateOrbitingLights(input.DeltaTime);
@@ -404,9 +409,11 @@ public sealed class GameRenderer : IDisposable
         {
             uint px = (uint)Math.Clamp(input.MouseX * input.RenderScale, 0, lastWidth - 1);
             uint py = (uint)Math.Clamp(input.MouseY * input.RenderScale, 0, lastHeight - 1);
-            ulong pickedId = _renderer.Pick(px, py, lastWidth, lastHeight);
-            SelectedEntity = pickedId;
-            OnEntityPicked?.Invoke(pickedId);
+            _selectionPickRequest = _renderer.RequestPick(
+                px,
+                py,
+                lastWidth,
+                lastHeight);
         }
         _wasMouseDownLeft = input.MouseDownLeft;
 
@@ -774,17 +781,48 @@ public sealed class GameRenderer : IDisposable
     public void ApplyMaterialToSubmesh(uint x, uint y, uint w, uint h, string materialPath)
     {
         AssertRenderThread();
-        (ulong entId, uint partIdx) = _renderer.PickSubmesh(x, y, w, h);
-        if (entId != 0 && _world.TryGet<Engine.RHI.ModelComponent>(entId, out var modelComp))
+        ulong requestId = _renderer.RequestPick(x, y, w, h);
+        _pendingSubmeshMaterials[requestId] = materialPath;
+    }
+
+    private void DrainPickResults()
+    {
+        while (_renderer.TryGetPickResult(
+                   out VisibilityPickResult result))
         {
-            var model = Engine.Assets.AssetRegistry.GetModel(modelComp.ModelId);
-            if (model?.Parts != null && partIdx < model.Parts.Length)
+            if (result.RequestId == _selectionPickRequest)
             {
-                var mat = Engine.Assets.MaterialLoader.LoadMat(_device, materialPath);
-                ulong matId = Engine.Assets.AssetRegistry.RegisterMaterial(mat);
-                model.Parts[partIdx].MaterialId = matId;
-                model.Parts[partIdx].Material = mat;
+                SelectedEntity = result.EntityId;
+                OnEntityPicked?.Invoke(result.EntityId);
+                _selectionPickRequest = 0;
             }
+
+            if (!_pendingSubmeshMaterials.Remove(
+                    result.RequestId,
+                    out string? materialPath) ||
+                result.EntityId == 0 ||
+                !_world.TryGet<Engine.RHI.ModelComponent>(
+                    result.EntityId,
+                    out var modelComponent))
+            {
+                continue;
+            }
+
+            var model = Engine.Assets.AssetRegistry.GetModel(
+                modelComponent.ModelId);
+            if (model?.Parts == null ||
+                result.PartIndex >= (uint)model.Parts.Length)
+            {
+                continue;
+            }
+
+            var material = Engine.Assets.MaterialLoader.LoadMat(
+                _device,
+                materialPath);
+            ulong materialId =
+                Engine.Assets.AssetRegistry.RegisterMaterial(material);
+            model.Parts[result.PartIndex].MaterialId = materialId;
+            model.Parts[result.PartIndex].Material = material;
         }
     }
 

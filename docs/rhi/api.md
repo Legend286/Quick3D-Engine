@@ -295,9 +295,29 @@ void    rhi_destroy_heap(RhiHeap* heap);
 // Fences for GPU/CPU sync
 int32_t rhi_create_fence(RhiDevice* device, RhiFence** out_fence);
 void    rhi_destroy_fence(RhiFence* fence);
-void    rhi_fence_wait(RhiFence* fence, uint64_t timeout_ns);
-void    rhi_cmd_signal_fence(RhiCommandList* cmd, RhiFence* fence);
+uint64_t rhi_fence_get_completed_value(RhiFence* fence);
+void    rhi_cmd_signal_fence(RhiCommandList* cmd, RhiFence* fence,
+                             uint64_t value);
+int32_t rhi_buffer_read_mapped(RhiBuffer* buffer, uint64_t offset,
+                               void* output, uint64_t size);
+int32_t rhi_cmd_copy_texture_to_buffer(RhiCommandList* cmd,
+                                       RhiTexture* source,
+                                       uint32_t source_x,
+                                       uint32_t source_y,
+                                       uint32_t width,
+                                       uint32_t height,
+                                       uint32_t source_mip_level,
+                                       RhiBuffer* destination,
+                                       uint64_t destination_offset,
+                                       uint32_t destination_bytes_per_row);
 ```
+
+`rhi_fence_get_completed_value` and `rhi_buffer_read_mapped` never submit or
+wait for GPU work. Callers first record a texture-to-buffer copy and timeline
+signal, then poll the fence on later frames before reading shared storage.
+Metal requires texture-copy row strides and destination offsets aligned to
+256 bytes; the command returns an error when the region, format, alignment,
+or destination range is invalid.
 
 `CommandRecorder.BeginTimestampScope` and
 `CommandRecorder.EndTimestampScope` bracket one logical render-graph pass.

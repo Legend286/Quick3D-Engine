@@ -207,6 +207,12 @@ int32_t rhi_buffer_readback(RhiBuffer* b, uint64_t offset_bytes,
     if (g_active < 0 || !g_backends[g_active].buffer_readback) return -1;
     return g_backends[g_active].buffer_readback(b, offset_bytes, out_bytes, out_size);
 }
+int32_t rhi_buffer_read_mapped(RhiBuffer* b, uint64_t offset_bytes,
+                                void* out_bytes, uint64_t out_size) {
+    if (g_active < 0 || !g_backends[g_active].buffer_read_mapped) return -1;
+    return g_backends[g_active].buffer_read_mapped(
+        b, offset_bytes, out_bytes, out_size);
+}
 int32_t rhi_texture_readback(RhiTexture* t, void* out, uint64_t out_size, uint32_t stride) {
     return g_backends[g_active].texture_readback(t, out, out_size, stride);
 }
@@ -247,6 +253,22 @@ void rhi_cmd_signal_fence(RhiCommandList* cl, RhiFence* f, uint64_t value) {
 }
 void rhi_cmd_wait_fence(RhiCommandList* cl, RhiFence* f, uint64_t value) {
     g_backends[g_active].cmd_wait_fence(cl, f, value);
+}
+uint64_t rhi_fence_get_completed_value(RhiFence* f) {
+    if (g_active < 0 || !g_backends[g_active].fence_get_completed_value) return 0;
+    return g_backends[g_active].fence_get_completed_value(f);
+}
+int32_t rhi_cmd_copy_texture_to_buffer(
+    RhiCommandList* cl, RhiTexture* source,
+    uint32_t source_x, uint32_t source_y,
+    uint32_t width, uint32_t height,
+    uint32_t source_mip_level, RhiBuffer* destination,
+    uint64_t destination_offset, uint32_t destination_bytes_per_row) {
+    if (g_active < 0 || !g_backends[g_active].cmd_copy_texture_to_buffer) return -1;
+    return g_backends[g_active].cmd_copy_texture_to_buffer(
+        cl, source, source_x, source_y, width, height,
+        source_mip_level, destination, destination_offset,
+        destination_bytes_per_row);
 }
 int32_t rhi_cmd_write_timestamp(RhiCommandList* cl, RhiTimestampQueryPool* pool,
                                 uint32_t sample_index) {

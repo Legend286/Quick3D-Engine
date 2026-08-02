@@ -26,6 +26,7 @@ visibility buffers, such as asset thumbnails.
 | `VisibilityReferencePass` | Implements focused Forward PBR validation outside the default plan. |
 | `VisibilityShadingPass` | Runs shared PBR evaluation from visibility data with a tile-local deduplicated light list. |
 | `VisibilityBufferDebugPass` | Presents normal compute shading or a selected visibility diagnostic before editor overlays. |
+| `VisibilityPickingPass` | Enqueues one-pixel identifier and depth copies for non-blocking editor selection. |
 
 ## Storage Contract
 
@@ -58,6 +59,15 @@ using half the storage of two 32-bit floats.
 
 Scene depth distinguishes covered pixels from cleared background. Identifier
 zero is therefore valid and is not reserved as an empty sentinel.
+
+Editor picking reuses this storage contract. A click records one-pixel
+identifier and depth blits into a shared-buffer ring. The graphics command
+buffer signals a timeline fence after both copies, and a later update reads
+mapped bytes only after that value completes. Each request retains a compact
+part-to-entity snapshot from the recorded frame, so delayed results cannot
+resolve against reordered scene data. Picking adds no geometry pass and no
+CPU/GPU wait; normal latency is one or more frames depending on queue
+completion.
 
 ## Usage Example
 

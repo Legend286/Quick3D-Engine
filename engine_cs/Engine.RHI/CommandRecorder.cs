@@ -440,6 +440,35 @@ public sealed class CommandRecorder : IDisposable
         RhiNative.RhiCmdWaitFence(CmdList, fence.Handle, value);
     }
 
+    /// <summary>Copies a 2D texture region into a GPU buffer.</summary>
+    public void CopyTextureToBuffer(
+        RhiTexture source,
+        uint sourceX,
+        uint sourceY,
+        uint width,
+        uint height,
+        RhiBuffer destination,
+        ulong destinationOffset,
+        uint destinationBytesPerRow,
+        uint sourceMipLevel = 0)
+    {
+        CloseCurrentEncoder();
+        int rc = RhiNative.RhiCmdCopyTextureToBuffer(
+            CmdList,
+            source.Handle,
+            sourceX,
+            sourceY,
+            width,
+            height,
+            sourceMipLevel,
+            destination.Handle,
+            destinationOffset,
+            destinationBytesPerRow);
+        if (rc != 0)
+            throw new InvalidOperationException(
+                $"rhi_cmd_copy_texture_to_buffer rc={rc}");
+    }
+
     /// <summary>
     /// Records a timestamp sample outside an active render or compute pass.
     /// </summary>

@@ -66,6 +66,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
     private readonly RenderGraphExecutor _graphExecutor;
     private DDGIAtlasResourceHandles? _boundDDGIHandles;
     private readonly GpuWorkScheduler _gpuWorkScheduler = new();
+    private readonly VisibilityPicker _visibilityPicker;
     private long _renderedFrameCount;
     private long _renderPlanVersion;
     private CachedRenderPlan? _rasterPlan;
@@ -336,6 +337,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _clusteredPlugin = clusteredPlugin;
         _pathTracingPlugin = pathTracingPlugin;
         _sharedBindlessHeap = new RhiBindlessHeap(_device, 4096);
+        _visibilityPicker = new VisibilityPicker(_device);
         _graphExecutor = new RenderGraphExecutor(_device)
         {
             EnableGpuTiming = true,
@@ -367,7 +369,8 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
     /// <summary>Gets whether renderer-owned background work needs another frame.</summary>
     public bool HasPendingRenderWork =>
         _participatesInGlobalExtensions &&
-        (DDGIAtlasProviderRegistry.Active?.HasPendingWork ?? false);
+        ((DDGIAtlasProviderRegistry.Active?.HasPendingWork ?? false) ||
+         _visibilityPicker.HasPendingWork);
 
     /// <summary>True once a scene has been loaded via <see cref="LoadScene"/>
     /// and the render plan has been compiled. Used by plugin-activation
@@ -968,6 +971,18 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 "Clustered renderer plugin did not create a raster scene cache.");
         }
 
+        RasterSceneGpuCache? outlineSceneCache =
+            pluginPlan.RasterSceneCache as RasterSceneGpuCache;
+        if (!usePathTracer &&
+            _enableVisibilityBuffer &&
+            scene.Passes.Count > 0 &&
+            outlineSceneCache != null)
+        {
+            passes.Add(new VisibilityPickingPass(
+                _visibilityPicker,
+                outlineSceneCache));
+        }
+
         if (!usePathTracer &&
             _enableVisibilityBuffer &&
             scene.Passes.Count > 0)
@@ -978,8 +993,6 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 this));
         }
 
-        RasterSceneGpuCache? outlineSceneCache =
-            pluginPlan.RasterSceneCache as RasterSceneGpuCache;
         bool renderInstanceOutline =
             !usePathTracer &&
             _enableVisibilityBuffer &&
@@ -1691,38 +1704,23 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             bytesPerPixel;
     }
 
-    public ulong Pick(uint x, uint y, uint w, uint h)
+    internal ulong RequestPick(uint x, uint y, uint w, uint h)
     {
         AssertRenderThread();
-        if (_currentScene == null) return 0;
-        using var pass = new IdPickingPass(_device, _world, _contentRoot, this);
-        pass.PickRequested = true;
-        pass.PickX = x;
-        pass.PickY = y;
-
-        using var executor = new RenderGraphExecutor(_device);
-        executor.SetViewportSize(w, h);
-        RenderPlan pickPlan = new RenderGraphCompiler().Compile(new RenderPass[] { pass });
-        executor.Execute(pickPlan);
-
-        return pass.PickedId;
+        if (_currentScene == null ||
+            _usePathTracer ||
+            !_enableVisibilityBuffer ||
+            _currentScene.Passes.Count == 0)
+        {
+            return _visibilityPicker.EnqueueMiss();
+        }
+        return _visibilityPicker.Enqueue(x, y, w, h);
     }
 
-    public (ulong EntityId, uint PartIndex) PickSubmesh(uint x, uint y, uint w, uint h)
+    internal bool TryGetPickResult(out VisibilityPickResult result)
     {
         AssertRenderThread();
-        if (_currentScene == null) return (0, 0);
-        using var pass = new IdPickingPass(_device, _world, _contentRoot, this);
-        pass.PickRequested = true;
-        pass.PickX = x;
-        pass.PickY = y;
-
-        using var executor = new RenderGraphExecutor(_device);
-        executor.SetViewportSize(w, h);
-        RenderPlan pickPlan = new RenderGraphCompiler().Compile(new RenderPass[] { pass });
-        executor.Execute(pickPlan);
-
-        return (pass.PickedId, pass.PickedPartIndex);
+        return _visibilityPicker.TryDequeueResult(out result);
     }
 
 
@@ -1743,6 +1741,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _visibilityReconstructionTexture = null;
         _visibilityReferenceTexture?.Dispose();
         _visibilityReferenceTexture = null;
+        _visibilityPicker.Dispose();
         _graphExecutor.Dispose();
         _shadowAtlasPreviewRenderer?.Dispose();
         _shadowAtlasPreviewRenderer = null;

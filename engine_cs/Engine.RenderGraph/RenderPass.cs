@@ -78,6 +78,17 @@ public interface ICommandSink
     public void UseAccelStruct(RhiAccelStruct as_handle, uint usage = 1);
     public void BuildAccelStructs(ReadOnlySpan<RhiAccelStruct> accelStructs);
     public void CompactAccelStructs(ReadOnlySpan<RhiAccelStruct> accelStructs);
+    public void CopyTextureToBuffer(
+        RhiTexture source,
+        uint sourceX,
+        uint sourceY,
+        uint width,
+        uint height,
+        RhiBuffer destination,
+        ulong destinationOffset,
+        uint destinationBytesPerRow,
+        uint sourceMipLevel = 0);
+    public void SignalFence(RhiFence fence, ulong value);
 }
 
 public sealed class RenderGraphContext

@@ -295,9 +295,13 @@ public sealed class VisibilityBufferContractTests
                 "Content",
                 "shaders",
                 "outline_selection_depth.slang"));
-        Assert.Contains(
-            "LoadPartVertexIndex(part, vid)",
-            ReadRepositoryFile("Content", "shaders", "id_picking.slang"));
+        string picking = ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "VisibilityPickingPass.cs");
+        Assert.Contains("VisibilityIdentifiersHandle", picking);
+        Assert.Contains("CopyTextureToBuffer", picking);
+        Assert.Contains("ReadMapped<VisibilityIdentifiers>", picking);
     }
 
     [Fact]
