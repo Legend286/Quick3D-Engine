@@ -111,6 +111,10 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("context.EnableVisibilityBuffer", plugin);
         Assert.Contains("CreateVisibilityBufferPass()", plugin);
         Assert.Contains("CreateComputePass()", plugin);
+        Assert.Contains("DirectLightLoopThreshold = 8", ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "PbrPass.cs"));
         Assert.Contains("EnsureVisibilityBufferResources()", renderer);
         Assert.Contains("_visibilityIdentifiersTexture", renderer);
         Assert.Contains("_visibilityBarycentricsTexture", renderer);
@@ -196,8 +200,8 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("sink.BindTexture(1, barycentrics)", pass);
         Assert.Contains("sink.BindTexture(2, depth)", pass);
         Assert.Contains("sink.BindTexture(3, reconstruction)", pass);
-        Assert.Contains("sink.BindTexture(4, reference)", pass);
-        Assert.Contains("VisibilityReferenceHandle", pass);
+        Assert.Contains("sink.BindTexture(4, reconstruction)", pass);
+        Assert.DoesNotContain("VisibilityReferenceHandle", pass);
         Assert.Contains("Texture2D<uint2> visibilityIdentifiers", shader);
         Assert.Contains("Texture2D<float2> visibilityBarycentrics", shader);
         Assert.Contains("Texture2D<float> sceneDepth", shader);
@@ -269,7 +273,9 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("sink.BindHeap(1, _owner.BindlessHeap)", pass);
         Assert.Contains("SampleGrad(textureSampler, uv, uvDx, uvDy)", shader);
         Assert.Contains("material.normalTexIndex", shader);
-        Assert.Contains("CreateVisibilityReconstructionPass()", plugin);
+        Assert.DoesNotContain(
+            "CreateVisibilityReconstructionPass()",
+            plugin);
         Assert.Contains("VisibilityReconstructionHandle", renderer);
         Assert.Contains("RhiTexture.CreateStorage(", renderer);
         Assert.Contains("LoadPartVertexIndex", sceneData);
@@ -315,9 +321,11 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("material.normalTexIndex", shader);
         Assert.Contains(".Sample(textureSampler, input.uv)", shader);
         Assert.Contains("float3x3(tangent, bitangent, normal)", shader);
-        Assert.Contains("CreateVisibilityReferencePass()", plugin);
+        Assert.DoesNotContain("CreateVisibilityReferencePass()", plugin);
         Assert.Contains("VisibilityReferenceHandle", renderer);
         Assert.Contains("_visibilityReferenceTexture", renderer);
+        Assert.Contains("bool referenceRequired = false", renderer);
+        Assert.Contains("else if (!referenceRequired)", renderer);
     }
 
     [Fact]
@@ -347,14 +355,40 @@ public sealed class VisibilityBufferContractTests
             "Editor",
             "ViewModels",
             "ViewportPanelViewModel.cs");
+        string renderer = ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "Renderer.cs");
+        string pbrPass = ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "PbrPass.cs");
+        string visibilityPass = ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "VisibilityBufferPass.cs");
+        string referencePass = ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "VisibilityReferencePass.cs");
 
         Assert.Contains("[numthreads(8, 8, 1)]", shader);
         Assert.Contains("groupshared uint g_tileDepthSliceMask", shader);
+        Assert.Contains("groupshared uint g_tileHasGeometry", shader);
         Assert.Contains("groupshared uint g_tileLightHash", shader);
         Assert.Contains("kTileLightCapacity = 1024u", shader);
         Assert.Contains("InterlockedCompareExchange", shader);
+        Assert.True(
+            shader.IndexOf(
+                "if (g_tileHasGeometry == 0u)",
+                StringComparison.Ordinal) <
+            shader.IndexOf(
+                "for (uint hashIndex = lane;",
+                StringComparison.Ordinal));
         Assert.Contains("ClusterRecord record", shader);
+        Assert.Contains("uint directLightCount = min(", shader);
         Assert.Contains("VisibilityTileLightCount", shader);
+        Assert.Contains("if (useClusteredLights)", pbrPass);
         Assert.Contains("ShadePbrSurface(", shader);
         Assert.Contains("EvaluateVisibilitySky", shader);
         Assert.Contains("#ifdef VISIBILITY_COMPUTE", pbr);
@@ -369,11 +403,45 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("ErrorHeatMap(error)", debugShader);
         Assert.DoesNotContain("float3 compared = lerp", debugShader);
         Assert.Contains("if (debugView == 20u)\n        ao = 1.0;", pbr);
-        Assert.Contains("if (!visibilityView &&", ReadRepositoryFile(
+        Assert.DoesNotContain("if (!visibilityView &&", visibilityPass);
+        Assert.Contains("if (_useVisibilityOpaque)\n            return;", pbrPass);
+        Assert.Contains(
+            "view != ViewportDebugView.VisibilityBuffer",
+            pass);
+        Assert.Contains(
+            "!VisibilityReconstructionPass.IsReconstructionView(view)",
+            pass);
+        Assert.Contains("IsComparisonView(debugView)", referencePass);
+        Assert.Contains("if (push.mode <= 12u)", debugShader);
+        Assert.True(
+            renderer.IndexOf(
+                "new VisibilityBufferDebugPass(",
+                StringComparison.Ordinal) <
+            renderer.IndexOf(
+                "new OutlineMaskPass(",
+                StringComparison.Ordinal));
+        Assert.DoesNotContain("\"Visibility PBR\",", viewModel);
+        Assert.DoesNotContain("\"Reconstructed UV\",", viewModel);
+        Assert.Contains("\"Visibility Buffer Renderer\"", viewModel);
+        Assert.DoesNotContain(
+            "\"Clustered Forward Renderer\"",
+            viewModel);
+        Assert.Contains("!DebugViews.Contains(value)", viewModel);
+        Assert.Contains("DebugViews.Contains(label)", viewModel);
+    }
+
+    [Fact]
+    public void OutlineMask_SkipsUnselectedFramesWithoutClearing()
+    {
+        string pass = ReadRepositoryFile(
             "engine_cs",
             "Engine.Renderer",
-            "VisibilityBufferPass.cs"));
-        Assert.Contains("\"Visibility PBR\"", viewModel);
+            "OutlineMaskPass.cs");
+
+        Assert.Contains(
+            "if (selectedId == 0)\n            return;",
+            pass);
+        Assert.DoesNotContain("emptyMask", pass);
     }
 
     private static string ReadRepositoryFile(params string[] parts)

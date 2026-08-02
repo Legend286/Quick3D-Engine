@@ -1,6 +1,7 @@
 # PBR Render Pipeline & GPU Culling
 
-**Purpose**: Implements the main forward+ physical-based rendering (PBR) pipeline alongside an early GPU-driven frustum culling mechanism.
+**Purpose**: Implements GPU-driven visibility-buffer PBR with clustered light
+assignment and a Forward+ raster fallback for non-visibility renderers.
 See [Scene Lights](lights.md) for authored point/spot/directional light
 round-tripping through the editor and scene JSON.
 
@@ -12,15 +13,20 @@ round-tripping through the editor and scene JSON.
 - `VisibilityBufferPass`: Records raster-instance and primitive indices in
   `RG32Uint`, barycentric X/Y in `RG16Unorm`, and opaque depth for the future
   compute-shading path.
-- `VisibilityBufferDebugPass`: Replaces the final scene colour in Visibility
-  Buffer mode with the identifier/barycentric split diagnostic.
-- `VisibilityReconstructionPass`: Reconstructs position, normal, UV, material,
-  instance, and tangent diagnostics in 8×8 compute tiles.
-- `VisibilityReferencePass`: Rasterizes the corresponding Forward PBR
-  attributes for split-screen reconstruction comparison.
-- `PbrPass`: Issues bindless PBR geometry rendering.
+- `VisibilityBufferDebugPass`: Presents visibility compute shading for normal
+  views and replaces it with the selected visibility diagnostic when needed.
+- `VisibilityReconstructionPass`: Implements focused position, normal, UV,
+  material, instance, and tangent tests outside the default plan.
+- `VisibilityReferencePass`: Implements a focused Forward PBR parity target
+  outside the default plan.
+- `PbrPass`: Owns shared culling, clustered-light, scene, and shading resources;
+  it issues bindless Forward PBR geometry only when visibility is disabled.
 - `GridPass`: Renders the editor wireframe infinite/fade grid. Runs concurrently with or after the PBR pass.
 - `ImGuiPass`: Renders UI overlays.
+
+Outline mask and composite passes record no render encoders while no entity is
+selected. The stale mask does not matter because the composite is skipped in
+the same state.
 
 ## Shaders
 - `pbr.slang`: Forward renderer processing bindless geometry, textures, clustered light records, and Disney PBR material evaluation.
@@ -63,6 +69,11 @@ existing Forward+ cluster lists represented by its covered depth slices in
 group-shared memory. This reduces repeated cluster-list reads while preserving
 the same per-pixel BRDF, coloured radiance, soft spotlight attenuation,
 shadows, and DDGI evaluation as forward raster shading.
+
+The main clustered renderer shades opaque geometry exclusively through the
+visibility path. Forward PBR does not execute alongside it during normal
+rendering. Asset thumbnail renderers deliberately disable visibility buffers
+and retain Forward PBR to avoid allocating full viewport visibility targets.
 
 ## Directional Shadows
 - The first directional light with `CastShadows` enabled owns the raster shadow

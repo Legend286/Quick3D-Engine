@@ -89,16 +89,6 @@ internal sealed class VisibilityBufferPass : RenderPass, IDisposable
         RenderGraphContext context)
     {
         _owner.EnsurePrepared(sink, context);
-        ViewportDebugView debugView =
-            (ViewportDebugView)(_owner.PreparedPush.DebugFlags & 0xffu);
-        bool visibilityView =
-            debugView == ViewportDebugView.VisibilityBuffer;
-        if (!visibilityView &&
-            !VisibilityReconstructionPass.IsReconstructionView(debugView) &&
-            !VisibilityShadingPass.IsShadingView(debugView))
-        {
-            return;
-        }
         if (!context.TryGetTexture(
                 RenderGraphResources.VisibilityIdentifiersHandle,
                 out RhiTexture identifiers) ||

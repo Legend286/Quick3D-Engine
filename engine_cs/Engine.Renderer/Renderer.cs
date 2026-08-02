@@ -968,14 +968,6 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 "Clustered renderer plugin did not create a raster scene cache.");
         }
 
-        passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));
-        passes.Add(new OutlineCompositePass(_device, contentRoot, this));
-
-        if (_renderGrid)
-        {
-            passes.Add(new GridPass(_device, _world, contentRoot, this, clearScreen: scene.Passes.Count == 0));
-        }
-
         if (!usePathTracer &&
             _enableVisibilityBuffer &&
             scene.Passes.Count > 0)
@@ -984,6 +976,14 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 _device,
                 contentRoot,
                 this));
+        }
+
+        passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));
+        passes.Add(new OutlineCompositePass(_device, contentRoot, this));
+
+        if (_renderGrid)
+        {
+            passes.Add(new GridPass(_device, _world, contentRoot, this, clearScreen: scene.Passes.Count == 0));
         }
 
         passes.AddRange(extPostPasses);
@@ -1047,6 +1047,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
     private void EnsureVisibilityBufferResources()
     {
         bool required = false;
+        bool referenceRequired = false;
         if (_plan != null)
         {
             foreach (IReadOnlyList<AccessDecl> accesses in _plan.PassAccesses)
@@ -1059,11 +1060,10 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                         access.Resource == VisibilityReferenceHandle)
                     {
                         required = true;
-                        break;
                     }
+                    if (access.Resource == VisibilityReferenceHandle)
+                        referenceRequired = true;
                 }
-                if (required)
-                    break;
             }
         }
 
@@ -1138,7 +1138,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 "Visibility Reconstruction",
                 "Visibility Buffer");
         }
-        if (_visibilityReferenceTexture == null)
+        if (referenceRequired && _visibilityReferenceTexture == null)
         {
             _visibilityReferenceTexture = RhiTexture.CreateRenderTarget(
                 _device,
@@ -1148,6 +1148,12 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             _visibilityReferenceTexture.SetDebugName(
                 "Visibility Raster Reference",
                 "Visibility Buffer");
+        }
+        else if (!referenceRequired)
+        {
+            _visibilityReferenceTexture?.Dispose();
+            _visibilityReferenceTexture = null;
+            _graphExecutor.UnbindTexture(VisibilityReferenceHandle);
         }
     }
 

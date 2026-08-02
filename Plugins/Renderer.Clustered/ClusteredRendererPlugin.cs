@@ -6,7 +6,7 @@ using Engine.RHI;
 
 namespace Engine.Plugin.Renderer.Clustered;
 
-/// <summary>Registers the required clustered Forward+ renderer module.</summary>
+/// <summary>Registers the clustered visibility-buffer renderer module.</summary>
 public sealed class ClusteredRendererPlugin :
     IEnginePlugin,
     IRendererPlanPlugin
@@ -105,8 +105,11 @@ public sealed class ClusteredRendererPlugin :
         }
 
         var pbrPasses = new List<PbrPass>();
-        foreach (var scenePass in
-                 context.Scene.Passes)
+        IEnumerable<Engine.Scene.ScenePass> opaquePasses =
+            context.EnableVisibilityBuffer
+                ? context.Scene.Passes.Take(1)
+                : context.Scene.Passes;
+        foreach (var scenePass in opaquePasses)
         {
             pbrPasses.Add(
                 new PbrPass(
@@ -121,7 +124,8 @@ public sealed class ClusteredRendererPlugin :
                     cliArgs,
                     includeDirs,
                     context.SharedShaderCache,
-                    ddgiProvider));
+                    ddgiProvider,
+                    context.EnableVisibilityBuffer));
         }
         foreach (PbrPass pbrPass in pbrPasses)
             result.AddPass(pbrPass.CreateComputePass());
@@ -133,13 +137,12 @@ public sealed class ClusteredRendererPlugin :
         {
             result.AddPass(pbrPasses[0].CreateVisibilityBufferPass());
             result.AddPass(
-                pbrPasses[0].CreateVisibilityReconstructionPass());
-            result.AddPass(
                 pbrPasses[0].CreateVisibilityShadingPass());
-            result.AddPass(
-                pbrPasses[0].CreateVisibilityReferencePass());
         }
-        result.Passes.AddRange(pbrPasses);
+        else
+        {
+            result.Passes.AddRange(pbrPasses);
+        }
 
         // DDGI probe overlay is editor-UI territory — the
         // ClusteredRendererPlugin doesn't own an IEnginePluginHost

@@ -13,7 +13,7 @@ using Engine.CBindings;
 
 namespace Engine.Renderer;
 
-public class PbrPass : RenderPass
+public class PbrPass : RenderPass, IDisposable
 {
     private static int _nextGraphResourceId = 0x70000000;
     private const ulong DrawIndirectCommandSizeBytes = 16;
@@ -21,6 +21,7 @@ public class PbrPass : RenderPass
     private const uint ClusterTileSize = 32;
     private const uint ClusterDepthSlices = 16;
     private const uint MaxLightsPerCluster = 64;
+    private const uint DirectLightLoopThreshold = 8;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct CullPushData
@@ -49,17 +50,18 @@ public class PbrPass : RenderPass
     private readonly IReadOnlyList<string>? _includeDirs;
     private readonly ShaderCompileCache? _compileCache;
     private readonly IDDGIAtlasProvider? _ddgiAtlas;
+    private readonly bool _useVisibilityOpaque;
 
-    private readonly RhiShader _vs;
-    private readonly RhiShader _fs;
+    private readonly RhiShader? _vs;
+    private readonly RhiShader? _fs;
     private readonly RhiShader _cullCs;
     private readonly RhiShader _clusterCs;
-    private readonly RhiPipeline _pipeline;
+    private readonly RhiPipeline? _pipeline;
     private readonly RhiPipeline _cullPipeline;
     private readonly RhiPipeline _clusterPipeline;
-    private readonly RhiShader _skyVs;
-    private readonly RhiShader _skyFs;
-    private readonly RhiPipeline _skyPipeline;
+    private readonly RhiShader? _skyVs;
+    private readonly RhiShader? _skyFs;
+    private readonly RhiPipeline? _skyPipeline;
     private readonly RhiSampler _sampler;
     private float _lastAspect;
 
@@ -94,7 +96,8 @@ public class PbrPass : RenderPass
         IReadOnlyList<string>? cliArgs = null,
         IReadOnlyList<string>? includeDirs = null,
         ShaderCompileCache? compileCache = null,
-        IDDGIAtlasProvider? ddgiAtlas = null)
+        IDDGIAtlasProvider? ddgiAtlas = null,
+        bool useVisibilityOpaque = false)
     {
         _device = device;
         _contentRoot = contentRoot;
@@ -106,21 +109,34 @@ public class PbrPass : RenderPass
         _includeDirs = includeDirs;
         _compileCache = compileCache;
         _ddgiAtlas = ddgiAtlas;
-        Name = string.IsNullOrWhiteSpace(scenePass.Name) ||
-            scenePass.Name.Equals("PbrPass", StringComparison.OrdinalIgnoreCase)
-            ? "Forward PBR"
-            : $"Forward PBR · {scenePass.Name}";
+        _useVisibilityOpaque = useVisibilityOpaque;
+        Name = _useVisibilityOpaque
+            ? "Visibility Opaque Resources"
+            : string.IsNullOrWhiteSpace(scenePass.Name) ||
+                scenePass.Name.Equals("PbrPass", StringComparison.OrdinalIgnoreCase)
+                ? "Forward PBR"
+                : $"Forward PBR · {scenePass.Name}";
 
-        string shaderDir = Path.Combine(_contentRoot, "shaders");
-
-        string src = LoadShaderSource("shaders/pbr.slang");
-        _vs = CompileCached(src, "vertexMain", RhiNative.ShaderStage.Vertex);
-        _fs = CompileCached(src, "fragmentMain", RhiNative.ShaderStage.Fragment);
-
-        _pipeline = RhiPipeline.CreateGraphics(
-            _device, _vs, _fs,
-            RhiNative.TextureFormat.Bgra8Unorm,
-            enableDepth: true);
+        if (!_useVisibilityOpaque)
+        {
+            string src = LoadShaderSource("shaders/pbr.slang");
+            RhiShader vertexShader = CompileCached(
+                src,
+                "vertexMain",
+                RhiNative.ShaderStage.Vertex);
+            RhiShader fragmentShader = CompileCached(
+                src,
+                "fragmentMain",
+                RhiNative.ShaderStage.Fragment);
+            _vs = vertexShader;
+            _fs = fragmentShader;
+            _pipeline = RhiPipeline.CreateGraphics(
+                _device,
+                vertexShader,
+                fragmentShader,
+                RhiNative.TextureFormat.Bgra8Unorm,
+                enableDepth: true);
+        }
 
         string cullSrc = LoadShaderSource("shaders/cull.slang");
         _cullCs = CompileCached(cullSrc, "computeMain", RhiNative.ShaderStage.Compute);
@@ -130,10 +146,26 @@ public class PbrPass : RenderPass
         _clusterCs = CompileCached(clusterSrc, "computeMain", RhiNative.ShaderStage.Compute);
         _clusterPipeline = RhiPipeline.CreateCompute(_device, _clusterCs);
 
-        string skySrc = LoadShaderSource("shaders/pbr_sky.slang");
-        _skyVs = CompileCached(skySrc, "vertexMain", RhiNative.ShaderStage.Vertex);
-        _skyFs = CompileCached(skySrc, "fragmentMain", RhiNative.ShaderStage.Fragment);
-        _skyPipeline = RhiPipeline.CreateGraphics(_device, _skyVs, _skyFs, RhiNative.TextureFormat.Bgra8Unorm, enableDepth: true);
+        if (!_useVisibilityOpaque)
+        {
+            string skySrc = LoadShaderSource("shaders/pbr_sky.slang");
+            RhiShader skyVertexShader = CompileCached(
+                skySrc,
+                "vertexMain",
+                RhiNative.ShaderStage.Vertex);
+            RhiShader skyFragmentShader = CompileCached(
+                skySrc,
+                "fragmentMain",
+                RhiNative.ShaderStage.Fragment);
+            _skyVs = skyVertexShader;
+            _skyFs = skyFragmentShader;
+            _skyPipeline = RhiPipeline.CreateGraphics(
+                _device,
+                skyVertexShader,
+                skyFragmentShader,
+                RhiNative.TextureFormat.Bgra8Unorm,
+                enableDepth: true);
+        }
 
         _sampler = RhiSampler.Create(_device);
 
@@ -151,6 +183,8 @@ public class PbrPass : RenderPass
 
     public override void Setup(RenderGraphBuilder builder)
     {
+        if (_useVisibilityOpaque)
+            return;
         builder.Write(RenderGraphResources.BackBufferHandle, ResourceState.RenderTarget);
         builder.Write(RenderGraphResources.DepthBufferHandle, ResourceState.DepthStencil);
         SetupShadingReads(builder);
@@ -262,7 +296,6 @@ public class PbrPass : RenderPass
     internal ScenePushData PreparedPush => _preparedPush;
     internal RhiBindlessHeap BindlessHeap => _bindlessHeap;
     internal bool RenderSkyEnabled => _renderSky;
-
     internal void BindShadingResources(ICommandSink sink)
     {
         SceneFrameData frameData = _preparedFrameData;
@@ -296,6 +329,11 @@ public class PbrPass : RenderPass
             sink.UseBuffer(worldProbeHash, 1);
             sink.UseBuffer(probeStates, 1);
             sink.UseBuffer(volumeState, 1);
+            if (_ddgiAtlas.TryGetExternalResources(
+                    out DDGIAtlasExternalResources resources))
+            {
+                sink.UseBuffer(resources.ProbeSpecularStates, 1);
+            }
         }
         foreach (Engine.Assets.Mesh mesh in frameData.UniqueMeshes)
         {
@@ -367,13 +405,36 @@ public class PbrPass : RenderPass
         uint clusterX = (w + ClusterTileSize - 1) / ClusterTileSize;
         uint clusterY = (h + ClusterTileSize - 1) / ClusterTileSize;
         uint clusterCount = clusterX * clusterY * ClusterDepthSlices;
-        EnsureBuffer(ref _clusterRecordBuffer, (ulong)clusterCount * (ulong)sizeof(ClusterRecord), RhiNative.BufferUsage.Storage);
-        EnsureBuffer(ref _clusterLightIndexBuffer, (ulong)clusterCount * MaxLightsPerCluster * sizeof(uint), RhiNative.BufferUsage.Storage);
+        bool useClusteredLights =
+            pbrPush.LightCount > DirectLightLoopThreshold;
+        if (useClusteredLights)
+        {
+            EnsureBuffer(
+                ref _clusterRecordBuffer,
+                (ulong)clusterCount * (ulong)sizeof(ClusterRecord),
+                RhiNative.BufferUsage.Storage);
+            EnsureBuffer(
+                ref _clusterLightIndexBuffer,
+                (ulong)clusterCount * MaxLightsPerCluster * sizeof(uint),
+                RhiNative.BufferUsage.Storage);
+        }
 
         pbrPush.ClusterRecords = _clusterRecordBuffer.DeviceAddress;
         pbrPush.ClusterLightIndices = _clusterLightIndexBuffer.DeviceAddress;
-        pbrPush.ClusterGrid = new Vector4(clusterX, clusterY, ClusterDepthSlices, clusterCount);
-        pbrPush.ClusterParams = new Vector4(ClusterTileSize, MaxLightsPerCluster, 0, 0);
+        pbrPush.ClusterGrid = useClusteredLights
+            ? new Vector4(
+                clusterX,
+                clusterY,
+                ClusterDepthSlices,
+                clusterCount)
+            : Vector4.Zero;
+        pbrPush.ClusterParams = useClusteredLights
+            ? new Vector4(
+                ClusterTileSize,
+                MaxLightsPerCluster,
+                0,
+                0)
+            : Vector4.Zero;
         _preparedPush = pbrPush;
 
         uint zero = 0;
@@ -401,19 +462,27 @@ public class PbrPass : RenderPass
         sink.Dispatch((uint)((frameData.Instances.Count + 63) / 64), 1, 1);
         sink.EndComputePass();
 
-        sink.BeginComputePass("Cluster Light Assignment");
-        sink.BindPipeline(_clusterPipeline);
-        sink.UseBuffer(_cameraBuffer, 1);
-        sink.UseBuffer(_lightBuffer, 1);
-        sink.UseBuffer(_clusterRecordBuffer, 2);
-        sink.UseBuffer(_clusterLightIndexBuffer, 2);
-        sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pbrPush));
-        sink.Dispatch((clusterCount + 63) / 64, 1, 1);
-        sink.EndComputePass();
+        if (useClusteredLights)
+        {
+            sink.BeginComputePass("Cluster Light Assignment");
+            sink.BindPipeline(_clusterPipeline);
+            sink.UseBuffer(_cameraBuffer, 1);
+            sink.UseBuffer(_lightBuffer, 1);
+            sink.UseBuffer(_clusterRecordBuffer, 2);
+            sink.UseBuffer(_clusterLightIndexBuffer, 2);
+            sink.PushConstants(
+                0,
+                (uint)sizeof(ScenePushData),
+                (IntPtr)(&pbrPush));
+            sink.Dispatch((clusterCount + 63) / 64, 1, 1);
+            sink.EndComputePass();
+        }
     }
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext context)
     {
+        if (_useVisibilityOpaque)
+            return;
         if (!context.TryGetTexture(RenderGraphResources.BackBufferHandle, out RhiTexture colorTarget))
             return;
         context.TryGetTexture(RenderGraphResources.DepthBufferHandle, out RhiTexture depthTarget);
@@ -429,7 +498,7 @@ public class PbrPass : RenderPass
         if (frameData.Instances.Count > 0)
         {
             sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store, depthTarget);
-            sink.BindPipeline(_pipeline);
+            sink.BindPipeline(_pipeline!);
             sink.SetViewport(0, 0, w, h);
             BindShadingResources(sink);
 
@@ -437,11 +506,11 @@ public class PbrPass : RenderPass
 
             if (_renderSky)
             {
-                sink.BindPipeline(_skyPipeline);
+                sink.BindPipeline(_skyPipeline!);
                 sink.Draw(3, 1, 0, 0);
             }
 
-            sink.BindPipeline(_pipeline);
+            sink.BindPipeline(_pipeline!);
             sink.DrawIndirect(_drawCmdBuffer, 0, (uint)frameData.Parts.Count, (uint)DrawIndirectCommandSizeBytes);
         }
         else
@@ -450,7 +519,7 @@ public class PbrPass : RenderPass
             sink.PushConstants(0, (uint)sizeof(ScenePushData), (IntPtr)(&pbrPush));
             if (_renderSky)
             {
-                sink.BindPipeline(_skyPipeline);
+                sink.BindPipeline(_skyPipeline!);
                 sink.Draw(3, 1, 0, 0);
             }
         }

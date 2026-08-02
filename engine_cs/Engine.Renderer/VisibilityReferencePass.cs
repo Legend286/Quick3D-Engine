@@ -161,9 +161,8 @@ internal sealed class VisibilityReferencePass : RenderPass, IDisposable
         ScenePushData push = _owner.PreparedPush;
         ViewportDebugView debugView =
             (ViewportDebugView)(push.DebugFlags & 0xffu);
-        bool pbrView = VisibilityShadingPass.IsShadingView(debugView);
-        if (!VisibilityReconstructionPass.IsReconstructionView(debugView) &&
-            !pbrView)
+        bool pbrView = VisibilityShadingPass.IsComparisonView(debugView);
+        if (!pbrView)
             return;
         if (!context.TryGetTexture(
                 RenderGraphResources.VisibilityReferenceHandle,

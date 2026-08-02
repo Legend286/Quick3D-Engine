@@ -14,6 +14,7 @@ static const uint kTileLightCapacity = 1024u;
 static const uint kInvalidTileLight = 0xffffffffu;
 
 groupshared uint g_tileDepthSliceMask;
+groupshared uint g_tileHasGeometry;
 groupshared uint g_tileLightCount;
 groupshared uint g_tileLightHash[kTileLightCapacity];
 groupshared uint g_tileLights[kTileLightCapacity];
@@ -209,75 +210,102 @@ void computeMain(
     if (lane == 0u)
     {
         g_tileDepthSliceMask = 0u;
+        g_tileHasGeometry = 0u;
         g_tileLightCount = 0u;
-    }
-    for (uint hashIndex = lane;
-         hashIndex < kTileLightCapacity;
-         hashIndex += kTileThreadCount)
-    {
-        g_tileLightHash[hashIndex] = kInvalidTileLight;
     }
     GroupMemoryBarrierWithGroupSync();
 
     bool useClusters =
         push.clusterGrid.w > 0.0 && push.clusterParams.y > 0.0;
     uint gridZ = max((uint)push.clusterGrid.z, 1u);
-    if (covered && useClusters)
+    if (covered)
     {
-        uint depthSlice = min(
-            (uint)(depth * float(gridZ)),
-            gridZ - 1u);
-        InterlockedOr(
-            g_tileDepthSliceMask,
-            1u << depthSlice);
+        InterlockedOr(g_tileHasGeometry, 1u);
+        if (useClusters)
+        {
+            uint depthSlice = min(
+                (uint)(depth * float(gridZ)),
+                gridZ - 1u);
+            InterlockedOr(
+                g_tileDepthSliceMask,
+                1u << depthSlice);
+        }
     }
     GroupMemoryBarrierWithGroupSync();
 
-    if (useClusters && lane < gridZ &&
-        (g_tileDepthSliceMask & (1u << lane)) != 0u)
+    if (g_tileHasGeometry == 0u)
     {
-        uint gridX = (uint)push.clusterGrid.x;
-        uint gridY = (uint)push.clusterGrid.y;
-        float clusterTileSize = push.clusterParams.x;
-        uint2 tileOrigin = groupIndex.xy * kTileWidth;
-        uint clusterX = min(
-            (uint)(tileOrigin.x / clusterTileSize),
-            gridX - 1u);
-        uint clusterY = min(
-            (uint)(tileOrigin.y / clusterTileSize),
-            gridY - 1u);
-        uint clusterIndex =
-            lane * gridX * gridY + clusterY * gridX + clusterX;
-        ClusterRecord record = push.clusterRecords[clusterIndex];
-        for (uint lightOffset = 0u;
-             lightOffset < record.count;
-             ++lightOffset)
+        if (inBounds)
         {
-            InsertTileLight(
-                push.clusterLightIndices[record.offset + lightOffset]);
+            visibilityShadingOutput[pixel] = float4(
+                EvaluateVisibilitySky(pixel, dimensions),
+                1.0);
         }
+        return;
     }
-    else if (!useClusters)
+
+    if (!useClusters)
     {
+        uint directLightCount = min(
+            push.lightCount,
+            kTileLightCapacity);
         for (uint lightIndex = lane;
-             lightIndex < push.lightCount;
+             lightIndex < directLightCount;
              lightIndex += kTileThreadCount)
         {
-            InsertTileLight(lightIndex);
+            g_tileLights[lightIndex] = lightIndex;
         }
+        if (lane == 0u)
+            g_tileLightCount = directLightCount;
     }
-    GroupMemoryBarrierWithGroupSync();
-
-    for (uint hashIndex = lane;
-         hashIndex < kTileLightCapacity;
-         hashIndex += kTileThreadCount)
+    else
     {
-        uint lightIndex = g_tileLightHash[hashIndex];
-        if (lightIndex == kInvalidTileLight)
-            continue;
-        uint outputIndex;
-        InterlockedAdd(g_tileLightCount, 1u, outputIndex);
-        g_tileLights[outputIndex] = lightIndex;
+        for (uint hashIndex = lane;
+             hashIndex < kTileLightCapacity;
+             hashIndex += kTileThreadCount)
+        {
+            g_tileLightHash[hashIndex] = kInvalidTileLight;
+        }
+        GroupMemoryBarrierWithGroupSync();
+
+        if (lane < gridZ &&
+            (g_tileDepthSliceMask & (1u << lane)) != 0u)
+        {
+            uint gridX = (uint)push.clusterGrid.x;
+            uint gridY = (uint)push.clusterGrid.y;
+            float clusterTileSize = push.clusterParams.x;
+            uint2 tileOrigin = groupIndex.xy * kTileWidth;
+            uint clusterX = min(
+                (uint)(tileOrigin.x / clusterTileSize),
+                gridX - 1u);
+            uint clusterY = min(
+                (uint)(tileOrigin.y / clusterTileSize),
+                gridY - 1u);
+            uint clusterIndex =
+                lane * gridX * gridY + clusterY * gridX + clusterX;
+            ClusterRecord record = push.clusterRecords[clusterIndex];
+            for (uint lightOffset = 0u;
+                 lightOffset < record.count;
+                 ++lightOffset)
+            {
+                InsertTileLight(
+                    push.clusterLightIndices[
+                        record.offset + lightOffset]);
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+
+        for (uint hashIndex = lane;
+             hashIndex < kTileLightCapacity;
+             hashIndex += kTileThreadCount)
+        {
+            uint lightIndex = g_tileLightHash[hashIndex];
+            if (lightIndex == kInvalidTileLight)
+                continue;
+            uint outputIndex;
+            InterlockedAdd(g_tileLightCount, 1u, outputIndex);
+            g_tileLights[outputIndex] = lightIndex;
+        }
     }
     GroupMemoryBarrierWithGroupSync();
 

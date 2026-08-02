@@ -4,9 +4,10 @@
 
 The visibility buffer records the exact opaque geometry covering each pixel so
 later compute shading can reconstruct surface attributes without a wide
-material G-buffer. Phase one produces graph-visible identifiers,
-barycentrics, and depth while the existing Forward+ PBR pass remains the final
-shading path.
+material G-buffer. The clustered renderer uses visibility rasterization and
+8×8 compute PBR as its default opaque path. Forward PBR remains available as
+an explicit parity reference and for renderer instances that disable
+visibility buffers, such as asset thumbnails.
 
 ## Public API Surface
 
@@ -19,11 +20,12 @@ shading path.
 | `RenderGraphResources.VisibilityIdentifiersHandle` | Identifies the `RG32Uint` visibility texture. |
 | `RenderGraphResources.VisibilityBarycentricsHandle` | Identifies the `RG16Unorm` barycentric texture. |
 | `RenderGraphResources.VisibilityReconstructionHandle` | Identifies the `RGBA16Float` compute diagnostic texture. |
-| `RenderGraphResources.VisibilityReferenceHandle` | Identifies the `RGBA16Float` Forward PBR raster-reference texture. |
+| `RenderGraphResources.VisibilityReferenceHandle` | Reserves an `RGBA16Float` Forward PBR reference identifier for focused validation plans. |
 | `VisibilityBufferPass` | Rasterizes opaque indirect draws into both textures and scene depth. |
-| `VisibilityReconstructionPass` | Reconstructs selected surface attributes in 8×8 compute tiles. |
-| `VisibilityReferencePass` | Rasterizes matching Forward PBR attributes for pixel-level validation. |
+| `VisibilityReconstructionPass` | Implements focused attribute validation outside the default plan. |
+| `VisibilityReferencePass` | Implements focused Forward PBR validation outside the default plan. |
 | `VisibilityShadingPass` | Runs shared PBR evaluation from visibility data with a tile-local deduplicated light list. |
+| `VisibilityBufferDebugPass` | Presents normal compute shading or a selected visibility diagnostic before editor overlays. |
 
 ## Storage Contract
 
@@ -69,13 +71,15 @@ RhiPipeline pipeline = RhiPipeline.CreateGraphicsMrt(
     enableDepth: true);
 ```
 
-## Phase One
+## Default Opaque Path
 
-The clustered renderer inserts one visibility raster before its first PBR
-scene pass. It consumes the same GPU-generated indirect commands, packed scene
-buffers, and mesh resources as Forward+ rendering. The existing PBR pass still
-redraws and shades opaque geometry, making the additional raster cost explicit
-and temporary while compute material reconstruction is not yet active.
+The clustered renderer inserts one visibility raster and one compute-shading
+dispatch after GPU culling, clustered light assignment, and shadow updates.
+They consume the same GPU-generated indirect commands, packed scene buffers,
+mesh resources, shadow pages, and DDGI resources as Forward+ rendering. Normal
+opaque frames do not execute the Forward PBR geometry pass. The visibility
+result is presented before selection outlines, the editor grid, extension
+post-passes, and ImGui so editor overlays remain composited on top.
 
 Visibility shader source resolution checks the active project's shader folder
 first, then the renderer's active plugin and engine include paths. Projects can
@@ -84,7 +88,7 @@ override the shader without copying the engine fallback into their own
 
 Visibility resources allocate only for plans that set
 `RendererPluginContext.EnableVisibilityBuffer`. Thumbnail and material-preview
-renderers disable that flag.
+renderers disable that flag and retain the compact Forward PBR path.
 
 ## Debug Visualization
 
@@ -107,35 +111,22 @@ reads and validates the visibility-buffer textures themselves.
 
 ## Attribute Reconstruction
 
-The phase-two validation pass runs only while one of these debug views is
-selected:
-
-- **Reconstructed Position** matches the existing repeating world-position
-  visualization.
-- **Reconstructed Normal** displays the final world normal after tangent-space
-  normal-map sampling.
-- **Reconstructed UV** displays fractional texture coordinates.
-- **Reconstructed Material ID** assigns one stable colour per material index.
-- **Reconstructed Instance ID** combines the scene-instance index and entity
-  identifier into a stable colour.
-- **Reconstructed Tangent** displays the orthonormalized tangent after the
-  tangent frame has been rebuilt around the final normal.
-
-Each 8×8 compute tile reads the part and primitive identifiers, decodes either
+The focused reconstruction shader reads each 8×8 tile's part and primitive
+identifiers, decodes either
 16-bit or 32-bit mesh indices, loads the three vertices, renormalizes the stored
 barycentrics, and interpolates the selected attributes. Tangent-space normal
 maps are sampled with reconstructed UV gradients so mip selection tracks the
 derivative-based sampling used by Forward PBR. Magenta output means a stored
 primitive index exceeded its part's index range.
 
-Reconstruction views display their selected compute-reconstructed attribute
-directly across the viewport. They do not apply the PBR comparison's red error
-overlay, so position, normal, UV, material, instance, and tangent channels
-remain independently readable while diagnosing stored visibility data.
+These transitional channels are not scheduled by the default renderer and do
+not appear in the viewport dropdown. Their shader and pass remain available to
+focused renderer tests while the raw visibility split is the supported live
+diagnostic.
 
 ## Compute PBR Validation
 
-Select **Visibility PBR** to validate the first complete compute-shading path.
+The focused **Visibility PBR** diagnostic validates the compute-shading path.
 The left half is conventional Forward+ PBR rendered into an `RGBA16Float`
 reference target. The right half reconstructs the same world position,
 geometric normal, tangent frame, texture coordinates, material, explicit
@@ -158,35 +149,44 @@ a cooperative consumer of it rather than a second light-culling system.
 The 1,024-entry set and compact list consume 8 KiB of threadgroup memory and
 cover the worst-case union of all sixteen 64-light depth clusters without
 drawing or shading a silently truncated light set.
+Tiles with no covered geometry take a group-uniform early exit before clearing
+the 1,024-entry light hash. They evaluate only the sky path, so sparse scenes
+do not pay the light-list setup cost across the entire viewport.
 The dispatch runs in a compute encoder on the graphics queue because it consumes
 the same-frame visibility raster. The earlier culling and cluster assignment
 remain eligible for async compute ahead of graphics work.
 
-This view is deliberately a validation path. Forward PBR remains the default
-opaque renderer until image differences are understood and measured.
+The default renderer does not schedule the Forward PBR reference or expose
+this transitional mode. All ordinary lit and material debug modes present
+compute shading directly without a second opaque draw.
+
+The reconstruction and PBR parity modes remain internal diagnostics and are
+not listed in the normal viewport dropdown. The public dropdown retains the
+raw **Visibility Buffer** split view alongside the regular Lit and material
+channels.
 
 ## Performance Characteristics
 
 Identifiers cost eight bytes per pixel and barycentrics cost four, for twelve
 bytes per pixel excluding the already-owned depth texture. This is about 23.7
-MiB at 1920×1080 and 94.9 MiB at 3840×2160. Phase one adds one depth-tested
-opaque raster pass but performs no material or texture evaluation in that
-pass. The `RGBA16Float` reconstruction and raster-reference diagnostics add
-eight bytes per pixel each, bringing active comparison storage to twenty-eight
-bytes per pixel excluding depth. Both diagnostic textures allocate lazily for
-visibility validation modes. Reconstruction dispatch and attribute-reference
-raster work run only for the six reconstruction modes. Compute PBR and its full
-PBR reference run only for **Visibility PBR**. The identifier raster and its
-textures are also inactive outside visibility debug views, so ordinary Forward+
-rendering does not pay the temporary dual-raster validation cost. Selecting any
-visibility debug view adds one fullscreen composite; other views record no
-visibility raster, reconstruction, shading, reference, or composite work.
+MiB at 1920×1080 and 94.9 MiB at 3840×2160. The visibility raster performs no
+material or texture evaluation. Its `RGBA16Float` compute output adds eight
+bytes per pixel. Focused parity plans can add an eight-byte-per-pixel
+raster-reference target. Ordinary views issue one opaque visibility draw stream, one 8×8 shading
+dispatch, and one fullscreen presentation; they do not redraw opaque geometry
+through Forward PBR. The default plan does not record reconstruction or
+Forward PBR reference passes.
 
-The staged phase-two tile path deduplicates cluster lights now. A later
-optimization can apply the same cooperative loading to DDGI probe indices and
-preload SH and visibility data into group-shared memory before opaque compute
-shading becomes the default. Transparent geometry continues to use clustered
-Forward+.
+The tile path deduplicates cluster lights now. A later optimization can apply
+the same cooperative loading to DDGI probe indices and preload radiance and
+visibility data into group-shared memory. Transparent geometry will continue
+to use clustered Forward+ when authored transparency support is introduced.
+Scenes with eight or fewer lights skip the full-screen cluster-assignment
+dispatch and loop that short light array directly in covered visibility tiles.
+The clustered broad phase turns on only above that threshold, removing its
+fixed viewport-and-depth-slice cost from trivial and lightly lit scenes.
+The direct path fills the compact tile list linearly and does not initialize
+the 1,024-entry hash.
 
 ## Cross-References
 

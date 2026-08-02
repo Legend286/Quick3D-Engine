@@ -81,6 +81,8 @@ float4 fragmentMain(VisibilityDebugVertexOutput input) : SV_Target
     uint2 pixel = min(
         uint2(input.position.xy),
         dimensions - 1u);
+    if (push.mode <= 12u)
+        return reconstructionOutput.Load(int3(pixel, 0));
     float depth = sceneDepth.Load(int3(pixel, 0));
     if (depth >= 0.999999 && push.mode != 20u)
         return float4(0.012, 0.015, 0.022, 1.0);

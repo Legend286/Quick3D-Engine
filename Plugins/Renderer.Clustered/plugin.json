@@ -1,8 +1,8 @@
 {
   "version": 1,
   "id": "core.renderer.clustered",
-  "name": "Clustered Forward Renderer",
-  "description": "Required mesh-driven clustered Forward+ raster renderer.",
+  "name": "Visibility Buffer Renderer",
+  "description": "Required mesh-driven visibility renderer with clustered lighting.",
   "plugin_version": "1.0.0",
   "kind": "Renderer",
   "required": true,

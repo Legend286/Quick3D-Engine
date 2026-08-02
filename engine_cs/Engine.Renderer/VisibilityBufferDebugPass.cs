@@ -8,7 +8,7 @@ using Engine.RenderGraph;
 
 namespace Engine.Renderer;
 
-/// <summary>Displays visibility data and amplified reconstruction comparisons.</summary>
+/// <summary>Presents visibility shading and diagnostic comparisons.</summary>
 internal sealed class VisibilityBufferDebugPass : RenderPass, IDisposable
 {
     [StructLayout(LayoutKind.Sequential)]
@@ -31,7 +31,7 @@ internal sealed class VisibilityBufferDebugPass : RenderPass, IDisposable
         Renderer renderer)
     {
         _renderer = renderer;
-        Name = "Visibility Buffer Debug";
+        Name = "Visibility Present";
         string source = renderer.LoadShaderSource(
             "shaders/visibility_buffer_debug.slang",
             contentRoot);
@@ -58,7 +58,7 @@ internal sealed class VisibilityBufferDebugPass : RenderPass, IDisposable
             RhiNative.TextureFormat.Bgra8Unorm,
             enableDepth: false);
         _pipeline.SetDebugName(
-            "Visibility Buffer Debug Composite",
+            "Visibility Buffer Present Composite",
             "Visibility Buffer");
     }
 
@@ -75,9 +75,6 @@ internal sealed class VisibilityBufferDebugPass : RenderPass, IDisposable
             ResourceState.ShaderRead);
         builder.Read(
             RenderGraphResources.VisibilityReconstructionHandle,
-            ResourceState.ShaderRead);
-        builder.Read(
-            RenderGraphResources.VisibilityReferenceHandle,
             ResourceState.ShaderRead);
         builder.Write(
             RenderGraphResources.BackBufferHandle,
@@ -111,10 +108,7 @@ internal sealed class VisibilityBufferDebugPass : RenderPass, IDisposable
                 out RhiTexture depth) ||
             !context.TryGetTexture(
                 RenderGraphResources.VisibilityReconstructionHandle,
-                out RhiTexture reconstruction) ||
-            !context.TryGetTexture(
-                RenderGraphResources.VisibilityReferenceHandle,
-                out RhiTexture reference))
+                out RhiTexture reconstruction))
         {
             return;
         }
@@ -142,7 +136,7 @@ internal sealed class VisibilityBufferDebugPass : RenderPass, IDisposable
         sink.BindTexture(1, barycentrics);
         sink.BindTexture(2, depth);
         sink.BindTexture(3, reconstruction);
-        sink.BindTexture(4, reference);
+        sink.BindTexture(4, reconstruction);
         sink.Draw(3);
         sink.EndPass();
     }

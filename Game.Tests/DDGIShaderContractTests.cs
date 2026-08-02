@@ -202,6 +202,9 @@ public sealed class DDGIShaderContractTests
         Assert.Contains("LoadDirectionalVisibility", sampling);
         Assert.Contains("worldPosition - probePos", sampling);
         Assert.Contains("EvaluateDDGIShading(", pbr);
+        Assert.Contains(
+            "input.worldPos,\n        N,\n        V,\n        albedo,\n        metallic,\n        roughness",
+            pbr);
         Assert.Contains("result.irradiance * albedo *", sampling);
         Assert.DoesNotContain(
             "result.irradiance * albedo * ambientOcclusion",
@@ -234,6 +237,9 @@ public sealed class DDGIShaderContractTests
         Assert.Contains("pbrPush.DDGIVolumeState = volumeState.DeviceAddress", pass);
         Assert.Contains("pbrPush.DDGIProbeStates = probeStates.DeviceAddress", pass);
         Assert.Contains("pbrPush.DDGIProbeSpecularStates", pass);
+        Assert.Contains(
+            "sink.UseBuffer(resources.ProbeSpecularStates, 1)",
+            pass);
 
         string update = File.ReadAllText(
             ResolveShader("ddgi_probe_update.slang"));

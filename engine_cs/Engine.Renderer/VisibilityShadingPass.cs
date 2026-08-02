@@ -120,9 +120,14 @@ internal sealed class VisibilityShadingPass : RenderPass, IDisposable
     {
         _pipeline.Dispose();
         _shader.Dispose();
+        _owner.Dispose();
     }
 
     internal static bool IsShadingView(ViewportDebugView view)
+        => view != ViewportDebugView.VisibilityBuffer &&
+            !VisibilityReconstructionPass.IsReconstructionView(view);
+
+    internal static bool IsComparisonView(ViewportDebugView view)
         => view == ViewportDebugView.VisibilityPbr;
 
     private static RhiShader Compile(

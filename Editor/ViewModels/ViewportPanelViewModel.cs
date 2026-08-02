@@ -67,7 +67,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
     /// <summary>Gets renderer choices displayed in viewport chrome.</summary>
     public string[] RendererModes { get; } =
         [
-            "Clustered Forward Renderer",
+            "Visibility Buffer Renderer",
             "Path Tracing Renderer"
         ];
 
@@ -97,14 +97,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         "UV",
         "Tangent",
         "Bitangent",
-        "Visibility Buffer",
-        "Reconstructed Position",
-        "Reconstructed Normal",
-        "Reconstructed UV",
-        "Reconstructed Material ID",
-        "Reconstructed Instance ID",
-        "Reconstructed Tangent",
-        "Visibility PBR"
+        "Visibility Buffer"
     ];
 
     /// <summary>Gets the composite debug-view dropdown: base views +
@@ -171,7 +164,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
 
     [ObservableProperty]
     private string _selectedRendererMode =
-        "Clustered Forward Renderer";
+        "Visibility Buffer Renderer";
 
     partial void OnSelectedRendererModeChanged(string value)
     {
@@ -180,7 +173,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 "core.renderer.path-tracing"))
         {
             SelectedRendererMode =
-                "Clustered Forward Renderer";
+                "Visibility Buffer Renderer";
             OnPluginEnableRequested?.Invoke(
                 "core.renderer.path-tracing");
             return;
@@ -207,9 +200,12 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
 
     partial void OnSelectedDebugViewChanged(string value)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (string.IsNullOrWhiteSpace(value) ||
+            !DebugViews.Contains(value))
         {
-            SelectedDebugView = _lastValidDebugView;
+            SelectedDebugView = DebugViews.Contains(_lastValidDebugView)
+                ? _lastValidDebugView
+                : "Lit";
             return;
         }
         _lastValidDebugView = value;
@@ -318,6 +314,11 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         {
             if (!DebugViews.Contains(viewName))
                 DebugViews.Add(viewName);
+        }
+        if (!DebugViews.Contains(SelectedDebugView))
+        {
+            _lastValidDebugView = "Lit";
+            SelectedDebugView = "Lit";
         }
     }
 
@@ -526,7 +527,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 SelectedRendererMode =
                     mode == ViewportRendererMode.PathTracing
                         ? "Path Tracing Renderer"
-                        : "Clustered Forward Renderer";
+                        : "Visibility Buffer Renderer";
             });
         };
         _gameLoop.ProjectionModeChanged += mode =>
@@ -549,7 +550,10 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
             }
             Dispatcher.UIThread.Post(() =>
             {
-                SelectedDebugView = GetDebugViewLabel(mode);
+                string label = GetDebugViewLabel(mode);
+                SelectedDebugView = DebugViews.Contains(label)
+                    ? label
+                    : "Lit";
             });
         };
         _gameLoop.EntityTransformEditStarted += entity =>
@@ -702,7 +706,7 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                     "Path Tracing Renderer")
             {
                 SelectedRendererMode =
-                    "Clustered Forward Renderer";
+                    "Visibility Buffer Renderer";
             }
             RequestRender();
         });

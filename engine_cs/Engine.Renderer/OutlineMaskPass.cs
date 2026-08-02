@@ -65,15 +65,7 @@ public sealed class OutlineMaskPass : RenderPass, IDisposable
     {
         ulong selectedId = _renderer.SelectedEntity;
         if (selectedId == 0)
-        {
-            // Even if not drawn, we must clear the mask!
-            if (context.TryGetTexture(RenderGraphResources.OutlineMaskHandle, out RhiTexture emptyMask))
-            {
-                sink.BeginRenderPass(emptyMask, Engine.CBindings.RhiNative.LoadOp.Clear, Engine.CBindings.RhiNative.StoreOp.Store);
-                sink.EndPass();
-            }
             return;
-        }
 
         if (!context.TryGetTexture(RenderGraphResources.OutlineMaskHandle, out RhiTexture maskTarget)) return;
         if (!context.TryGetTexture(RenderGraphResources.DepthBufferHandle, out RhiTexture depthTarget)) return;
