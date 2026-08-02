@@ -29,6 +29,7 @@ internal sealed class AnimationFrameContext : IDisposable
         public required ulong MeshId { get; init; }
         public required Mesh Mesh { get; init; }
         public required uint VertexCount { get; init; }
+        public required uint BoneCount { get; init; }
         public required RhiBuffer OutputBuffer { get; init; }
         public required ulong OutputAddress { get; init; }
         public required Vector3 OutputOffset { get; init; }
@@ -51,6 +52,7 @@ internal sealed class AnimationFrameContext : IDisposable
     {
         public required Mesh Mesh { get; init; }
         public required uint VertexCount { get; init; }
+        public required uint BoneCount { get; init; }
         public required Vector3 OutputOffset { get; init; }
         public List<ulong> Members { get; } = new();
     }
@@ -73,10 +75,14 @@ internal sealed class AnimationFrameContext : IDisposable
         entities.Sort();
         foreach (ulong entityId in entities)
         {
+            SkeletonAsset? skeleton = null;
+            AnimationClipAsset? clip = null;
             if (!world.TryGet(entityId, out AnimatorComponent animator) ||
                 (animator.Flags & AnimatorComponent.ActiveFlag) == 0 ||
-                AnimationAssetRegistry.GetSkeleton(animator.SkeletonId) == null ||
-                AnimationAssetRegistry.GetClip(animator.BaseClipId) == null)
+                (skeleton = AnimationAssetRegistry.GetSkeleton(animator.SkeletonId)) == null ||
+                (clip = AnimationAssetRegistry.GetClip(animator.BaseClipId)) == null ||
+                clip.Metadata.SkeletonId != animator.SkeletonId ||
+                !IsValidAnimationPair(skeleton, clip))
             {
                 continue;
             }
@@ -113,6 +119,7 @@ internal sealed class AnimationFrameContext : IDisposable
                     {
                         Mesh = mesh,
                         VertexCount = mesh.VertexCount,
+                        BoneCount = checked((uint)skeleton!.Bones.Length),
                         OutputOffset = part.SkinnedOutputOffset,
                     };
                     groups.Add(key, group);
@@ -148,10 +155,27 @@ internal sealed class AnimationFrameContext : IDisposable
                 MeshId = key.MeshId,
                 Mesh = group.Mesh,
                 VertexCount = group.VertexCount,
+                BoneCount = group.BoneCount,
                 OutputBuffer = buffer,
                 OutputAddress = address,
                 OutputOffset = group.OutputOffset,
             });
+        }
+    }
+
+    private static bool IsValidAnimationPair(
+        SkeletonAsset skeleton,
+        AnimationClipAsset clip)
+    {
+        try
+        {
+            skeleton.Validate();
+            clip.Validate();
+            return true;
+        }
+        catch (InvalidDataException)
+        {
+            return false;
         }
     }
 

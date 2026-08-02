@@ -1644,10 +1644,8 @@ static int32_t metal_submit(RhiDevice* d, RhiCommandList* cl) {
         delete cli;
         return 0;
     }
-}
-
-static void metal_cmd_pipeline_barrier(RhiCommandList* cl, uint32_t count,
-                                        const RhiBarrier* barriers) {
+}static void metal_cmd_pipeline_barrier(RhiCommandList* cl, uint32_t count,
+                                         const RhiBarrier* barriers) {
     // Metal handles pipeline barriers natively except on specific explicit memory
     // hazards inside a single encoder. Between passes, it's a no-op on Metal.
 }

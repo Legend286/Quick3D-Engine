@@ -76,7 +76,7 @@ struct SkinSourceVertexGpu
     float3 normal;
     float2 texcoord;
     float4 tangent;
-    float4 boneIndices;
+    uint4 boneIndices;
     float4 boneWeights;
 };
 
@@ -86,7 +86,7 @@ struct SkinWorkItemGpu
     Vertex* outputVertices;
     float4x4* skinMatrices;
     uint vertexCount;
-    uint pad;
+    uint boneCount;
     float3 outputOffset;
     uint outputPad;
 };
@@ -171,23 +171,24 @@ float4x4 ComposeTransform(LocalTransformGpu transform)
     float wy = q.w * y2;
     float wz = q.w * z2;
     float3 scale = transform.scale.xyz;
+    float3 translation = transform.translation.xyz;
 
     return float4x4(
         (1.0 - (yy + zz)) * scale.x,
-        (xy + wz) * scale.x,
-        (xz - wy) * scale.x,
-        0.0,
         (xy - wz) * scale.y,
-        (1.0 - (xx + zz)) * scale.y,
-        (yz + wx) * scale.y,
-        0.0,
         (xz + wy) * scale.z,
+        translation.x,
+        (xy + wz) * scale.x,
+        (1.0 - (xx + zz)) * scale.y,
         (yz - wx) * scale.z,
+        translation.y,
+        (xz - wy) * scale.x,
+        (yz + wx) * scale.y,
         (1.0 - (xx + yy)) * scale.z,
+        translation.z,
         0.0,
-        transform.translation.x,
-        transform.translation.y,
-        transform.translation.z,
+        0.0,
+        0.0,
         1.0);
 }
 
@@ -223,67 +224,8 @@ LocalTransformGpu SampleClip(
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void animateMain(uint3 dispatchThreadId : SV_DispatchThreadID)
+void buildAnimationMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    if (dispatchThreadId.y != 0u)
-    {
-        uint workIndex = dispatchThreadId.y - 1u;
-        if (workIndex >= push.skinWorkItemCount)
-            return;
-
-        SkinWorkItemGpu work = push.skinWorkItems[workIndex];
-        uint vertexIndex = dispatchThreadId.x;
-        if (vertexIndex >= work.vertexCount)
-            return;
-
-        SkinSourceVertexGpu source = work.sourceVertices[vertexIndex];
-        uint4 boneIndices = uint4(round(source.boneIndices));
-        float4 weights = max(source.boneWeights, 0.0);
-        float weightSum = weights.x + weights.y + weights.z + weights.w;
-        if (weightSum <= 1.0e-6)
-        {
-            boneIndices = uint4(0u, 0u, 0u, 0u);
-            weights = float4(1.0, 0.0, 0.0, 0.0);
-        }
-        else
-        {
-            weights /= weightSum;
-        }
-
-        float4 position = float4(0.0, 0.0, 0.0, 0.0);
-        float4 normal = float4(0.0, 0.0, 0.0, 0.0);
-        float4 tangent = float4(0.0, 0.0, 0.0, 0.0);
-        float4 sourceTangent = float4(source.tangent.xyz, 0.0);
-        for (uint influence = 0u; influence < 4u; ++influence)
-        {
-            float weight = weights[influence];
-            if (weight <= 0.0)
-                continue;
-            float4x4 matrix = work.skinMatrices[boneIndices[influence]];
-            position += mul(matrix, float4(source.position, 1.0)) * weight;
-            normal += mul(matrix, float4(source.normal, 0.0)) * weight;
-            tangent += mul(matrix, sourceTangent) * weight;
-        }
-
-        Vertex output;
-        position.xyz += work.outputOffset;
-        output.px = position.x;
-        output.py = position.y;
-        output.pz = position.z;
-        output.nx = normalize(normal.xyz).x;
-        output.ny = normalize(normal.xyz).y;
-        output.nz = normalize(normal.xyz).z;
-        output.u = source.texcoord.x;
-        output.v = source.texcoord.y;
-        float3 normalizedTangent = normalize(tangent.xyz);
-        output.tx = normalizedTangent.x;
-        output.ty = normalizedTangent.y;
-        output.tz = normalizedTangent.z;
-        output.tw = source.tangent.w;
-        work.outputVertices[vertexIndex] = output;
-        return;
-    }
-
     uint animatorIndex = dispatchThreadId.x;
     if (animatorIndex >= push.stateCount)
         return;
@@ -298,11 +240,6 @@ void animateMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     AnimationClipGpu clip = push.clips[state.baseClipId];
     bool looping = (state.flags & 2u) != 0u ||
         (clip.flags & 1u) != 0u;
-    if ((state.flags & 8u) == 0u)
-        state.baseTime += push.deltaTime * state.playbackRate;
-    if (looping && clip.duration > 0.0f)
-        state.baseTime = fmod(state.baseTime, clip.duration);
-
     LocalTransformGpu* pose = push.localPoses + state.outputPoseOffset;
     float4x4* global = push.globalMatrices + state.outputMatrixOffset;
     float4x4* skin = push.skinMatrices + state.outputMatrixOffset;
@@ -345,5 +282,78 @@ void animateMain(uint3 dispatchThreadId : SV_DispatchThreadID)
             push.inverseBindMatrices[skeleton.inverseBindOffset + bone]);
     }
 
-    push.states[animatorIndex] = state;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void skinMain(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint workIndex = dispatchThreadId.y;
+    if (workIndex >= push.skinWorkItemCount)
+        return;
+
+    SkinWorkItemGpu work = push.skinWorkItems[workIndex];
+    uint vertexIndex = dispatchThreadId.x;
+    if (vertexIndex >= work.vertexCount)
+        return;
+
+    SkinSourceVertexGpu source = work.sourceVertices[vertexIndex];
+    uint4 boneIndices = source.boneIndices;
+    float4 weights = max(source.boneWeights, 0.0);
+    float weightSum = weights.x + weights.y + weights.z + weights.w;
+    if (weightSum <= 1.0e-6)
+    {
+        boneIndices = uint4(0u, 0u, 0u, 0u);
+        weights = float4(1.0, 0.0, 0.0, 0.0);
+    }
+    else
+    {
+        weights /= weightSum;
+    }
+
+    float4 sourceTangent = float4(source.tangent.xyz, 0.0);
+    float4 position = float4(0.0, 0.0, 0.0, 0.0);
+    float4 normal = float4(0.0, 0.0, 0.0, 0.0);
+    float4 tangent = float4(0.0, 0.0, 0.0, 0.0);
+    bool validVertex = true;
+    for (uint influence = 0u; influence < 4u; ++influence)
+    {
+        float weight = weights[influence];
+        if (weight <= 1.0e-6)
+            continue;
+        uint boneIndex = boneIndices[influence];
+        if (boneIndex >= work.boneCount)
+        {
+            validVertex = false;
+            break;
+        }
+        float4x4 matrix = work.skinMatrices[boneIndex];
+        position += mul(matrix, float4(source.position, 1.0)) * weight;
+        normal += mul(matrix, float4(source.normal, 0.0)) * weight;
+        tangent += mul(matrix, sourceTangent) * weight;
+    }
+
+    if (!validVertex)
+    {
+        position = float4(source.position, 1.0);
+        normal = float4(source.normal, 0.0);
+        tangent = sourceTangent;
+    }
+
+    Vertex output;
+    position.xyz += work.outputOffset;
+    output.px = position.x;
+    output.py = position.y;
+    output.pz = position.z;
+    output.nx = normalize(normal.xyz).x;
+    output.ny = normalize(normal.xyz).y;
+    output.nz = normalize(normal.xyz).z;
+    output.u = source.texcoord.x;
+    output.v = source.texcoord.y;
+    float3 normalizedTangent = normalize(tangent.xyz);
+    output.tx = normalizedTangent.x;
+    output.ty = normalizedTangent.y;
+    output.tz = normalizedTangent.z;
+    output.tw = source.tangent.w;
+    work.outputVertices[vertexIndex] = output;
 }

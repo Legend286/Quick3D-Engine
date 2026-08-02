@@ -1172,8 +1172,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             passes.AddRange(pluginPlan.Passes);
         }
 
-        if (!usePathTracer &&
-            HasActiveGpuAnimator())
+        if (!usePathTracer)
         {
             passes.Insert(
                 0,
@@ -1930,19 +1929,6 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         return (ulong)declaration.Texture.Width *
             declaration.Texture.Height *
             bytesPerPixel;
-    }
-
-    private bool HasActiveGpuAnimator()
-    {
-        foreach (ulong entity in _world.Entities)
-        {
-            if (_world.TryGet(entity, out AnimatorComponent animator) &&
-                (animator.Flags & AnimatorComponent.ActiveFlag) != 0)
-            {
-                return true;
-            }
-        }
-        return false;
     }
 
     internal ulong RequestPick(uint x, uint y, uint w, uint h)

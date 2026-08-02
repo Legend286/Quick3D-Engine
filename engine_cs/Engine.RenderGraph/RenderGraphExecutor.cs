@@ -910,6 +910,7 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
 
     public void BeginComputePass(string? name = null) => Recorder.BeginComputePass(name);
     public void EndComputePass() => Recorder.EndComputePass();
+    public void PipelineBarrier(ReadOnlySpan<RhiNative.Barrier> barriers) => Recorder.PipelineBarrier(barriers);
 
     public void EndPass() => Recorder.EndPass();
     public void Submit() => Recorder.Submit();

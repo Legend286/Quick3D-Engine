@@ -50,6 +50,7 @@ public interface ICommandSink
  
     public void BeginComputePass(string? name = null);
     public void EndComputePass();
+    public void PipelineBarrier(ReadOnlySpan<RhiNative.Barrier> barriers);
 
     public void EndPass();
     public void Submit();

@@ -13,12 +13,12 @@ using Engine.Scene;
 
 namespace Engine.Renderer;
 
-/// <summary>Runs GPU animation-clock, dense-clip sampling, hierarchy, and skin-matrix work.</summary>
+/// <summary>Runs ordered GPU animation-matrix generation followed by vertex skinning.</summary>
 /// <remarks>
-/// The pass is intentionally opt-in through <see cref="AnimatorComponent"/>.
-/// Static scene geometry remains on the existing visibility path. Skinned mesh
-/// source/output stream binding consumes the versioned MSH2 skinned-mesh
-/// stream when an imported model provides bone influences.
+/// The pass is compiled into every raster plan so shader and graph resources are
+/// ready before animated content appears. It remains dormant when the current
+/// world has no valid animated deforming work. Static scene geometry remains on
+/// the existing visibility path.
 /// </remarks>
 internal sealed class GpuAnimationPass : RenderPass, IDisposable
 {
@@ -54,8 +54,10 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
     private readonly RhiDevice _device;
     private readonly IEntityStore _world;
     private readonly AnimationFrameContext _animationContext;
-    private readonly RhiShader _shader;
-    private readonly RhiPipeline _pipeline;
+    private readonly RhiShader _animationShader;
+    private readonly RhiShader _skinShader;
+    private readonly RhiPipeline _animationPipeline;
+    private readonly RhiPipeline _skinPipeline;
     private readonly ResourceHandle _skeletonHandle = NextHandle();
     private readonly ResourceHandle _boneHandle = NextHandle();
     private readonly ResourceHandle _hierarchyLevelHandle = NextHandle();
@@ -78,15 +80,14 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
     private RhiBuffer? _referencePoseBuffer;
     private RhiBuffer? _clipBuffer;
     private RhiBuffer? _sampleBuffer;
-    private readonly RhiBuffer?[] _stateBuffers = new RhiBuffer?[1];
-    private readonly bool[] _stateBufferInitialized = new bool[1];
+    private readonly RhiBuffer?[] _stateBuffers = new RhiBuffer?[PoseBufferCount];
     private readonly RhiBuffer?[] _localPoseBuffers = new RhiBuffer?[PoseBufferCount];
     private readonly RhiBuffer?[] _globalMatrixBuffers = new RhiBuffer?[PoseBufferCount];
     private readonly RhiBuffer?[] _skinMatrixBuffers = new RhiBuffer?[PoseBufferCount];
-    private RhiBuffer? _skinWorkBuffer;
+    private readonly RhiBuffer?[] _skinWorkBuffers = new RhiBuffer?[PoseBufferCount];
+    private readonly List<RhiBuffer> _retiredBuffers = new();
 
     private int _assetFingerprint;
-    private int _stateFingerprint;
     private bool _assetsUploaded;
     private uint _skeletonCount;
     private uint _clipCount;
@@ -108,15 +109,24 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
         string source = renderer.LoadShaderSource(
             "shaders/animation_gpu.slang",
             contentRoot);
-        _shader = RhiShader.FromSource(
+        _animationShader = RhiShader.FromSource(
             device,
             source,
-            "animateMain",
+            "buildAnimationMain",
             RhiNative.ShaderStage.Compute,
             renderer.ActiveShaderIncludeDirs,
             renderer.ActiveShaderCliArgs);
-        _pipeline = RhiPipeline.CreateCompute(device, _shader);
-        _pipeline.SetDebugName("GPU Animation Pose", "Animation");
+        _skinShader = RhiShader.FromSource(
+            device,
+            source,
+            "skinMain",
+            RhiNative.ShaderStage.Compute,
+            renderer.ActiveShaderIncludeDirs,
+            renderer.ActiveShaderCliArgs);
+        _animationPipeline = RhiPipeline.CreateCompute(device, _animationShader);
+        _skinPipeline = RhiPipeline.CreateCompute(device, _skinShader);
+        _animationPipeline.SetDebugName("GPU Animation Matrices", "Animation");
+        _skinPipeline.SetDebugName("GPU Animation Skinning", "Animation");
     }
 
     public override void Setup(RenderGraphBuilder builder)
@@ -143,24 +153,28 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
         builder.Read(_referencePoseHandle, ResourceState.ShaderRead);
         builder.Read(_clipHandle, ResourceState.ShaderRead);
         builder.Read(_sampleHandle, ResourceState.ShaderRead);
-        builder.ReadWrite(_stateHandle, ResourceState.UnorderedAccess);
+        builder.Read(_stateHandle, ResourceState.ShaderRead);
         builder.Write(_localPoseHandle, ResourceState.UnorderedAccess);
         builder.Write(_globalMatrixHandle, ResourceState.UnorderedAccess);
         builder.Write(_skinMatrixHandle, ResourceState.UnorderedAccess);
-        builder.Write(_skinWorkHandle, ResourceState.UnorderedAccess);
+        builder.Read(_skinWorkHandle, ResourceState.ShaderRead);
     }
 
     public override unsafe void Execute(
         ICommandSink sink,
         RenderGraphContext context)
     {
+        AdvanceAnimatorTimes();
         _animationContext.PrepareFrame(context.FrameNumber, _world);
-        if (!TryBuildStates(out List<GpuAnimatorState> states, out uint totalBones))
+        if (!TryBuildStates(
+                out List<GpuAnimatorState> states,
+                out List<ulong> entityIds,
+                out uint totalBones))
             return;
 
         UploadImmutableAssets();
-        int stateBufferIndex = 0;
         int poseBufferIndex = (int)(context.FrameNumber % PoseBufferCount);
+        int stateBufferIndex = poseBufferIndex;
         RhiBuffer stateBuffer = EnsureRuntimeBuffer(
             _stateBuffers,
             stateBufferIndex,
@@ -181,29 +195,19 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
         {
             GpuAnimatorState state = states[stateIndex];
             _animationContext.SetSkinMatrices(
-                state.EntityId,
+                entityIds[stateIndex],
                 checked(skinMatrixBuffer.DeviceAddress +
                     (ulong)state.OutputMatrixOffset * 64ul));
         }
         SkinWorkItemGpu[] skinWorkItems = BuildSkinWorkItems();
+        RhiBuffer skinWorkBuffer = EnsureRuntimeBuffer(
+            _skinWorkBuffers,
+            poseBufferIndex,
+            checked((ulong)skinWorkItems.Length *
+                (ulong)Marshal.SizeOf<SkinWorkItemGpu>()));
         if (skinWorkItems.Length > 0)
-        {
-            _skinWorkBuffer = EnsureBuffer(
-                _skinWorkBuffer,
-                checked((ulong)skinWorkItems.Length * (ulong)Marshal.SizeOf<SkinWorkItemGpu>()));
-            _skinWorkBuffer.Upload(skinWorkItems);
-        }
-        int stateFingerprint = ComputeStateFingerprint(states);
-        if (stateFingerprint != _stateFingerprint)
-        {
-            _stateFingerprint = stateFingerprint;
-            Array.Fill(_stateBufferInitialized, false);
-        }
-        if (!_stateBufferInitialized[stateBufferIndex])
-        {
-            stateBuffer.Upload(CollectionsMarshal.AsSpan(states));
-            _stateBufferInitialized[stateBufferIndex] = true;
-        }
+            skinWorkBuffer.Upload(skinWorkItems);
+        stateBuffer.Upload(CollectionsMarshal.AsSpan(states));
 
         DispatchData dispatch = new()
         {
@@ -219,7 +223,7 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
             LocalPoses = localPoseBuffer.DeviceAddress,
             GlobalMatrices = globalMatrixBuffer.DeviceAddress,
             SkinMatrices = skinMatrixBuffer.DeviceAddress,
-            SkinWorkItems = _skinWorkBuffer?.DeviceAddress ?? 0,
+            SkinWorkItems = skinWorkBuffer.DeviceAddress,
             SkinWorkItemCount = (uint)skinWorkItems.Length,
             DeltaTime = _deltaTime,
             StateCount = (uint)states.Count,
@@ -227,8 +231,8 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
             ClipTableCount = _clipCount,
         };
 
-        sink.BeginComputePass(Name);
-        sink.BindPipeline(_pipeline);
+        sink.BeginComputePass("GPU Animation Matrices");
+        sink.BindPipeline(_animationPipeline);
         sink.UseBuffer(_skeletonBuffer, 1);
         sink.UseBuffer(_boneBuffer, 1);
         sink.UseBuffer(_hierarchyLevelBuffer, 1);
@@ -237,12 +241,35 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
         sink.UseBuffer(_referencePoseBuffer, 1);
         sink.UseBuffer(_clipBuffer, 1);
         sink.UseBuffer(_sampleBuffer, 1);
-        sink.UseBuffer(stateBuffer, 2);
+        sink.UseBuffer(stateBuffer, 1);
         sink.UseBuffer(localPoseBuffer, 2);
         sink.UseBuffer(globalMatrixBuffer, 2);
         sink.UseBuffer(skinMatrixBuffer, 2);
-        if (_skinWorkBuffer != null)
-            sink.UseBuffer(_skinWorkBuffer, 2);
+        sink.PushConstants(0, (uint)sizeof(DispatchData), (IntPtr)(&dispatch));
+        sink.Dispatch(
+            ((uint)states.Count + 63u) / 64u,
+            1,
+            1,
+            64);
+        sink.EndComputePass();
+        if (skinWorkItems.Length == 0)
+            return;
+
+        sink.PipelineBarrier(
+            new[]
+            {
+                new RhiNative.Barrier
+                {
+                    Resource = _skinMatrixHandle.Id,
+                    StateBefore = RhiNative.ResourceState.UnorderedAccess,
+                    StateAfter = RhiNative.ResourceState.UnorderedAccess,
+                },
+            });
+
+        sink.BeginComputePass("GPU Animation Skinning");
+        sink.BindPipeline(_skinPipeline);
+        sink.UseBuffer(skinMatrixBuffer, 1);
+        sink.UseBuffer(skinWorkBuffer, 1);
         foreach (AnimationFrameContext.SkinWorkItem workItem in _animationContext.WorkItems)
         {
             sink.UseBuffer(workItem.Mesh.SkinSourceBuffer!, 1);
@@ -253,22 +280,22 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
         foreach (AnimationFrameContext.SkinWorkItem workItem in _animationContext.WorkItems)
             maximumVertexCount = Math.Max(maximumVertexCount, workItem.VertexCount);
         sink.Dispatch(
-            Math.Max(
-                ((uint)states.Count + 63u) / 64u,
-                (maximumVertexCount + 63u) / 64u),
-            skinWorkItems.Length == 0
-                ? 1u
-                : checked((uint)skinWorkItems.Length + 1u),
+            (maximumVertexCount + 63u) / 64u,
+            (uint)skinWorkItems.Length,
             1,
-            64);
+            64,
+            1,
+            1);
         sink.EndComputePass();
     }
 
     private bool TryBuildStates(
         out List<GpuAnimatorState> states,
+        out List<ulong> entityIds,
         out uint totalBones)
     {
         states = new List<GpuAnimatorState>();
+        entityIds = new List<ulong>();
         totalBones = 0;
         foreach (ulong entity in _world.Entities.OrderBy(entity => entity))
         {
@@ -298,6 +325,7 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
                 continue;
             }
             uint boneCount = checked((uint)skeleton.Bones.Length);
+            entityIds.Add(entity);
             states.Add(new GpuAnimatorState
             {
                 SkeletonId = animator.SkeletonId,
@@ -407,50 +435,31 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
 
         _skeletonCount = checked((uint)skeletonTable.Length);
         _clipCount = checked((uint)clipTable.Length);
-        _skeletonBuffer = UploadBuffer(_skeletonBuffer, skeletonTable);
-        _boneBuffer = UploadBuffer(_boneBuffer, bones.ToArray());
-        _hierarchyLevelBuffer = UploadBuffer(_hierarchyLevelBuffer, levels.ToArray());
-        _hierarchyIndexBuffer = UploadBuffer(_hierarchyIndexBuffer, hierarchyIndices.ToArray());
-        _inverseBindBuffer = UploadBuffer(_inverseBindBuffer, inverseBinds.ToArray());
-        _referencePoseBuffer = UploadBuffer(_referencePoseBuffer, referencePose.ToArray());
-        _clipBuffer = UploadBuffer(_clipBuffer, clipTable);
-        _sampleBuffer = UploadBuffer(_sampleBuffer, samples.ToArray());
+        _skeletonBuffer = UploadBuffer(_skeletonBuffer, skeletonTable, replaceExisting: true);
+        _boneBuffer = UploadBuffer(_boneBuffer, bones.ToArray(), replaceExisting: true);
+        _hierarchyLevelBuffer = UploadBuffer(_hierarchyLevelBuffer, levels.ToArray(), replaceExisting: true);
+        _hierarchyIndexBuffer = UploadBuffer(_hierarchyIndexBuffer, hierarchyIndices.ToArray(), replaceExisting: true);
+        _inverseBindBuffer = UploadBuffer(_inverseBindBuffer, inverseBinds.ToArray(), replaceExisting: true);
+        _referencePoseBuffer = UploadBuffer(_referencePoseBuffer, referencePose.ToArray(), replaceExisting: true);
+        _clipBuffer = UploadBuffer(_clipBuffer, clipTable, replaceExisting: true);
+        _sampleBuffer = UploadBuffer(_sampleBuffer, samples.ToArray(), replaceExisting: true);
         _assetFingerprint = fingerprint;
         _assetsUploaded = true;
     }
 
-    private static int ComputeStateFingerprint(
-        IReadOnlyList<GpuAnimatorState> states)
-    {
-        int fingerprint = 17;
-        foreach (GpuAnimatorState state in states)
-        {
-            fingerprint = HashCode.Combine(
-                fingerprint,
-                state.EntityId,
-                state.SkeletonId,
-                state.BaseClipId,
-                state.BaseTime,
-                state.PlaybackRate,
-                state.Flags,
-                state.Generation);
-            fingerprint = HashCode.Combine(
-                fingerprint,
-                state.OutputPoseOffset,
-                state.OutputMatrixOffset);
-        }
-        return fingerprint;
-    }
-
-    private RhiBuffer UploadBuffer<T>(RhiBuffer? existing, T[] values)
+    private RhiBuffer UploadBuffer<T>(
+        RhiBuffer? existing,
+        T[] values,
+        bool replaceExisting = false)
         where T : unmanaged
     {
         ulong required = Math.Max(
             EmptyBufferBytes,
             checked((ulong)values.Length * (ulong)Marshal.SizeOf<T>()));
-        if (existing == null || existing.Size < required)
+        if (replaceExisting || existing == null || existing.Size < required)
         {
-            existing?.Dispose();
+            if (existing != null)
+                _retiredBuffers.Add(existing);
             existing = RhiBuffer.Create(
                 _device,
                 required,
@@ -474,6 +483,7 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
                 OutputVertices = workItem.OutputAddress,
                 SkinMatrices = workItem.SkinMatricesAddress,
                 VertexCount = workItem.VertexCount,
+                BoneCount = workItem.BoneCount,
                 OutputOffset = workItem.OutputOffset,
             };
         }
@@ -485,7 +495,8 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
         required = Math.Max(required, EmptyBufferBytes);
         if (existing != null && existing.Size >= required)
             return existing;
-        existing?.Dispose();
+        if (existing != null)
+            _retiredBuffers.Add(existing);
         return RhiBuffer.Create(
             _device,
             required,
@@ -501,7 +512,8 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
         RhiBuffer? buffer = buffers[index];
         if (buffer == null || buffer.Size < required)
         {
-            buffer?.Dispose();
+            if (buffer != null)
+                _retiredBuffers.Add(buffer);
             buffer = RhiBuffer.Create(
                 _device,
                 required,
@@ -509,6 +521,57 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
             buffers[index] = buffer;
         }
         return buffer;
+    }
+
+    private void AdvanceAnimatorTimes()
+    {
+        foreach (ulong entity in _world.Entities.OrderBy(entity => entity))
+        {
+            if (!_world.TryGet(entity, out AnimatorComponent animator) ||
+                (animator.Flags & AnimatorComponent.ActiveFlag) == 0)
+            {
+                continue;
+            }
+
+            AnimationClipAsset? clip =
+                AnimationAssetRegistry.GetClip(animator.BaseClipId);
+            if (clip == null)
+                continue;
+
+            _world.Set(
+                entity,
+                AdvanceAnimatorTime(animator, clip, _deltaTime));
+        }
+    }
+
+    internal static AnimatorComponent AdvanceAnimatorTime(
+        AnimatorComponent animator,
+        AnimationClipAsset clip,
+        float deltaTime)
+    {
+        if ((animator.Flags & (1u << 3)) != 0 ||
+            !float.IsFinite(deltaTime) ||
+            !float.IsFinite(animator.PlaybackRate))
+        {
+            return animator;
+        }
+
+        float time = float.IsFinite(animator.Time)
+            ? MathF.Max(animator.Time, 0.0f)
+            : 0.0f;
+        time += MathF.Max(deltaTime, 0.0f) * animator.PlaybackRate;
+        float duration = clip.Metadata.Duration;
+        bool looping = (animator.Flags & (1u << 1)) != 0 ||
+            (clip.Metadata.Flags & (uint)AnimationClipFlags.Looping) != 0;
+        if (duration > 0.0f && float.IsFinite(duration))
+        {
+            time = looping
+                ? time % duration
+                : MathF.Min(time, duration);
+        }
+
+        animator.Time = MathF.Max(time, 0.0f);
+        return animator;
     }
 
     internal void SetDeltaTime(float deltaTime)
@@ -521,8 +584,10 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
 
     public void Dispose()
     {
-        _pipeline.Dispose();
-        _shader.Dispose();
+        _animationPipeline.Dispose();
+        _skinPipeline.Dispose();
+        _animationShader.Dispose();
+        _skinShader.Dispose();
         _skeletonBuffer?.Dispose();
         _boneBuffer?.Dispose();
         _hierarchyLevelBuffer?.Dispose();
@@ -535,8 +600,10 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
         DisposeBuffers(_localPoseBuffers);
         DisposeBuffers(_globalMatrixBuffers);
         DisposeBuffers(_skinMatrixBuffers);
-        _skinWorkBuffer?.Dispose();
-        _skinWorkBuffer = null;
+        DisposeBuffers(_skinWorkBuffers);
+        foreach (RhiBuffer buffer in _retiredBuffers)
+            buffer.Dispose();
+        _retiredBuffers.Clear();
     }
 
     private void DisposeBuffers(RhiBuffer?[] buffers)
@@ -547,7 +614,5 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
             buffers[index] = null;
         }
 
-        if (ReferenceEquals(buffers, _stateBuffers))
-            Array.Clear(_stateBufferInitialized);
     }
 }

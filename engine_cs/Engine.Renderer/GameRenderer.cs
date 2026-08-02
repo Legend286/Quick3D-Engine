@@ -796,6 +796,7 @@ public sealed class GameRenderer : IDisposable
             ulong ent = tempWorld.CreateEntity();
             tempWorld.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
             tempWorld.Set(ent, new Transform { Position = previewPosition, Scale = Vector3.One, Rotation = previewRotation });
+            AttachAnimationSidecar(tempWorld, ent, assetPath, model);
             tempWorld.Set(camEnt, GetPreviewCameraTransform(distance));
             tempWorld.Set(camEnt, GetPreviewCamera(radius, distance));
         }
@@ -892,6 +893,7 @@ public sealed class GameRenderer : IDisposable
         _previewEntity = ent;
         _world.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
         _world.Set(ent, new Transform { Position = previewPosition, Rotation = previewRotation, Scale = Vector3.One });
+        AttachAnimationSidecar(_world, ent, modelPath, model);
         _world.Set(camEnt, GetPreviewCameraTransform(_previewDistance));
         _renderer.UsePathTracer = false;
         _renderer.BuildThumbnailPlan(contentRoot);
@@ -998,6 +1000,42 @@ public sealed class GameRenderer : IDisposable
         AssertRenderThread();
         ulong requestId = _renderer.RequestPick(x, y, w, h);
         _pendingSubmeshMaterials[requestId] = materialPath;
+    }
+
+    private static void AttachAnimationSidecar(
+        IEntityStore world,
+        ulong entity,
+        string modelPath,
+        Engine.Assets.Model model)
+    {
+        string? animationPath =
+            Engine.Assets.ModelLoader.ResolveAnimationSidecar(
+                modelPath,
+                model);
+        if (animationPath == null)
+            return;
+
+        try
+        {
+            Engine.Assets.AnimationAssetImportResult animation =
+                Engine.Assets.AnimationAssetLoader.Load(animationPath);
+            world.Set(
+                entity,
+                Engine.RHI.AnimatorComponent.Create(
+                    animation.SkeletonId,
+                    animation.FirstClipId));
+            Info(
+                $"[GameRenderer] Loaded animation sidecar '{animationPath}' " +
+                $"with {animation.Skeleton.Bones.Length} bone(s).",
+                "Renderer");
+        }
+        catch (Exception ex)
+        {
+            Warn(
+                $"[GameRenderer] Failed to load animation sidecar " +
+                $"'{animationPath}': {ex.Message}",
+                "Renderer");
+        }
     }
 
     private void DrainPickResults()
