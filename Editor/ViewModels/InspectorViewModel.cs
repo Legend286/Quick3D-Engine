@@ -306,7 +306,9 @@ public partial class InspectorViewModel : ObservableObject, IDisposable
     {
         _selectedEntity = entityId;
         HasSelection = entityId.HasValue;
-        EntityName = entityId.HasValue ? $"Entity {entityId.Value}" : "No Selection";
+        EntityName = entityId.HasValue
+            ? $"Entity {EcsEntityId.GetIndex(entityId.Value)}"
+            : "No Selection";
         Refresh();
     }
 

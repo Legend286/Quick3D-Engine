@@ -125,20 +125,21 @@ public partial class HierarchyViewModel : ObservableObject, IDisposable
 
     private string DescribeEntity(ulong entityId)
     {
-        if (_world == null) return $"Entity {entityId}";
+        uint displayIndex = EcsEntityId.GetIndex(entityId);
+        if (_world == null) return $"Entity {displayIndex}";
 
         if (_world.TryGet<Engine.Scene.Components.Camera>(entityId, out _))
-            return $"Camera {entityId}";
+            return $"Camera {displayIndex}";
         if (_world.TryGet<Engine.RHI.ModelComponent>(entityId, out _))
-            return $"Model {entityId}";
+            return $"Model {displayIndex}";
         if (_world.TryGet<Engine.RHI.PointLightComponent>(entityId, out _))
-            return $"Point Light {entityId}";
+            return $"Point Light {displayIndex}";
         if (_world.TryGet<Engine.RHI.SpotLightComponent>(entityId, out _))
-            return $"Spot Light {entityId}";
+            return $"Spot Light {displayIndex}";
         if (_world.TryGet<Engine.RHI.DirectionalLightComponent>(entityId, out _))
-            return $"Directional Light {entityId}";
+            return $"Directional Light {displayIndex}";
 
-        return $"Entity {entityId}";
+        return $"Entity {displayIndex}";
     }
 
     private void UnbindWorld()
