@@ -61,6 +61,7 @@ public sealed class DDGIProbeUpdatePass :
         public ulong Lights;
         public ulong ProbeCounter;
         public ulong ProbeStates;
+        public ulong ProbeSpecularStates;
         public ulong ProbeUpdateQueue;
         public ulong Instances;
         public ulong Parts;
@@ -115,9 +116,11 @@ public sealed class DDGIProbeUpdatePass :
         builder.ImportBuffer(_atlas.ResourceHandles.ProbePositions);
         builder.ImportBuffer(_atlas.ResourceHandles.ProbeCounter);
         builder.ImportBuffer(_atlas.ResourceHandles.ProbeStates);
+        builder.ImportBuffer(_atlas.ResourceHandles.ProbeSpecularStates);
         builder.ImportBuffer(_atlas.ResourceHandles.ProbeUpdateQueue);
         builder.ImportTexture(_atlas.ResourceHandles.Irradiance);
         builder.ImportTexture(_atlas.ResourceHandles.Visibility);
+        builder.ImportTexture(_atlas.ResourceHandles.SpecularRadiance);
         builder.Read(
             _atlas.ResourceHandles.ProbePositions,
             ResourceState.ShaderRead);
@@ -131,10 +134,16 @@ public sealed class DDGIProbeUpdatePass :
             _atlas.ResourceHandles.ProbeStates,
             ResourceState.UnorderedAccess);
         builder.Write(
+            _atlas.ResourceHandles.ProbeSpecularStates,
+            ResourceState.UnorderedAccess);
+        builder.Write(
             _atlas.ResourceHandles.Irradiance,
             ResourceState.UnorderedAccess);
         builder.Write(
             _atlas.ResourceHandles.Visibility,
+            ResourceState.UnorderedAccess);
+        builder.Write(
+            _atlas.ResourceHandles.SpecularRadiance,
             ResourceState.UnorderedAccess);
     }
 
@@ -223,7 +232,7 @@ public sealed class DDGIProbeUpdatePass :
                 _atlas.IrradianceBindlessIndex,
                 _atlas.VisibilityBindlessIndex,
                 DDGIAtlasResources.AtlasWidth,
-                0f),
+                _atlas.SpecularRadianceBindlessIndex),
             OriginAndProbeCountZ = new Vector4(_atlas.Origin, 0f),
             Extent = new Vector4(
                 traceDistance,
@@ -247,6 +256,8 @@ public sealed class DDGIProbeUpdatePass :
             Lights = lightBuffer?.DeviceAddress ?? 0ul,
             ProbeCounter = _atlas.ProbeCounter.DeviceAddress,
             ProbeStates = _atlas.ProbeStates.DeviceAddress,
+            ProbeSpecularStates =
+                _atlas.ProbeSpecularStates.DeviceAddress,
             ProbeUpdateQueue = _atlas.ProbeUpdateQueue.DeviceAddress,
             Instances = instanceBuffer?.DeviceAddress ?? 0ul,
             Parts = partBuffer?.DeviceAddress ?? 0ul,
@@ -263,6 +274,7 @@ public sealed class DDGIProbeUpdatePass :
             sink.UseBuffer(lightBuffer, 1);
         sink.UseBuffer(_atlas.ProbeCounter, 1);
         sink.UseBuffer(_atlas.ProbeStates, 3);
+        sink.UseBuffer(_atlas.ProbeSpecularStates, 3);
         sink.UseBuffer(_atlas.ProbeUpdateQueue, 1);
         if (instanceBuffer != null)
             sink.UseBuffer(instanceBuffer, 1);
@@ -277,6 +289,7 @@ public sealed class DDGIProbeUpdatePass :
         }
         sink.BindTexture(0, _atlas.Irradiance);
         sink.BindTexture(4, _atlas.Visibility);
+        sink.BindTexture(8, _atlas.SpecularRadiance);
         if (useSceneTlas)
         {
             sink.BindAccelStruct(3, tlasInfo.SceneTlas!);

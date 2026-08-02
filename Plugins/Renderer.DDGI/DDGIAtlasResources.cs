@@ -25,10 +25,16 @@ public sealed class DDGIAtlasResources : IDisposable
     public const int VisibilityTileResolution = 4;
     public const int VisibilityTexelsPerProbe =
         VisibilityTileResolution * VisibilityTileResolution;
+    public const int SpecularTileResolution = 4;
+    public const int SpecularRoughnessLevels = 4;
+    public const int SpecularTexelsPerProbe =
+        SpecularTileResolution * SpecularTileResolution *
+        SpecularRoughnessLevels;
     private static int _nextGraphResourceId = 0x60000000;
 
     public RhiTexture Irradiance { get; }
     public RhiTexture Visibility { get; }
+    public RhiTexture SpecularRadiance { get; }
     public RhiBuffer ProbePositions { get; }
     public RhiBuffer GridToProbeIndex { get; }
     public RhiBuffer ProbeWorldKeys { get; }
@@ -36,11 +42,13 @@ public sealed class DDGIAtlasResources : IDisposable
     public RhiBuffer ProbeCounter { get; }
     public RhiBuffer ProbeDrawArgs { get; }
     public RhiBuffer ProbeStates { get; }
+    public RhiBuffer ProbeSpecularStates { get; }
     public RhiBuffer ProbeUpdateQueue { get; }
     public RhiBuffer VolumeState { get; }
     public RhiBuffer ProbeRequests => _probeRequests[_requestBufferIndex];
     public uint IrradianceBindlessIndex { get; }
     public uint VisibilityBindlessIndex { get; }
+    public uint SpecularRadianceBindlessIndex { get; }
     public Vector3I GridResolution { get; }
     public Vector3 Origin { get; }
     public Vector3 Extent { get; }
@@ -61,12 +69,15 @@ public sealed class DDGIAtlasResources : IDisposable
         RadianceRefreshActive;
     internal bool RadianceRefreshActive =>
         _radianceRefreshProbeBudget > 0;
+    internal bool RadianceIsInteractive =>
+        _radianceStableFrameCount < 8;
     internal DDGIWorldProbeCache WorldCache { get; }
     private readonly RhiBuffer[] _probeRequests = new RhiBuffer[3];
     private int _requestBufferIndex;
     private bool _hasObservedRadianceRevision;
     private uint _observedRadianceRevision;
     private int _radianceRefreshProbeBudget;
+    private int _radianceStableFrameCount;
     private int _persistentScanCursor;
 
     internal void TrackRadianceRevision(
@@ -76,10 +87,14 @@ public sealed class DDGIAtlasResources : IDisposable
         if (_hasObservedRadianceRevision &&
             _observedRadianceRevision == radianceRevision)
         {
+            _radianceStableFrameCount = Math.Min(
+                _radianceStableFrameCount + 1,
+                1024);
             return;
         }
         _hasObservedRadianceRevision = true;
         _observedRadianceRevision = radianceRevision;
+        _radianceStableFrameCount = 0;
         _radianceRefreshProbeBudget = Math.Max(
             DDGIProbeUpdatePass.MaxProbesPerFrame,
             checked(allocatedProbeCount * 2));
@@ -152,6 +167,8 @@ public sealed class DDGIAtlasResources : IDisposable
             new ResourceHandle(NextGraphResourceId()),
             new ResourceHandle(NextGraphResourceId()),
             new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()),
+            new ResourceHandle(NextGraphResourceId()),
             new ResourceHandle(NextGraphResourceId()));
         GridResolution = baseGridResolution;
         Origin = origin;
@@ -191,6 +208,18 @@ public sealed class DDGIAtlasResources : IDisposable
                     AtlasWidth - 1) / AtlasWidth),
             RhiNative.TextureFormat.Rgba16Float);
         Visibility.SetDebugName("DDGI Visibility Atlas", "DDGI");
+
+        SpecularRadiance = RhiTexture.CreateStorage(
+            device,
+            AtlasWidth,
+            (uint)Math.Max(
+                1,
+                (maxProbesTotalBudget * SpecularTexelsPerProbe +
+                    AtlasWidth - 1) / AtlasWidth),
+            RhiNative.TextureFormat.Rgba16Float);
+        SpecularRadiance.SetDebugName(
+            "DDGI Specular Radiance Atlas",
+            "DDGI");
 
         ProbePositions = RhiBuffer.Create(
             device,
@@ -241,6 +270,16 @@ public sealed class DDGIAtlasResources : IDisposable
             RhiNative.BufferUsage.Storage);
         ProbeStates.SetDebugName("DDGI GPU Probe States", "DDGI");
 
+        ProbeSpecularStates = RhiBuffer.Create(
+            device,
+            (ulong)maxProbesTotalBudget * 16ul,
+            RhiNative.BufferUsage.Storage);
+        ProbeSpecularStates.SetDebugName(
+            "DDGI GPU Specular States",
+            "DDGI");
+        ProbeSpecularStates.Upload(
+            new uint[checked(maxProbesTotalBudget * 4)]);
+
         ProbeUpdateQueue = RhiBuffer.Create(
             device,
             (ulong)DDGIProbeUpdatePass.MaxProbesPerFrame * sizeof(uint),
@@ -289,11 +328,14 @@ public sealed class DDGIAtlasResources : IDisposable
                 "DDGI");
             IrradianceBindlessIndex = RhiBindlessHeap.InvalidSlot;
             VisibilityBindlessIndex = RhiBindlessHeap.InvalidSlot;
+            SpecularRadianceBindlessIndex = RhiBindlessHeap.InvalidSlot;
         }
         else
         {
             IrradianceBindlessIndex = sharedHeap.Register(Irradiance);
             VisibilityBindlessIndex = sharedHeap.Register(Visibility);
+            SpecularRadianceBindlessIndex =
+                sharedHeap.Register(SpecularRadiance);
         }
 
     }
@@ -304,9 +346,11 @@ public sealed class DDGIAtlasResources : IDisposable
         {
             SharedHeap.Release(IrradianceBindlessIndex);
             SharedHeap.Release(VisibilityBindlessIndex);
+            SharedHeap.Release(SpecularRadianceBindlessIndex);
         }
         Irradiance?.Dispose();
         Visibility?.Dispose();
+        SpecularRadiance?.Dispose();
         ProbePositions?.Dispose();
         GridToProbeIndex?.Dispose();
         ProbeWorldKeys?.Dispose();
@@ -314,6 +358,7 @@ public sealed class DDGIAtlasResources : IDisposable
         ProbeCounter?.Dispose();
         ProbeDrawArgs?.Dispose();
         ProbeStates?.Dispose();
+        ProbeSpecularStates?.Dispose();
         ProbeUpdateQueue?.Dispose();
         VolumeState?.Dispose();
         foreach (RhiBuffer requestBuffer in _probeRequests)

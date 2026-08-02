@@ -15,7 +15,9 @@ namespace Engine.DDGI;
 public sealed class DDGIProbeSchedulePass : RenderPass, IDisposable
 {
     public const int PersistentScanWindow = 8192;
+    public const int InteractivePersistentScanWindow = 2048;
     public const uint SchedulerThreadCount = 128;
+    public const int InteractiveProbeLimit = 24;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SchedulePushData
@@ -134,6 +136,12 @@ public sealed class DDGIProbeSchedulePass : RenderPass, IDisposable
         int updateAllowance = Math.Min(
             _gpuWorkScheduler.GetUnitAllowance(GpuWorkDomain.Gi),
             DDGIProbeUpdatePass.MaxProbesPerFrame);
+        if (_atlas.RadianceIsInteractive)
+        {
+            updateAllowance = Math.Min(
+                updateAllowance,
+                InteractiveProbeLimit);
+        }
         if (!_gpuWorkScheduler.TryAdmit(
                 GpuWorkDomain.Gi,
                 updateAllowance))
@@ -144,7 +152,9 @@ public sealed class DDGIProbeSchedulePass : RenderPass, IDisposable
         _atlas.ConsumeRadianceRefreshAllowance(updateAllowance);
         int persistentCount = Math.Min(
             _atlas.AllocatedProbeCount,
-            PersistentScanWindow);
+            _atlas.RadianceIsInteractive
+                ? InteractivePersistentScanWindow
+                : PersistentScanWindow);
         int persistentStart = _atlas.GetPersistentScanStart();
         SchedulePushData push = new()
         {

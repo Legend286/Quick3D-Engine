@@ -1289,6 +1289,9 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             _graphExecutor.BindExternalBuffer(
                 handles.ProbeStates, resources.ProbeStates);
             _graphExecutor.BindExternalBuffer(
+                handles.ProbeSpecularStates,
+                resources.ProbeSpecularStates);
+            _graphExecutor.BindExternalBuffer(
                 handles.ProbeUpdateQueue, resources.ProbeUpdateQueue);
             _graphExecutor.BindExternalBuffer(
                 handles.VolumeState, resources.VolumeState);
@@ -1296,6 +1299,9 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 handles.Irradiance, resources.Irradiance);
             _graphExecutor.BindExternalTexture(
                 handles.Visibility, resources.Visibility);
+            _graphExecutor.BindExternalTexture(
+                handles.SpecularRadiance,
+                resources.SpecularRadiance);
             _boundDDGIHandles = handles;
             return;
         }
@@ -1309,10 +1315,12 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _graphExecutor.UnbindBuffer(oldHandles.ProbeCounter);
         _graphExecutor.UnbindBuffer(oldHandles.ProbeDrawArgs);
         _graphExecutor.UnbindBuffer(oldHandles.ProbeStates);
+        _graphExecutor.UnbindBuffer(oldHandles.ProbeSpecularStates);
         _graphExecutor.UnbindBuffer(oldHandles.ProbeUpdateQueue);
         _graphExecutor.UnbindBuffer(oldHandles.VolumeState);
         _graphExecutor.UnbindTexture(oldHandles.Irradiance);
         _graphExecutor.UnbindTexture(oldHandles.Visibility);
+        _graphExecutor.UnbindTexture(oldHandles.SpecularRadiance);
         _boundDDGIHandles = null;
     }
 

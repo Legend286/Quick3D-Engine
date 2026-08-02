@@ -84,10 +84,12 @@ public readonly record struct DDGIAtlasResourceHandles(
     ResourceHandle ProbeCounter,
     ResourceHandle ProbeDrawArgs,
     ResourceHandle ProbeStates,
+    ResourceHandle ProbeSpecularStates,
     ResourceHandle ProbeUpdateQueue,
     ResourceHandle VolumeState,
     ResourceHandle Irradiance,
-    ResourceHandle Visibility);
+    ResourceHandle Visibility,
+    ResourceHandle SpecularRadiance);
 
 /// <summary>Persistent RHI objects owned by the DDGI plugin and imported
 /// into the host render graph for barrier tracking.</summary>
@@ -99,10 +101,12 @@ public readonly record struct DDGIAtlasExternalResources(
     RhiBuffer ProbeCounter,
     RhiBuffer ProbeDrawArgs,
     RhiBuffer ProbeStates,
+    RhiBuffer ProbeSpecularStates,
     RhiBuffer ProbeUpdateQueue,
     RhiBuffer VolumeState,
     RhiTexture Irradiance,
-    RhiTexture Visibility);
+    RhiTexture Visibility,
+    RhiTexture SpecularRadiance);
 
 public interface IDDGIAtlasProvider
 {
@@ -115,6 +119,10 @@ public interface IDDGIAtlasProvider
     /// them when the atlas has been resized (typically never).</summary>
     (uint IrradianceBindlessIndex, uint VisibilityBindlessIndex)
         GetAtlasBindlessSlots();
+
+    /// <summary>Returns the bindless slot for the slowly refreshed,
+    /// roughness-prefiltered octahedral radiance atlas.</summary>
+    uint GetSpecularBindlessSlot();
 
     /// <summary>Returns the volatile positions StructuredBuffer +
     /// the coarse-grid indirection StructuredBuffer + the atomic

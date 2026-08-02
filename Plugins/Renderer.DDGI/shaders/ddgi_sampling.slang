@@ -38,6 +38,11 @@ static const uint kInvalidSlot = 0xFFFFFFFFu;
 static const uint kVisibilityTileResolution = 4u;
 static const uint kVisibilityTexelsPerProbe = 16u;
 static const uint kInitialRadianceAccumulation = 1u << 13u;
+static const uint kSpecularTileResolution = 4u;
+static const uint kSpecularRoughnessLevels = 4u;
+static const uint kSpecularTexelsPerLevel = 16u;
+static const uint kSpecularTexelsPerProbe = 64u;
+static const uint kSpecularValid = 1u;
 
 uint FetchIrradianceSlot()
 {
@@ -46,6 +51,10 @@ uint FetchIrradianceSlot()
 uint FetchVisibilitySlot()
 {
     return (uint)push.DDGIAtlasParams.y;
+}
+uint FetchSpecularSlot()
+{
+    return (uint)push.DDGISpecularParams.x;
 }
 bool SparseLayoutReady()
 {
@@ -110,6 +119,14 @@ bool ProbeIsReady(int sparseIdx)
         push.DDGIProbePositions[sparseIdx].w > 0.5 &&
         (push.DDGIProbeStates[sparseIdx].x &
             kInitialRadianceAccumulation) == 0u;
+}
+
+bool ProbeSpecularIsReady(int sparseIdx)
+{
+    if (!ProbeIsReady(sparseIdx))
+        return false;
+    return (push.DDGIProbeSpecularStates[sparseIdx].z &
+        kSpecularValid) != 0u;
 }
 
 // MARK: SH eval
@@ -194,6 +211,73 @@ float2 LoadDirectionalVisibility(
         visibilityTexture.Load(int3(AtlasCoordinate(index11), 0)).rg,
         alpha.x);
     return lerp(row0, row1, alpha.y);
+}
+
+float3 LoadSpecularLevel(
+    Texture2D specularTexture,
+    uint sparseIndex,
+    float3 reflectionDirection,
+    uint roughnessLevel)
+{
+    float2 octahedralUv = OctahedralEncode(
+        normalize(reflectionDirection));
+    float2 tilePosition = clamp(
+        octahedralUv * float(kSpecularTileResolution) - 0.5,
+        float2(0.0),
+        float2(float(kSpecularTileResolution - 1u)));
+    uint2 tileMinimum = (uint2)floor(tilePosition);
+    uint2 tileMaximum = min(
+        tileMinimum + uint2(1u, 1u),
+        uint2(
+            kSpecularTileResolution - 1u,
+            kSpecularTileResolution - 1u));
+    float2 alpha = frac(tilePosition);
+    uint levelBase =
+        sparseIndex * kSpecularTexelsPerProbe +
+        roughnessLevel * kSpecularTexelsPerLevel;
+    uint index00 = levelBase +
+        tileMinimum.y * kSpecularTileResolution + tileMinimum.x;
+    uint index10 = levelBase +
+        tileMinimum.y * kSpecularTileResolution + tileMaximum.x;
+    uint index01 = levelBase +
+        tileMaximum.y * kSpecularTileResolution + tileMinimum.x;
+    uint index11 = levelBase +
+        tileMaximum.y * kSpecularTileResolution + tileMaximum.x;
+    float3 row0 = lerp(
+        specularTexture.Load(int3(AtlasCoordinate(index00), 0)).rgb,
+        specularTexture.Load(int3(AtlasCoordinate(index10), 0)).rgb,
+        alpha.x);
+    float3 row1 = lerp(
+        specularTexture.Load(int3(AtlasCoordinate(index01), 0)).rgb,
+        specularTexture.Load(int3(AtlasCoordinate(index11), 0)).rgb,
+        alpha.x);
+    return lerp(row0, row1, alpha.y);
+}
+
+float3 LoadSpecularProbe(
+    Texture2D specularTexture,
+    uint sparseIndex,
+    float3 reflectionDirection,
+    float roughness)
+{
+    float level = saturate(roughness) *
+        float(kSpecularRoughnessLevels - 1u);
+    uint lowerLevel = (uint)floor(level);
+    uint upperLevel = min(
+        lowerLevel + 1u,
+        kSpecularRoughnessLevels - 1u);
+    return lerp(
+        LoadSpecularLevel(
+            specularTexture,
+            sparseIndex,
+            reflectionDirection,
+            lowerLevel),
+        LoadSpecularLevel(
+            specularTexture,
+            sparseIndex,
+            reflectionDirection,
+            upperLevel),
+        frac(level));
 }
 
 bool SamplePersistentLevel(
@@ -335,18 +419,148 @@ float3 SampleIndirectDiffuse(
     return hasSample ? combinedSample : float3(0.0);
 }
 
+bool SampleSpecularLevel(
+    Texture2D specularTexture,
+    Texture2D visibilityTexture,
+    float3 worldPosition,
+    float3 reflectionDirection,
+    float roughness,
+    uint level,
+    out float3 radiance,
+    out float sampleConfidence)
+{
+    radiance = float3(0.0);
+    sampleConfidence = 0.0;
+    uint levelState = 4u + level * 8u;
+    float3 cellSize = float3(
+        asfloat(push.DDGIVolumeState[levelState + 3u]),
+        asfloat(push.DDGIVolumeState[levelState + 4u]),
+        asfloat(push.DDGIVolumeState[levelState + 5u]));
+    float3 gridSpace = worldPosition / cellSize;
+    int3 baseCell = (int3)floor(gridSpace);
+    float3 alpha = saturate(gridSpace - (float3)baseCell);
+    float3 weightedRadiance = float3(0.0);
+    float weightSum = 0.0;
+    float readyCornerWeight = 0.0;
+    [unroll]
+    for (int oz = 0; oz < 2; ++oz)
+    [unroll]
+    for (int oy = 0; oy < 2; ++oy)
+    [unroll]
+    for (int ox = 0; ox < 2; ++ox)
+    {
+        int3 cell = baseCell + int3(ox, oy, oz);
+        int sparseIdx = LookupPersistentProbe(cell, level);
+        if (!ProbeSpecularIsReady(sparseIdx))
+            continue;
+        float3 probePos = LookupProbeWorldPos(sparseIdx);
+        float distanceToProbe = length(probePos - worldPosition);
+        float2 moments = LoadDirectionalVisibility(
+            visibilityTexture,
+            (uint)sparseIdx,
+            worldPosition - probePos);
+        float visibilityWeight = VisibilityWeight(
+            moments.x,
+            moments.y,
+            distanceToProbe);
+        float trilinearWeight =
+            lerp(1.0 - alpha.x, alpha.x, (float)ox) *
+            lerp(1.0 - alpha.y, alpha.y, (float)oy) *
+            lerp(1.0 - alpha.z, alpha.z, (float)oz);
+        float normalizedDistance =
+            distanceToProbe / max(length(cellSize), 0.001);
+        float distanceWeight = 1.0 /
+            (1.0 + normalizedDistance * normalizedDistance);
+        float weight = trilinearWeight * distanceWeight *
+            visibilityWeight;
+        weightedRadiance += LoadSpecularProbe(
+            specularTexture,
+            (uint)sparseIdx,
+            reflectionDirection,
+            roughness) * weight;
+        weightSum += weight;
+        readyCornerWeight += trilinearWeight;
+    }
+    if (weightSum <= 0.0001)
+        return false;
+    radiance = weightedRadiance / weightSum;
+    sampleConfidence = saturate(readyCornerWeight);
+    return true;
+}
+
+float3 SampleIndirectSpecular(
+    float3 worldPosition,
+    float3 reflectionDirection,
+    float roughness,
+    out float sampleConfidence)
+{
+    sampleConfidence = 0.0;
+    if (!SparseLayoutReady() || push.DDGISpecularParams.w < 0.5)
+        return float3(0.0);
+    uint specularSlot = FetchSpecularSlot();
+    uint visibilitySlot = FetchVisibilitySlot();
+    if (!SlotIsValid(specularSlot) || !SlotIsValid(visibilitySlot))
+        return float3(0.0);
+    if (push.DDGIVolumeState[0] != 0x44444749u)
+        return float3(0.0);
+    Texture2D specularTexture = bindless.textures[specularSlot];
+    Texture2D visibilityTexture = bindless.textures[visibilitySlot];
+    uint levelCount = min(push.DDGIVolumeState[1], 3u);
+    bool hasSample = false;
+    float3 combinedSample = float3(0.0);
+    float combinedConfidence = 0.0;
+    for (uint level = 0u; level < levelCount; ++level)
+    {
+        float3 levelSample;
+        float levelConfidence;
+        if (!SampleSpecularLevel(
+                specularTexture,
+                visibilityTexture,
+                worldPosition,
+                reflectionDirection,
+                roughness,
+                level,
+                levelSample,
+                levelConfidence))
+            continue;
+        if (!hasSample)
+        {
+            combinedSample = levelSample;
+            combinedConfidence = levelConfidence;
+            hasSample = true;
+        }
+        else
+        {
+            combinedSample = lerp(
+                levelSample,
+                combinedSample,
+                combinedConfidence);
+            combinedConfidence +=
+                (1.0 - combinedConfidence) * levelConfidence;
+        }
+        if (combinedConfidence >= 0.999)
+            break;
+    }
+    sampleConfidence = combinedConfidence;
+    return hasSample ? combinedSample : float3(0.0);
+}
+
 struct DDGIShadingResult
 {
     float3 irradiance;
     float3 indirectDiffuse;
+    float3 indirectSpecular;
     float sampleConfidence;
+    float specularConfidence;
 };
 
 DDGIShadingResult EvaluateDDGIShading(
     float3 worldPosition,
     float3 worldNormal,
+    float3 viewDirection,
     float3 albedo,
-    float metallic)
+    float metallic,
+    float roughness)
 {
     DDGIShadingResult result;
     result.irradiance = SampleIndirectDiffuse(
@@ -369,13 +583,31 @@ DDGIShadingResult EvaluateDDGIShading(
             saturate(result.sampleConfidence),
         float3(0.0),
         float3(8.0));
+    float3 reflectionDirection = reflect(
+        -viewDirection,
+        worldNormal);
+    float3 reflectedRadiance = SampleIndirectSpecular(
+        worldPosition,
+        reflectionDirection,
+        roughness,
+        result.specularConfidence);
+    float dotNV = saturate(dot(worldNormal, viewDirection));
+    float3 f0 = lerp(float3(0.04), albedo, saturate(metallic));
+    float3 fresnel = f0 + (1.0 - f0) *
+        pow(1.0 - dotNV, 5.0);
+    result.indirectSpecular = clamp(
+        reflectedRadiance * fresnel *
+            saturate(result.specularConfidence),
+        float3(0.0),
+        float3(8.0));
     return result;
 }
 
 float3 EvaluateDDGILightingOnly(DDGIShadingResult result)
 {
     return result.irradiance * 0.318309886 *
-        saturate(result.sampleConfidence);
+        saturate(result.sampleConfidence) +
+        result.indirectSpecular;
 }
 
 float3 ApplyDDGIAmbientPolicy(

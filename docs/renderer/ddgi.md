@@ -2,8 +2,9 @@
 
 ## Purpose
 
-`renderer.ddgi` supplies dynamic diffuse global illumination to the clustered
-forward renderer. It has no authored world-space volume. Three camera-relative
+`renderer.ddgi` supplies dynamic diffuse global illumination and a local
+specular-reflection fallback to the clustered renderer. It has no authored
+world-space volume. Three camera-relative
 clipmaps prioritize updates into a persistent 262,144-slot GPU world cache.
 Shading addresses that cache through exact world-cell keys, so the finest built
 probes remain visible regardless of camera distance. Scrolling changes update
@@ -20,9 +21,10 @@ and visibility history.
 | `DDGIProbeResetPass` | Resets active/update counters and indirect draw arguments on the GPU. |
 | `DDGIProbePlacementPass` | Scrolls the cache, performs geometry-aware density and clearance classification, and writes active/dormant state. |
 | `DDGIProbeSchedulePass` | Selects the highest-priority active probes into a bounded GPU update queue. |
-| `DDGIProbeUpdatePass` | Traces rays for queued probes and writes first-order, two-band SH irradiance plus 4×4 octahedral visibility moments. |
+| `DDGIProbeUpdatePass` | Traces rays for queued probes and writes first-order SH irradiance, 4×4 octahedral visibility moments, and a slower four-level octahedral radiance cache. |
 | `DDGIDebugPass` | Draws current camera and scene-bake requests from GPU-owned position and state buffers. |
 | `IDDGIAtlasProvider` | Renderer-independent atlas, GPU-buffer, and plugin consumer-flag contract consumed by `PbrPass`. |
+| `IDDGIAtlasProvider.GetSpecularBindlessSlot` | Returns the plugin-owned roughness-prefiltered radiance atlas slot. |
 | `ISceneGpuDataProvider` | Shares current lights, canonical sky parameters, packed instances, mesh parts, materials and counts, scene bounds, and monotonic light/sky/geometry revisions with extension passes. |
 
 ## Usage
@@ -130,8 +132,8 @@ the complete feature-and-include context is available.
    light is evaluated explicitly; this prevents a randomly aligned ray from
    injecting a bright SH outlier. The pass samples the hit material's
    base colour and metallic channel, stores four first-order SH irradiance
-   coefficients and a 4×4
-   octahedral tile of directional distance moments,
+   coefficients, a 4×4 octahedral tile of directional distance moments, and a
+   separate 4×4 octahedral radiance tile at four roughness levels,
    and records its update frame in `ProbeStates`. Every probe and update uses an
    independently scrambled, stratified 32-ray sphere to avoid coherent spatial
    patterns without altering RGB radiance. Stable updates retain 92% of atlas
@@ -153,7 +155,9 @@ the complete feature-and-include context is available.
    accumulate history. Directional-light direction,
    colour, intensity, angular radius, or shadow-state changes are part of that
    revision, so edited sun lighting enters the bounded retracing and convergence
-   stream.
+   stream. Specular history has its own revision and timestamp. It refreshes at
+   most once every eight frames during radiance edits and once every four frames
+   while converging, while diffuse irradiance retains its faster cadence.
    Update rays also audit clearance. A ready probe that observes geometry within
    0.375 metres is marked dirty and pending, re-enters placement next frame,
    and loses ready status until its relocated position has been retraced.
@@ -173,7 +177,11 @@ the complete feature-and-include context is available.
    revision does not remove otherwise-ready probes from sampling: their prior
    radiance remains continuous until the bounded update stream blends in the
    new solution. This avoids missing-probe bands and isolated refreshed-probe
-   colour patches while retaining full RGB transport.
+   colour patches while retaining full RGB transport. The shared PBR evaluator
+   samples the radiance cache along the reflected view direction, interpolates
+   its roughness levels, applies spatial probe visibility, and evaluates
+   material Fresnel. This remains a fallback for a future primary screen-space
+   or ray-traced reflection result.
 
 Material AO modulates the non-DDGI ambient fallback but does not multiply DDGI.
 Probe visibility moments already provide geometric indirect occlusion, and
@@ -196,6 +204,7 @@ The GPU-owned buffers are:
 | `ProbeWorldKeys` | Exact signed world-cell coordinate and level for every persistent physical slot. |
 | `WorldProbeHash` | Open-addressed slot lookup used by clustered shading independently of clipmap residency. |
 | `ProbeStates` | Active, visible, dirty, pending, relocated, scene-bake, AABB-priority, sky-only, cascade, radiance-convergence count and initial-accumulation mode, last-update frame, geometry revision, and packed sampled light/sky revision. |
+| `ProbeSpecularStates` | Independent reflection validity, last-update frame, packed radiance revision, and convergence state. |
 | `ProbeRequests` | Triple-buffered active clipmap cells plus the bounded scene-bake batch, each mapped to a persistent physical slot. |
 | `ProbeCounter` | Active, scheduled-update, camera-classification, and bake-classification counts. |
 | `ProbeUpdateQueue` | Bounded list consumed by the update dispatch. |
@@ -263,7 +272,10 @@ uses half that allowance clamped from 1 to 64, so warm-up and camera-visible
 work progress together. At 32 rays per probe the hard maximum is 4096 primary
 rays. Hit rays add one sky-visibility query and visibility queries only for
 lights whose unshadowed contribution is non-zero; the measured update cost
-feeds the adaptive admission limit. A continuously changing light cannot
+feeds the adaptive admission limit. A continuously changing light uses an
+interactive tier capped at 24 probe updates and a rotating 2,048-probe
+persistent scan. Eight stable radiance frames restore the adaptive 1–128
+allowance and 8,192-probe scan for full convergence. A changing light cannot
 immediately reselect a probe updated in the prior frame;
 older lighting-dirty probes receive the refresh priority so the cache converges
 instead of repeatedly updating only the closest slots. Placement dispatches one
@@ -283,8 +295,9 @@ unchanged. This trades warm-up latency for stable 128-sample history without a
 single-frame ray-budget spike.
 Placement and update share one frame-cached scene TLAS, so enabling DDGI does
 not duplicate acceleration-structure extraction or builds. Scheduling uses a
-128-thread compute group to scan current requests and one rotating 8,192-slot
-persistent-cache window. Each lane retains its best two candidates before a
+128-thread compute group to scan current requests and one rotating 2,048-slot
+interactive or 8,192-slot convergence window. Each lane retains its best two
+candidates before a
 bounded 256-entry shared-memory selection emits up to 128 unique probes. This
 bounds scheduler work while covering the full 262,144-slot cache over 32
 frames.
@@ -312,11 +325,12 @@ resource-usage flags only: `1` for read, `2` for write, and `3` for read/write.
 The argument is not a shader binding slot. Passing other values can produce an
 invalid backend usage mask and abort a Metal command buffer before presentation.
 
-The irradiance atlas is `4096 × 256` RGBA16F and visibility is
-`4096 × 1024` RGBA16F. Irradiance, visibility, positions, states, and world
-keys total 52 MiB for 262,144 slots. The half-full 524,288-entry world hash adds
-2 MiB. Active indirection, triple-buffered requests, queue, counters, and
-clipmap metadata add less than 512 KiB.
+The irradiance atlas is `4096 × 256` RGBA16F, visibility is `4096 × 1024`
+RGBA16F, and prefiltered reflection radiance is `4096 × 4096` RGBA16F.
+Irradiance, visibility, radiance, positions, states, and world keys total about
+184 MiB for 262,144 slots. The half-full 524,288-entry world hash adds 2 MiB.
+Active indirection, triple-buffered requests, queue, counters, and clipmap
+metadata add less than 512 KiB.
 
 ## Irradiance And Occlusion
 
@@ -339,6 +353,24 @@ transport crossing geometry in the sampled direction instead of applying one
 non-directional visibility value to the entire probe. Bounded hit-to-light
 shadow rays prevent occluded direct illumination from entering the SH result
 without requiring higher-order irradiance SH.
+
+## Reflection Fallback
+
+Each physical probe owns 64 `RGBA16F` radiance texels: four 4×4 octahedral
+tiles ordered from glossy to rough. When its independent cadence admits an
+update, the same 32 traced RGB samples are projected through progressively
+broader spherical lobes. This preserves coloured transport while suppressing
+single-ray speckle as roughness increases. Bilinear octahedral filtering,
+linear interpolation between adjacent roughness levels, temporal history, and
+the existing probe-to-surface distance moments stabilize lookup without
+desaturating radiance.
+
+The cache is deliberately a fallback. A later screen-space or ray-traced
+reflection may supply a primary result and confidence; the DDGI term can fill
+missing rays without changing its storage or update policy. Direct analytic
+lighting remains authoritative, and the probe sky excludes the explicit sun
+disc so a narrow high-energy solar sample is neither duplicated nor allowed to
+become a coloured reflection outlier.
 
 ## Cross-References
 

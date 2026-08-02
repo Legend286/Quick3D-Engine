@@ -17,6 +17,13 @@ static const uint kInitialRadianceAccumulation = 1u << 13u;
 static const float kVisibilityLobePower = 4.0;
 static const float kRadianceOutlierScale = 6.0;
 static const float kMinimumRadianceLimit = 0.5;
+static const uint kSpecularTileResolution = 4u;
+static const uint kSpecularRoughnessLevels = 4u;
+static const uint kSpecularTexelsPerLevel = 16u;
+static const uint kSpecularTexelsPerProbe = 64u;
+static const uint kSpecularValid = 1u;
+static const uint kSpecularConvergenceShift = 1u;
+static const uint kSpecularConvergenceMask = 3u << 1u;
 
 struct UpdatePushData
 {
@@ -39,6 +46,7 @@ struct UpdatePushData
     LightData* lights;
     uint*   probeCounter;
     ProbeState* probeStates;
+    uint4* probeSpecularStates;
     uint* probeUpdateQueue;
     InstanceData* instances;
     PartData* parts;
@@ -57,6 +65,7 @@ RaytracingAccelerationStructure sceneTlas   : register(t3);
 
 [[vk::binding(0, 0)]] RWTexture2D<float4> irradiance : register(u0);
 [[vk::binding(4, 0)]] RWTexture2D<float4> visibility : register(u4);
+[[vk::binding(8, 0)]] RWTexture2D<float4> specularRadiance : register(u8);
 
 struct BindlessHeap
 {
@@ -349,6 +358,17 @@ float3 OctahedralDecode(float2 encoded)
             (1.0 - abs(direction.yx)) * signValue;
     }
     return normalize(direction);
+}
+
+float SpecularLobePower(uint roughnessLevel)
+{
+    if (roughnessLevel == 0u)
+        return 12.0;
+    if (roughnessLevel == 1u)
+        return 6.0;
+    if (roughnessLevel == 2u)
+        return 2.0;
+    return 0.5;
 }
 
 [shader("compute")]
@@ -660,6 +680,91 @@ void computeMain(
                 if (initialAccumulation)
                     state.flags |= kInitialRadianceAccumulation;
             }
+        }
+
+        uint4 specularState = push.probeSpecularStates[sparseIdx];
+        bool specularValid =
+            (specularState.z & kSpecularValid) != 0u;
+        bool specularRevisionChanged =
+            specularState.y != push.radianceRevision;
+        uint specularAge = push.frameNumber >= specularState.x
+            ? push.frameNumber - specularState.x
+            : push.frameNumber;
+        uint specularConvergence =
+            (specularState.z & kSpecularConvergenceMask) >>
+            kSpecularConvergenceShift;
+        bool updateSpecular = replaceHistory || !specularValid ||
+            (specularRevisionChanged && specularAge >= 8u) ||
+            (!specularRevisionChanged &&
+                specularConvergence > 0u && specularAge >= 4u);
+        if (updateSpecular)
+        {
+            float specularHistoryWeight = 0.65;
+            if (replaceHistory || !specularValid)
+                specularHistoryWeight = 0.0;
+            else if (specularRevisionChanged)
+                specularHistoryWeight = 0.80;
+
+            uint specularBase =
+                sparseIdx * kSpecularTexelsPerProbe;
+            for (uint roughnessLevel = 0u;
+                 roughnessLevel < kSpecularRoughnessLevels;
+                 ++roughnessLevel)
+            {
+                float lobePower = SpecularLobePower(roughnessLevel);
+                for (uint tileY = 0u;
+                     tileY < kSpecularTileResolution;
+                     ++tileY)
+                {
+                    for (uint tileX = 0u;
+                         tileX < kSpecularTileResolution;
+                         ++tileX)
+                    {
+                        float2 octahedralUv =
+                            (float2(tileX, tileY) + 0.5) /
+                            float(kSpecularTileResolution);
+                        float3 tileDirection =
+                            OctahedralDecode(octahedralUv);
+                        float3 filteredRadiance = float3(0.0);
+                        float weightSum = 0.0;
+                        for (uint specularRay = 0u;
+                             specularRay < 32u;
+                             ++specularRay)
+                        {
+                            float directionalWeight = pow(
+                                saturate(dot(
+                                    tileDirection,
+                                    g_rayDirection[specularRay])),
+                                lobePower);
+                            filteredRadiance +=
+                                g_s0[specularRay] * directionalWeight;
+                            weightSum += directionalWeight;
+                        }
+                        filteredRadiance /= max(weightSum, 0.0001);
+                        uint localIndex =
+                            roughnessLevel * kSpecularTexelsPerLevel +
+                            tileY * kSpecularTileResolution + tileX;
+                        uint2 coordinate = AtlasCoordinate(
+                            specularBase + localIndex);
+                        float4 previous = specularRadiance[coordinate];
+                        specularRadiance[coordinate] = lerp(
+                            float4(filteredRadiance, 1.0),
+                            previous,
+                            specularHistoryWeight);
+                    }
+                }
+            }
+
+            uint nextConvergence = specularConvergence;
+            if (!specularValid || specularRevisionChanged)
+                nextConvergence = 3u;
+            else if (nextConvergence > 0u)
+                nextConvergence -= 1u;
+            specularState.x = push.frameNumber;
+            specularState.y = push.radianceRevision;
+            specularState.z = kSpecularValid |
+                (nextConvergence << kSpecularConvergenceShift);
+            push.probeSpecularStates[sparseIdx] = specularState;
         }
         float nearestGeometryDistance = tMax;
         for (uint clearanceRay = 0u;

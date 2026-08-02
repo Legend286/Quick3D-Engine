@@ -736,12 +736,18 @@ float4 ShadePbrSurface(
     DDGIShadingResult ddgiShading = EvaluateDDGIShading(
         input.worldPos,
         N,
+        V,
         albedo,
-        metallic);
+        metallic,
+        roughness);
     ambient = ApplyDDGIAmbientPolicy(ambient, ddgiShading);
     indirectDiffuse = ddgiShading.indirectDiffuse;
 #endif
-    float3 color = ambient + Lo + indirectDiffuse + emissive;
+    float3 color = ambient + Lo + indirectDiffuse +
+#ifdef DDGI_PLUGIN
+        ddgiShading.indirectSpecular +
+#endif
+        emissive;
 #ifdef DDGI_PLUGIN
     color = ApplyDDGIConsumerDebug(color, ddgiShading);
 #endif

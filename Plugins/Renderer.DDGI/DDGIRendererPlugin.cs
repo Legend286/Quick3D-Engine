@@ -2,6 +2,7 @@
 using Engine.CBindings;
 using Engine.Plugins;
 using Engine.RenderGraph;
+using Engine.RHI;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -393,7 +394,8 @@ public sealed class DDGIRendererPlugin :
                     $"x{_volume.ClipmapLevelCount} clipmaps " +
                     $"maxProbes={_volume.MaxProbesTotalBudget} " +
                     $"irradSlot={_atlas.IrradianceBindlessIndex} " +
-                    $"visSlot={_atlas.VisibilityBindlessIndex}",
+                    $"visSlot={_atlas.VisibilityBindlessIndex} " +
+                    $"specSlot={_atlas.SpecularRadianceBindlessIndex}",
                     "DDGI");
             }
         }
@@ -419,6 +421,11 @@ public sealed class DDGIRendererPlugin :
         return (_atlas.IrradianceBindlessIndex,
                 _atlas.VisibilityBindlessIndex);
     }
+
+    /// <inheritdoc />
+    public uint GetSpecularBindlessSlot()
+        => _atlas?.SpecularRadianceBindlessIndex ??
+            RhiBindlessHeap.InvalidSlot;
 
     /// <inheritdoc />
     public bool TryGetSparseBuffers(
@@ -489,10 +496,12 @@ public sealed class DDGIRendererPlugin :
             _atlas.ProbeCounter,
             _atlas.ProbeDrawArgs,
             _atlas.ProbeStates,
+            _atlas.ProbeSpecularStates,
             _atlas.ProbeUpdateQueue,
             _atlas.VolumeState,
             _atlas.Irradiance,
-            _atlas.Visibility);
+            _atlas.Visibility,
+            _atlas.SpecularRadiance);
         return true;
     }
 

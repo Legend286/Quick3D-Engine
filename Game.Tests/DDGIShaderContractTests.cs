@@ -134,6 +134,11 @@ public sealed class DDGIShaderContractTests
         string schedulePass = ReadRepositoryFile(
             "Plugins", "Renderer.DDGI", "DDGIProbeSchedulePass.cs");
         Assert.Contains("PersistentScanWindow = 8192", schedulePass);
+        Assert.Contains(
+            "InteractivePersistentScanWindow = 2048",
+            schedulePass);
+        Assert.Contains("InteractiveProbeLimit = 24", schedulePass);
+        Assert.Contains("_atlas.RadianceIsInteractive", schedulePass);
         Assert.Contains("SchedulerThreadCount = 128", schedulePass);
         Assert.Contains("SchedulerThreadCount,", schedulePass);
         Assert.Contains("GetPersistentScanStart", schedulePass);
@@ -206,9 +211,12 @@ public sealed class DDGIShaderContractTests
         Assert.Contains("(1.0 - metallic)", sampling);
         Assert.DoesNotContain("ao = rma.r", pbr);
         Assert.DoesNotContain("(1.0 - mat.metallic)", pbr);
-        Assert.Contains(
-            "ambient + Lo + indirectDiffuse + emissive",
-            pbr);
+        Assert.Contains("ddgiShading.indirectSpecular", pbr);
+        Assert.Contains("SampleIndirectSpecular", sampling);
+        Assert.Contains("LoadSpecularProbe", sampling);
+        Assert.Contains("ProbeSpecularIsReady", sampling);
+        Assert.Contains("roughness", sampling);
+        Assert.Contains("specularConfidence", sampling);
         Assert.Contains(
             "ApplyDDGIAmbientPolicy(ambient, ddgiShading)",
             pbr);
@@ -225,6 +233,15 @@ public sealed class DDGIShaderContractTests
         Assert.DoesNotContain("Lo / max(albedo", pbr);
         Assert.Contains("pbrPush.DDGIVolumeState = volumeState.DeviceAddress", pass);
         Assert.Contains("pbrPush.DDGIProbeStates = probeStates.DeviceAddress", pass);
+        Assert.Contains("pbrPush.DDGIProbeSpecularStates", pass);
+
+        string update = File.ReadAllText(
+            ResolveShader("ddgi_probe_update.slang"));
+        Assert.Contains("RWTexture2D<float4> specularRadiance", update);
+        Assert.Contains("SpecularLobePower", update);
+        Assert.Contains("specularAge >= 8u", update);
+        Assert.Contains("specularAge >= 4u", update);
+        Assert.Contains("kSpecularRoughnessLevels = 4u", update);
 
         string clustered = ReadRepositoryFile(
             "Plugins", "Renderer.Clustered", "ClusteredRendererPlugin.cs");

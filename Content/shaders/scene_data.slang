@@ -152,10 +152,12 @@ struct ScenePushData {
     float4 DDGIAtlasParams;     // x: irradiance bindless slot, y: visibility bindless slot, z: plugin flags, w: ready
     float4 DDGIOriginAndCountZ; // xyz: probe origin, w: probeCountZ
     float4 DDGIExtentAndFlags;  // x: extentX, y: extentY, z: raysPerProbe, w: maxProbesPerFrame
+    float4 DDGISpecularParams;
     float4* DDGIProbePositions;
     int*    DDGIGridToProbeIndex;
     int4*   DDGIProbeWorldKeys;
     uint*   DDGIWorldProbeHash;
     uint*   DDGIVolumeState;
     uint4*  DDGIProbeStates;
+    uint4*  DDGIProbeSpecularStates;
 };

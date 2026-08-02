@@ -191,17 +191,25 @@ public class PbrPass : RenderPass
             builder.ImportBuffer(handles.ProbeWorldKeys);
             builder.ImportBuffer(handles.WorldProbeHash);
             builder.ImportBuffer(handles.ProbeStates);
+            builder.ImportBuffer(handles.ProbeSpecularStates);
             builder.ImportBuffer(handles.VolumeState);
             builder.ImportTexture(handles.Irradiance);
             builder.ImportTexture(handles.Visibility);
+            builder.ImportTexture(handles.SpecularRadiance);
             builder.Read(handles.ProbePositions, ResourceState.ShaderRead);
             builder.Read(handles.GridToProbeIndex, ResourceState.ShaderRead);
             builder.Read(handles.ProbeWorldKeys, ResourceState.ShaderRead);
             builder.Read(handles.WorldProbeHash, ResourceState.ShaderRead);
             builder.Read(handles.ProbeStates, ResourceState.ShaderRead);
+            builder.Read(
+                handles.ProbeSpecularStates,
+                ResourceState.ShaderRead);
             builder.Read(handles.VolumeState, ResourceState.ShaderRead);
             builder.Read(handles.Irradiance, ResourceState.ShaderRead);
             builder.Read(handles.Visibility, ResourceState.ShaderRead);
+            builder.Read(
+                handles.SpecularRadiance,
+                ResourceState.ShaderRead);
         }
         builder.Read(_clusterRecordsHandle, ResourceState.ShaderRead);
         builder.Read(_clusterLightIndicesHandle, ResourceState.ShaderRead);
@@ -491,6 +499,7 @@ public class PbrPass : RenderPass
         {
             var (irradSlot, visSlot) =
                 _ddgiAtlas.GetAtlasBindlessSlots();
+            uint specularSlot = _ddgiAtlas.GetSpecularBindlessSlot();
             bool hasSparseBuffers =
                 _ddgiAtlas.TryGetSparseBuffers(
                     out RhiBuffer probePositions,
@@ -525,6 +534,11 @@ public class PbrPass : RenderPass
                 extent.Y,
                 extent.Z,
                 worldProbeHashCapacity);
+            pbrPush.DDGISpecularParams = new Vector4(
+                specularSlot,
+                4f,
+                4f,
+                specularSlot != RhiBindlessHeap.InvalidSlot ? 1f : 0f);
             if (ddgiReady)
             {
                 pbrPush.DDGIProbePositions = probePositions.DeviceAddress;
@@ -533,6 +547,12 @@ public class PbrPass : RenderPass
                 pbrPush.DDGIWorldProbeHash = worldProbeHash.DeviceAddress;
                 pbrPush.DDGIVolumeState = volumeState.DeviceAddress;
                 pbrPush.DDGIProbeStates = probeStates.DeviceAddress;
+                if (_ddgiAtlas.TryGetExternalResources(
+                        out DDGIAtlasExternalResources externalResources))
+                {
+                    pbrPush.DDGIProbeSpecularStates =
+                        externalResources.ProbeSpecularStates.DeviceAddress;
+                }
             }
             else
             {
@@ -542,6 +562,7 @@ public class PbrPass : RenderPass
                 pbrPush.DDGIWorldProbeHash = 0;
                 pbrPush.DDGIVolumeState = 0;
                 pbrPush.DDGIProbeStates = 0;
+                pbrPush.DDGIProbeSpecularStates = 0;
             }
         }
         else
@@ -549,12 +570,14 @@ public class PbrPass : RenderPass
             pbrPush.DDGIAtlasParams = Vector4.Zero;
             pbrPush.DDGIOriginAndCountZ = Vector4.Zero;
             pbrPush.DDGIExtentAndFlags = Vector4.Zero;
+            pbrPush.DDGISpecularParams = Vector4.Zero;
             pbrPush.DDGIProbePositions = 0;
             pbrPush.DDGIGridToProbeIndex = 0;
             pbrPush.DDGIProbeWorldKeys = 0;
             pbrPush.DDGIWorldProbeHash = 0;
             pbrPush.DDGIVolumeState = 0;
             pbrPush.DDGIProbeStates = 0;
+            pbrPush.DDGIProbeSpecularStates = 0;
         }
     }
 
