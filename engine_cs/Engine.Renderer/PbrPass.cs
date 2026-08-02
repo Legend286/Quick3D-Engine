@@ -527,7 +527,7 @@ public class PbrPass : RenderPass, IDisposable
         sink.EndPass();
     }
 
-    private void PopulateShadowData(ref ScenePushData pbrPush)
+    internal void PopulateShadowData(ref ScenePushData pbrPush)
     {
         pbrPush.DirectionalShadowViewProj =
             _directionalShadow?.ViewProjections[0] ?? Matrix4x4.Identity;

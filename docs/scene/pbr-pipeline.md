@@ -99,10 +99,11 @@ and retain Forward PBR to avoid allocating full viewport visibility targets.
   `ScenePushData`.
 - Raster PBR uses manual 3x3 PCF, edge clamping, cascade-scaled
   normal-dependent depth bias, and an overlap blend at cascade transitions.
-- Dirty pages update under a strict one-page-per-frame budget. A rotating dirty
-  cursor prevents continuous camera or sun edits from starving outer cascades.
-  Cached matrices remain paired with cached depth pages until each update
-  completes.
+- Camera or sun motion admits all dirty cascades together under a four-page,
+  4 ms domain. Stable texel snapping still avoids updates while the effective
+  projection is unchanged. Visibility compute shading refreshes its shadow
+  parameters after the pass, keeping sampled matrices paired with same-frame
+  depth pages.
 - The page pool defaults to 1 GiB and clamps at 1.5 GiB. The four cascades
   consume 256 MiB; punctual-light tiers allocate additional 4096x4096 pages
   lazily.
@@ -123,10 +124,10 @@ and retain Forward PBR to avoid allocating full viewport visibility targets.
   above 14 ms remove one step. Frames between those thresholds hold the
   current setting. The frame input is a rolling 15-sample median, so delayed
   profiler results do not abruptly starve shadow refreshes.
-- Each GPU job contains at most 24 complete light faces. Adaptive admission can
-  issue two jobs per frame when headroom permits, for up to eight point-light
-  cubemaps or 48 spots. Point and spot work never share a culling or raster
-  job, while unused face capacity can be filled by a job of the other type.
+- Each homogeneous GPU job contains at most 48 complete light faces, allowing
+  the adaptive ceiling to remain one culling dispatch per light type: up to
+  eight point-light cubemaps or 48 spots. Point and spot work never share a
+  culling job, while unused face capacity can be filled by the other type.
 - Each light keeps its committed sampling matrices and shadow origin paired
   with its cached static and movable tiles. Transform changes admit every face
   of that light atomically and publish the new state only after all required
@@ -160,10 +161,14 @@ and retain Forward PBR to avoid allocating full viewport visibility targets.
   conservatively retain all six faces because corner-only frustum overlap
   tests can reject crossing cubemap-face volumes.
 - Dirty punctual lights are scheduled globally. Lights with any invalid face
-  receive highest priority but remain subject to the measured face allowance.
+  receive highest priority. Moved camera-relevant lights receive a bounded
+  24-face freshness reserve when the learned allowance falls lower, preventing
+  inaccurate historical timings from reducing interactive updates to one
+  point light per frame.
   Valid lights become eligible only when their cadence
   deadline arrives. Transform changes precede scene-cache refreshes, then an
-  overdue ratio and absolute-age bonus combine with weighted visual priority.
+  overdue ratio and absolute-age bonus combine with strongly weighted visual
+  priority.
   Nearby lights retain the fast lane under normal load, while sufficiently
   overdue distant lights still overtake them instead of starving. Batch
   construction never splits a point-light cubemap across frames.

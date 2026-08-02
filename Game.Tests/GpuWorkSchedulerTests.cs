@@ -9,32 +9,32 @@ namespace Engine.Game.Tests;
 public sealed class GpuWorkSchedulerTests
 {
     [Fact]
-    public void ShadowBudget_AdmitsAtMostOneUnitPerFrame()
+    public void ShadowBudget_AdmitsAllFourCascadesAtomically()
     {
         var scheduler = new GpuWorkScheduler();
         scheduler.BeginFrame(1);
 
-        Assert.True(scheduler.TryAdmit(GpuWorkDomain.Shadows));
+        Assert.True(scheduler.TryAdmit(GpuWorkDomain.Shadows, 4));
         Assert.False(scheduler.TryAdmit(GpuWorkDomain.Shadows));
 
         GpuWorkBudgetSnapshot shadow = scheduler.GetSnapshots()[0];
-        Assert.Equal(1, shadow.AdmittedUnits);
+        Assert.Equal(4, shadow.AdmittedUnits);
         Assert.Equal(1, shadow.DeferredUnits);
-        Assert.Equal(1, shadow.TotalAdmittedUnits);
+        Assert.Equal(4, shadow.TotalAdmittedUnits);
         Assert.Equal(1, shadow.TotalDeferredUnits);
     }
 
     [Fact]
-    public void ShadowBudget_DoesNotBurstAfterAnIdleFrame()
+    public void ShadowBudget_DoesNotExceedCascadeCountAfterAnIdleFrame()
     {
         var scheduler = new GpuWorkScheduler();
         scheduler.BeginFrame(1);
         scheduler.BeginFrame(2);
 
         Assert.Equal(
-            1,
+            4,
             scheduler.GetUnitAllowance(GpuWorkDomain.Shadows));
-        Assert.True(scheduler.TryAdmit(GpuWorkDomain.Shadows));
+        Assert.True(scheduler.TryAdmit(GpuWorkDomain.Shadows, 4));
         Assert.False(scheduler.TryAdmit(GpuWorkDomain.Shadows));
     }
 
@@ -182,13 +182,13 @@ public sealed class GpuWorkSchedulerTests
     }
 
     [Fact]
-    public void PunctualShadowBatch_HoldsFourPointOrTwentyFourSpotLights()
+    public void PunctualShadowBatch_HoldsEightPointOrFortyEightSpotLights()
     {
         Assert.Equal(
-            4,
+            8,
             PunctualShadowPass.GetMaximumLightsPerBatch(6));
         Assert.Equal(
-            24,
+            48,
             PunctualShadowPass.GetMaximumLightsPerBatch(1));
     }
 

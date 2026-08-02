@@ -105,13 +105,15 @@ persistent-atlas scan. Consequently, a light edit reaches built probes outside
 the current clipmaps without scanning all 262,144 slots in one frame. Empty
 sky-only probes are eligible only when the independent sky revision changes.
 
-Directional shadows use a 2 ms base target and update at most one persistent
-cascade page per frame. A rotating dirty-cascade cursor prevents a continuously
-moving sun or camera from refreshing only the nearest page.
+Directional shadows use a 4 ms base target and admit all four persistent
+cascade pages atomically when camera or sun motion dirties their transforms.
+The visibility compute pass refreshes shadow push data after those updates,
+so the matrices sampled by the main frame always match the pages just encoded.
 Punctual shadows use a separate 6 ms base domain and homogeneous batches of at
-most 24 faces. Static and movable updates
+most 48 faces. Static and movable updates
 for one light remain atomic so sampling matrices cannot lead rendered pages.
-Invalidation never exceeds the current face allowance. Per-batch culling and
+Moved camera-relevant lights receive a bounded 24-face freshness reserve when
+learned timing reduces the ordinary allowance. Per-batch culling and
 indirect-command buffers grow on the render thread to match admitted point and
 spot batches, remain distinct until submission completes, and are retained for
 reuse by later frames.

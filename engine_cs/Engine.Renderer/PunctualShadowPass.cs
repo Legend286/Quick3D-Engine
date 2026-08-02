@@ -467,7 +467,8 @@ internal sealed class PunctualShadowState : IDisposable
 
 internal sealed class PunctualShadowPass : RenderPass, IDisposable
 {
-    internal const int MaximumFacesPerBatch = 24;
+    internal const int MaximumFacesPerBatch = 48;
+    private const int MovedLightFreshnessFaces = 24;
 
     private const ulong DrawCommandSize = 16;
 
@@ -728,12 +729,20 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         int frameFaceLimit = _scheduler.GetUnitAllowance(
             GpuWorkDomain.PunctualShadows,
             minimumAtomicFaces);
+        bool hasMovedLight = lightWork.Exists(
+            static work => work.LightDirty);
+        int selectionFaceLimit = hasMovedLight
+            ? Math.Max(frameFaceLimit, MovedLightFreshnessFaces)
+            : frameFaceLimit;
         var selectedWork = new List<LightWork>();
         int selectedFaceCount = 0;
         foreach (LightWork work in lightWork)
         {
             int faceCount = work.Entry.FaceCount;
-            if (selectedFaceCount + faceCount > frameFaceLimit)
+            int workFaceLimit = work.LightDirty
+                ? selectionFaceLimit
+                : frameFaceLimit;
+            if (selectedFaceCount + faceCount > workFaceLimit)
                 continue;
             selectedWork.Add(work);
             selectedFaceCount += faceCount;
@@ -754,7 +763,8 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             batchFaceCount > 0 &&
             _scheduler.TryAdmit(
                 GpuWorkDomain.PunctualShadows,
-                batchFaceCount);
+                batchFaceCount,
+                forced: batchFaceCount > frameFaceLimit);
         _scheduler.Defer(
             GpuWorkDomain.PunctualShadows,
             dirtyFaceCount - batchFaceCount);
@@ -1083,7 +1093,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         float priority,
         float urgency)
     {
-        return urgency + priority * 2.0f;
+        return urgency + priority * 8.0f;
     }
 
     private static bool HasInvalidFace(

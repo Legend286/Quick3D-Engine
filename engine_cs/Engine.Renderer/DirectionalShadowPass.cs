@@ -195,10 +195,8 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
 
         int scheduledCascadeCount = Math.Min(
             dirtyCascadeCount,
-            Math.Min(
-                _workScheduler.GetUnitAllowance(
-                    GpuWorkDomain.Shadows),
-                1));
+            _workScheduler.GetUnitAllowance(
+                GpuWorkDomain.Shadows));
         if (!_workScheduler.TryAdmit(
                 GpuWorkDomain.Shadows,
                 scheduledCascadeCount))

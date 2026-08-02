@@ -60,7 +60,7 @@ public sealed class PunctualShadowPriorityTests
             1.1f);
         float distantOverdue = PunctualShadowPass.GetSchedulingScore(
             0.2f,
-            3.1f);
+            10.1f);
 
         Assert.True(nearby > distantDue);
         Assert.True(distantOverdue > nearby);
@@ -79,8 +79,13 @@ public sealed class PunctualShadowPriorityTests
             "PunctualShadowPass.cs");
 
         Assert.DoesNotContain("forced: true", directional);
-        Assert.DoesNotContain("forced: hasForcedWork", punctual);
+        Assert.Contains(
+            "forced: batchFaceCount > frameFaceLimit",
+            punctual);
         Assert.Contains("_nextCascadeToUpdate", directional);
+        Assert.Contains(
+            "GetUnitAllowance(\n                GpuWorkDomain.Shadows)",
+            directional);
         Assert.Contains("dirtyCascadeCount - scheduledCascadeCount", directional);
         Assert.Contains(
             "selectedFaceCount + faceCount > frameFaceLimit",

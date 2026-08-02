@@ -112,7 +112,7 @@ dispatch-indirect for GPU-adaptive workloads.
 3. Spot shadows use lazily allocated page tiers, cached static depth, and a
    separately refreshed movable overlay.
 4. Point shadows atomically allocate six faces from one tier. Visible point
-   lights retain every face and batch four lights per 24-face submission.
+   lights retain every face and batch eight lights per 48-face submission.
    Point and spot faces use camera-frustum versus shadow-frustum rejection;
    scene signatures include only overlapping static or movable casters.
    Light or caster transforms force every affected face in the current frame.
@@ -121,7 +121,8 @@ dispatch-indirect for GPU-adaptive workloads.
 
 The base punctual budget is 6 ms. Unused estimated time carries into later
 frames up to a bounded burst ceiling; optional resolution maintenance obeys
-that allowance, while transform invalidation bypasses it for correctness.
+that allowance. Moved visible lights may use a bounded 24-face freshness
+reserve so their committed lighting and shadow state remain interactive.
 
 Shadow pages are sampled through the existing bindless texture heap. Do not
 expose Metal-specific argument-buffer concepts through C#.

@@ -71,6 +71,7 @@ internal sealed class VisibilityShadingPass : RenderPass, IDisposable
     {
         _owner.EnsurePrepared(sink, context);
         ScenePushData push = _owner.PreparedPush;
+        _owner.PopulateShadowData(ref push);
         ViewportDebugView debugView =
             (ViewportDebugView)(push.DebugFlags & 0xffu);
         if (!IsShadingView(debugView))

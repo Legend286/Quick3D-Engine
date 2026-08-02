@@ -76,10 +76,10 @@ public sealed class GpuWorkScheduler
         new()
         {
             Name = "Shadows",
-            BudgetMilliseconds = 2.0,
+            BudgetMilliseconds = 4.0,
             EstimatedUnitMilliseconds = 1.0,
-            MaximumUnits = 1,
-            BurstMaximumUnits = 1,
+            MaximumUnits = 4,
+            BurstMaximumUnits = 4,
         },
         new()
         {
@@ -114,7 +114,7 @@ public sealed class GpuWorkScheduler
     /// <summary>Restores initial estimates and counters for a new scene.</summary>
     public void Reset()
     {
-        ResetDomain(_domains[(int)GpuWorkDomain.Shadows], 2.0, 1.0, 1, 1);
+        ResetDomain(_domains[(int)GpuWorkDomain.Shadows], 4.0, 1.0, 4, 4);
         ResetDomain(
             _domains[(int)GpuWorkDomain.PunctualShadows],
             6.0,
