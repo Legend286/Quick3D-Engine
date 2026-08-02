@@ -264,7 +264,8 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("visibilityIdentifiers : register(t4)", shader);
         Assert.Contains("visibilityBarycentrics : register(t5)", shader);
         Assert.Contains("sceneDepth : register(t6)", shader);
-        Assert.Contains("reconstructionOutput : register(u7)", shader);
+        Assert.Contains("[[vk::binding(0, 0)]]\nRWTexture2D<float4>", shader);
+        Assert.Contains("reconstructionOutput : register(u0)", shader);
         Assert.Contains("LoadPartVertexIndex(part, triangleOffset)", shader);
         Assert.Contains("part.localOffset.xyz", shader);
         Assert.Contains("instance.modelMatrix", shader);
@@ -273,7 +274,7 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("ThreadGroupSize = 8", pass);
         Assert.Contains("IsReconstructionView", pass);
         Assert.Contains("sink.Dispatch(", pass);
-        Assert.Contains("sink.BindTexture(7, output)", pass);
+        Assert.Contains("sink.BindTexture(0, output)", pass);
         Assert.Contains("sink.BindHeap(1, _owner.BindlessHeap)", pass);
         Assert.Contains("SampleGrad(textureSampler, uv, uvDx, uvDy)", shader);
         Assert.Contains("material.normalTexIndex", shader);
@@ -380,7 +381,9 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("visibilityIdentifiers : register(t4)", shader);
         Assert.Contains("visibilityBarycentrics : register(t5)", shader);
         Assert.Contains("sceneDepth : register(t6)", shader);
-        Assert.Contains("visibilityShadingOutput : register(u7)", shader);
+        Assert.Contains("[[vk::binding(0, 0)]]\nRWTexture2D<float4>", shader);
+        Assert.Contains("visibilityShadingOutput : register(u0)", shader);
+        Assert.Contains("sink.BindTexture(0, output)", pass);
         Assert.Contains("groupshared uint g_tileDepthSliceMask", shader);
         Assert.Contains("groupshared uint g_tileHasGeometry", shader);
         Assert.Contains("groupshared uint g_tileLightHash", shader);

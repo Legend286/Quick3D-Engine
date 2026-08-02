@@ -110,7 +110,7 @@ internal sealed class VisibilityReconstructionPass : RenderPass, IDisposable
         sink.BindTexture(4, identifiers);
         sink.BindTexture(5, barycentrics);
         sink.BindTexture(6, depth);
-        sink.BindTexture(7, output);
+        sink.BindTexture(0, output);
         if (_owner.BindlessHeap.IsInitialized)
         {
             sink.BindHeap(1, _owner.BindlessHeap);
