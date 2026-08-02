@@ -58,8 +58,23 @@
                 <Border Background="#12151c" BorderBrush="#1e2128" BorderThickness="1" CornerRadius="4" Padding="16" Margin="0,8,0,0">
                     <StackPanel Spacing="12">
                         <TextBlock Text="Import Options" Foreground="#d0d4dc" FontSize="12" FontWeight="Bold" />
-                        <CheckBox Content="Extract and cook materials (.mat)" IsChecked="{Binding ImportMaterials}" Foreground="#aab0b6" />
-                        <CheckBox Content="Compress textures via BasisU (.ktx2)" IsChecked="{Binding ImportTextures}" Foreground="#aab0b6" />
+                        <CheckBox Content="Import mesh (.mdl / .msh)" IsChecked="{Binding ImportMesh}" IsEnabled="{Binding HasMesh}" Foreground="#aab0b6" />
+                        <CheckBox Content="Import skeleton (.skel)" IsChecked="{Binding ImportSkeleton}" IsEnabled="{Binding HasSkeleton}" Foreground="#aab0b6" />
+                        <TextBlock Text="{Binding InspectionMessage}" Foreground="#6f7785" FontSize="11" TextWrapping="Wrap" />
+                        <StackPanel IsVisible="{Binding HasAnimations}" Spacing="8">
+                            <TextBlock Text="Animation Clips" Foreground="#aab0b6" FontSize="11" FontWeight="SemiBold" />
+                            <ItemsControl ItemsSource="{Binding Animations}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:AnimationImportOption">
+                                        <CheckBox IsChecked="{Binding IsSelected}" Foreground="#aab0b6" Margin="0,2">
+                                            <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" />
+                                        </CheckBox>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                        <CheckBox Content="Extract and cook materials (.mat)" IsChecked="{Binding ImportMaterials}" IsEnabled="{Binding ImportMesh}" Foreground="#aab0b6" />
+                        <CheckBox Content="Compress textures via BasisU (.ktx2)" IsChecked="{Binding ImportTextures}" IsEnabled="{Binding ImportMesh}" Foreground="#aab0b6" />
                     </StackPanel>
                 </Border>
             </StackPanel>

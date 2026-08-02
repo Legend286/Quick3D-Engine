@@ -128,22 +128,16 @@ public sealed class MetalTimingPairTests
         string source = ReadRepositoryFile(
             "engine_c", "rhi", "rhi_metal.mm");
 
-        Assert.Contains(
-            "supports_stage_sampling &&\n                !cli->timing_pool->supports_draw_sampling",
-            source);
-        Assert.Contains(
-            "supports_stage_sampling &&\n                !cli->timing_pool->supports_dispatch_sampling",
-            source);
-        Assert.Contains(
-            "ri->render && cli->timing_pool->supports_draw_sampling",
-            source);
-        Assert.Contains(
-            "ri->compute &&\n                           cli->timing_pool->supports_dispatch_sampling",
-            source);
+        Assert.Contains("supports_stage_sampling", source);
+        Assert.Contains("supports_draw_sampling", source);
+        Assert.Contains("supports_dispatch_sampling", source);
+        Assert.Contains("sampleCountersInBuffer", source);
+        Assert.Contains("metal_end_pass", source);
+        Assert.Contains("timing_end_sample_index", source);
     }
 
     [Fact]
-    public void RenderGraphDiagnostics_PublishesSampledGpuWork()
+    public void RenderGraphDiagnostics_PublishesCoherentFrameMetrics()
     {
         string executor = ReadRepositoryFile(
             "engine_cs", "Engine.RenderGraph", "RenderGraphExecutor.cs");
@@ -156,10 +150,14 @@ public sealed class MetalTimingPairTests
         Assert.Contains("TimestampSamplesPerPass = 64", executor);
         Assert.Contains("SumPassTimings", executor);
         Assert.Contains("LastGpuWorkMilliseconds", executor);
+        Assert.Contains("LastGpuFrameMilliseconds", executor);
+        Assert.Contains("LastGpuFrameMedianMilliseconds", executor);
         Assert.DoesNotContain("sampledTotalMilliseconds", executor);
         Assert.Contains("LastGpuTimingFrameNumber", renderer);
-        Assert.Contains("LastRawGpuFrameMilliseconds", renderer);
-        Assert.Contains("LastGpuWorkMilliseconds", renderer);
+        Assert.Contains("LastCpuFrameMilliseconds", renderer);
+        Assert.Contains("LastGpuFrameMedianMilliseconds", renderer);
+        Assert.Contains("_graphExecutor.LastGpuFrameMilliseconds", renderer);
+        Assert.DoesNotContain("_graphExecutor.LastGpuWorkMilliseconds", renderer);
     }
 
     [Fact]

@@ -986,11 +986,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             sink.UseBuffer(_sceneCache.InstanceBuffer, 1);
             sink.UseBuffer(_sceneCache.PartBuffer, 1);
             sink.UseBuffer(drawCommands, 1);
-            foreach (var mesh in frameData.UniqueMeshes)
-            {
-                sink.UseBuffer(mesh.VertexBuffer, 1);
-                sink.UseBuffer(mesh.IndexBuffer, 1);
-            }
+            frameData.BindGeometry(sink);
             for (int jobIndex = firstJob;
                  jobIndex < lastJob;
                  ++jobIndex)

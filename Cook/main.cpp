@@ -1,7 +1,7 @@
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "tiny_gltf.h"
+#include "AnimationCook.h"
 
 #include <iostream>
 #include <fstream>
@@ -14,6 +14,11 @@
 #include <future>
 #include <mutex>
 #include <chrono>
+#include <array>
+#include <atomic>
+#include <cstdio>
+#include <functional>
+#include <thread>
 
 namespace fs = std::filesystem;
 
@@ -22,6 +27,15 @@ struct Vertex {
     float nx, ny, nz;
     float tu, tv;
     float tx, ty, tz, tw;
+};
+
+struct SkinSourceVertex {
+    float px, py, pz;
+    float nx, ny, nz;
+    float tu, tv;
+    float tx, ty, tz, tw;
+    float bone_indices[4];
+    float bone_weights[4];
 };
 
 struct MeshHeader {
@@ -222,7 +236,7 @@ std::string ExecuteBasisu(const std::string& input_img, const std::string& tex_o
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Usage: engine_cook <input.glb/gltf> [out_dir]\n";
+        std::cerr << "Usage: engine_cook <input.glb/gltf> [out_dir] [options]\n";
         return 1;
     }
 
@@ -230,47 +244,54 @@ int main(int argc, char** argv) {
     fs::path in_path(input_file);
     std::string out_dir = (argc >= 3 && argv[2][0] != '-') ? argv[2] : in_path.parent_path().string();
     if (out_dir.empty()) out_dir = ".";
-    
+
     float scale_x = 1.0f, scale_y = 1.0f, scale_z = 1.0f;
     std::string cli_basisu;
+    bool inspect_only = false;
+    bool import_mesh = true;
+    bool import_skeleton = false;
+    bool import_materials = true;
+    bool import_textures = true;
+    std::vector<std::string> selected_animations;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-scale" && i + 3 < argc) {
-            scale_x = std::stof(argv[i+1]);
-            scale_y = std::stof(argv[i+2]);
-            scale_z = std::stof(argv[i+3]);
+            scale_x = std::stof(argv[i + 1]);
+            scale_y = std::stof(argv[i + 2]);
+            scale_z = std::stof(argv[i + 3]);
             i += 3;
-        }
-        // --basisu-path is passed through /bin/sh -c by std::system as a
-        // string interpolation. We deliberately do NOT sanitise shell
-        // metacharacters; this is a developer CLI so the path is trusted
-        // input. If a future caller delegates it to non-trusted sources,
-        // switch to fork+execv with an argv array.
-        else if (arg == "--basisu-path" && i + 1 < argc) {
+        } else if (arg == "--basisu-path" && i + 1 < argc) {
             cli_basisu = argv[++i];
+        } else if (arg == "--inspect") {
+            inspect_only = true;
+        } else if (arg == "--no-mesh") {
+            import_mesh = false;
+        } else if (arg == "--import-skeleton") {
+            import_skeleton = true;
+        } else if (arg == "--import-animation" && i + 1 < argc) {
+            import_skeleton = true;
+            selected_animations.push_back(argv[++i]);
+        } else if (arg == "--no-materials") {
+            import_materials = false;
+        } else if (arg == "--no-textures") {
+            import_textures = false;
+        } else if (arg == "--mode" && i + 1 < argc) {
+            import_mesh = false;
+            std::string mode = argv[++i];
+            std::stringstream modes(mode);
+            std::string token;
+            while (std::getline(modes, token, ',')) {
+                if (token == "mesh") import_mesh = true;
+                else if (token == "skeleton") import_skeleton = true;
+                else if (token == "animations") import_skeleton = true;
+            }
         }
     }
 
-    g_basisu_path = ResolveBasisuPath(argc > 0 ? argv[0] : nullptr, cli_basisu);
-    if (g_basisu_path.empty()) {
-        std::cerr << "ERROR: cannot locate basisu binary. Tried in order:\n"
-                  << "  1. --basisu-path <abs path>            (CLI override)\n"
-                  << "  2. <engine_root>/out/basisu             (auto-discovered from engine_cook's location)\n"
-                  << "  3. $QUICK3D_ENGINE_ROOT/out/basisu       (env hint)\n"
-                  << "  4. ./out/basisu                         (CWD-relative legacy fallback)\n"
-                  << "Set --basisu-path or QUICK3D_ENGINE_ROOT and re-run.\n";
-        ScrubOrphanSidecars(fs::path(out_dir) / "textures");
-        return 2;
+    if (!import_mesh && !import_skeleton && !inspect_only) {
+        std::cerr << "ERROR: no import category selected. Use mesh, skeleton, or animations.\n";
+        return 1;
     }
-    std::cout << "Using basisu: " << g_basisu_path << "\n";
-    
-    std::string base_name = in_path.stem().string();
-    fs::path model_output_dir =
-        fs::path(out_dir) / base_name;
-    fs::create_directories(model_output_dir);
-    fs::create_directories(model_output_dir / "materials");
-    fs::path tex_out_dir = model_output_dir / "materials" / "textures";
-    fs::create_directories(tex_out_dir);
 
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
@@ -283,13 +304,60 @@ int main(int argc, char** argv) {
         ret = loader.LoadASCIIFromFile(&model, &err, &warn, input_file);
     }
     
-    if (!warn.empty()) std::cout << "Warn: " << warn << "\n";
+    if (!warn.empty() && !inspect_only) std::cout << "Warn: " << warn << "\n";
     if (!err.empty()) std::cerr << "Err: " << err << "\n";
     if (!ret) {
         std::cerr << "Failed to load " << input_file << "\n";
         ScrubOrphanSidecars(fs::path(out_dir) / "textures");
         return 1;
     }
+
+    if (inspect_only) {
+        animation_cook::WriteInspectionJson(
+            animation_cook::Inspect(model), std::cout);
+        return 0;
+    }
+
+    std::string base_name = in_path.stem().string();
+    fs::path model_output_dir = fs::path(out_dir) / base_name;
+    fs::create_directories(model_output_dir);
+    fs::create_directories(model_output_dir / "materials");
+    fs::path tex_out_dir = model_output_dir / "materials" / "textures";
+    if (import_skeleton) {
+        if (!animation_cook::Cook(
+                model,
+                model_output_dir,
+                base_name,
+                selected_animations,
+                true,
+                scale_x,
+                scale_y,
+                scale_z)) {
+            std::cerr << "ERROR: requested skeleton/animation import but no valid glTF skin was found.\n";
+            return 4;
+        }
+    }
+    if (!import_mesh) {
+        return 0;
+    }
+
+    if (!import_textures)
+        model.images.clear();
+    if (!import_materials)
+        model.materials.clear();
+
+    g_basisu_path = ResolveBasisuPath(argc > 0 ? argv[0] : nullptr, cli_basisu);
+    if (!model.images.empty() && g_basisu_path.empty()) {
+        std::cerr << "ERROR: cannot locate basisu binary. Tried in order:\n"
+                  << "  1. --basisu-path <abs path>\n"
+                  << "  2. <engine_root>/out/basisu\n"
+                  << "  3. $QUICK3D_ENGINE_ROOT/out/basisu\n"
+                  << "  4. ./out/basisu\n";
+        ScrubOrphanSidecars(fs::path(out_dir) / "textures");
+        return 2;
+    }
+    if (!g_basisu_path.empty())
+        std::cout << "Using basisu: " << g_basisu_path << "\n";
 
     int total_tasks = (int)model.images.size();
     int defaultScene = model.defaultScene > -1 ? model.defaultScene : 0;
@@ -595,6 +663,9 @@ int main(int argc, char** argv) {
     };
 
     const tinygltf::Scene& scene = model.scenes[defaultScene];
+    const animation_cook::SkeletonData imported_skeleton =
+        animation_cook::BuildSkeleton(model);
+    const int imported_skin_index = imported_skeleton.skin_index;
 
     bool first_entity = true;
 
@@ -605,10 +676,15 @@ int main(int argc, char** argv) {
 
         struct ExtractedPrimitive {
             std::vector<Vertex> v;
+            std::vector<SkinSourceVertex> skin_v;
             std::vector<uint32_t> i;
             float min_x, min_y, min_z, max_x, max_y, max_z;
             float local_offset_x, local_offset_y, local_offset_z;
             int material_idx;
+            bool skinned = false;
+            float skinned_output_offset_x = 0.0f;
+            float skinned_output_offset_y = 0.0f;
+            float skinned_output_offset_z = 0.0f;
         };
         std::vector<ExtractedPrimitive> extracted;
 
@@ -665,13 +741,72 @@ int main(int argc, char** argv) {
                         tangents = reinterpret_cast<const float*>(&tanBuffer.data[tanView.byteOffset + tanAccessor.byteOffset]);
                     }
 
+                    bool has_skin_attributes =
+                        imported_skin_index >= 0 &&
+                        node.skin == imported_skin_index &&
+                        primitive.attributes.count("JOINTS_0") > 0 &&
+                        primitive.attributes.count("WEIGHTS_0") > 0;
+                    std::vector<double> joint_values;
+                    std::vector<double> weight_values;
+                    if (has_skin_attributes) {
+                        joint_values = animation_cook::ReadAccessor(
+                            model,
+                            primitive.attributes.at("JOINTS_0"));
+                        weight_values = animation_cook::ReadAccessor(
+                            model,
+                            primitive.attributes.at("WEIGHTS_0"));
+                        bool valid_influences =
+                            joint_values.size() == posAccessor.count * 4 &&
+                            weight_values.size() == posAccessor.count * 4;
+                        if (valid_influences) {
+                            for (size_t vertex_index = 0;
+                                 vertex_index < posAccessor.count && valid_influences;
+                                 ++vertex_index) {
+                                double weight_sum = 0.0;
+                                for (int influence = 0; influence < 4; ++influence) {
+                                    double joint = joint_values[vertex_index * 4 + influence];
+                                    double weight = weight_values[vertex_index * 4 + influence];
+                                    if (!std::isfinite(joint) ||
+                                        joint < 0.0 ||
+                                        joint >= static_cast<double>(imported_skeleton.joint_nodes.size()) ||
+                                        std::floor(joint) != joint ||
+                                        !std::isfinite(weight) ||
+                                        weight < 0.0) {
+                                        valid_influences = false;
+                                        break;
+                                    }
+                                    weight_sum += weight;
+                                }
+                                if (weight_sum <= 1.0e-8)
+                                    valid_influences = false;
+                            }
+                        }
+                        if (!valid_influences) {
+                            std::cerr << "WARN: skinned primitive on node "
+                                      << node_idx
+                                      << " has invalid JOINTS_0/WEIGHTS_0 data; "
+                                         "writing it as static geometry.\\n";
+                            has_skin_attributes = false;
+                        }
+                    }
+                    pdata.skinned = has_skin_attributes;
+
                     for (size_t i = 0; i < posAccessor.count; ++i) {
                         Vertex v{};
                         v.px = positions[i * 3 + 0];
                         v.py = positions[i * 3 + 1];
                         v.pz = positions[i * 3 + 2];
-                        world_mat.transform(v.px, v.py, v.pz);
-                        
+                        if (!has_skin_attributes) {
+                            world_mat.transform(v.px, v.py, v.pz);
+                        } else {
+                            // Mirrors the cook's zero-scale guard in
+                            // AnimationCook.h so a degenerate axis stays
+                            // consistent between mesh and skeleton data.
+                            v.px *= scale_x == 0.0f ? 1.0f : scale_x;
+                            v.py *= scale_y == 0.0f ? 1.0f : scale_y;
+                            v.pz *= scale_z == 0.0f ? 1.0f : scale_z;
+                        }
+
                         pdata.min_x = std::min(pdata.min_x, v.px);
                         pdata.min_y = std::min(pdata.min_y, v.py);
                         pdata.min_z = std::min(pdata.min_z, v.pz);
@@ -683,7 +818,8 @@ int main(int argc, char** argv) {
                             v.nx = normals[i * 3 + 0];
                             v.ny = normals[i * 3 + 1];
                             v.nz = normals[i * 3 + 2];
-                            world_mat.transform_normal(v.nx, v.ny, v.nz);
+                            if (!has_skin_attributes)
+                                world_mat.transform_normal(v.nx, v.ny, v.nz);
                         } else {
                             v.nx = 0.0f; v.ny = 1.0f; v.nz = 0.0f;
                         }
@@ -700,12 +836,35 @@ int main(int argc, char** argv) {
                             v.ty = tangents[i * 4 + 1];
                             v.tz = tangents[i * 4 + 2];
                             v.tw = tangents[i * 4 + 3];
-                            world_mat.transform_normal(v.tx, v.ty, v.tz); // Roughly valid
+                            if (!has_skin_attributes)
+                                world_mat.transform_normal(v.tx, v.ty, v.tz);
                         } else {
                             v.tx = 1.0f; v.ty = 0.0f; v.tz = 0.0f; v.tw = 1.0f;
                         }
 
                         pdata.v.push_back(v);
+                        if (has_skin_attributes) {
+                            SkinSourceVertex source{};
+                            source.px = v.px;
+                            source.py = v.py;
+                            source.pz = v.pz;
+                            source.nx = v.nx;
+                            source.ny = v.ny;
+                            source.nz = v.nz;
+                            source.tu = v.tu;
+                            source.tv = v.tv;
+                            source.tx = v.tx;
+                            source.ty = v.ty;
+                            source.tz = v.tz;
+                            source.tw = v.tw;
+                            for (int influence = 0; influence < 4; ++influence) {
+                                source.bone_indices[influence] = static_cast<float>(
+                                    joint_values[i * 4 + influence]);
+                                source.bone_weights[influence] = static_cast<float>(
+                                    weight_values[i * 4 + influence]);
+                            }
+                            pdata.skin_v.push_back(source);
+                        }
                     }
 
                     if (primitive.indices >= 0) {
@@ -788,10 +947,17 @@ int main(int argc, char** argv) {
                     float part_center_z =
                         p.local_offset_z + pivot_z;
                     
-                    for (auto& v : p.v) {
-                        v.px -= part_center_x;
-                        v.py -= part_center_y;
-                        v.pz -= part_center_z;
+                    if (p.skinned) {
+                        p.skinned_output_offset_x = -part_center_x;
+                        p.skinned_output_offset_y = -part_center_y;
+                        p.skinned_output_offset_z = -part_center_z;
+                    }
+                    else {
+                        for (Vertex& vertex : p.v) {
+                            vertex.px -= part_center_x;
+                            vertex.py -= part_center_y;
+                            vertex.pz -= part_center_z;
+                        }
                     }
                     p.min_x -= part_center_x;
                     p.min_y -= part_center_y;
@@ -812,6 +978,7 @@ int main(int argc, char** argv) {
                         };
                         fnv(obj_name.data(), obj_name.size());
                         if (!p.v.empty()) fnv(p.v.data(), p.v.size() * sizeof(Vertex));
+                        if (!p.skin_v.empty()) fnv(p.skin_v.data(), p.skin_v.size() * sizeof(SkinSourceVertex));
                         if (!p.i.empty()) fnv(p.i.data(), p.i.size() * sizeof(uint32_t));
                         char buf[17];
                         snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
@@ -824,7 +991,7 @@ int main(int argc, char** argv) {
                     
                     std::ofstream out_file(msh_path, std::ios::binary);
                     if (out_file) {
-                        uint32_t magic = 0x3148534D;
+                        uint32_t magic = p.skinned ? 0x3248534D : 0x3148534D;
                         uint32_t v_count = (uint32_t)p.v.size();
                         uint32_t i_count = (uint32_t)p.i.size();
                         uint32_t index_format = 32;
@@ -838,7 +1005,10 @@ int main(int argc, char** argv) {
                             }
                         }
                         
-                        out_file.write((char*)p.v.data(), v_count * sizeof(Vertex));
+                        if (p.skinned)
+                            out_file.write((char*)p.skin_v.data(), v_count * sizeof(SkinSourceVertex));
+                        else
+                            out_file.write((char*)p.v.data(), v_count * sizeof(Vertex));
                         out_file.write((char*)p.i.data(), i_count * 4);
                     }
                     total_indices.fetch_add(p.i.size(), std::memory_order_relaxed);
@@ -854,7 +1024,14 @@ int main(int argc, char** argv) {
         std::string output_mdl =
             (model_output_dir / (obj_name + ".mdl")).string();
         std::ofstream mdl_file(output_mdl);
-        mdl_file << "{\n  \"version\": 3,\n  \"parts\": [\n";
+        mdl_file << "{\n  \"version\": 3,\n";
+        if (import_skeleton) {
+            mdl_file << "  \"skeleton\": \"" << base_name << ".skel\",\n";
+            if (!selected_animations.empty()) {
+                mdl_file << "  \"animation\": \"" << base_name << ".anim\",\n";
+            }
+        }
+        mdl_file << "  \"parts\": [\n";
 
         for (size_t i = 0; i < extracted.size(); ++i) {
             auto& p = extracted[i];
@@ -868,6 +1045,7 @@ int main(int argc, char** argv) {
             };
             fnv(obj_name.data(), obj_name.size());
             if (!p.v.empty()) fnv(p.v.data(), p.v.size() * sizeof(Vertex));
+            if (!p.skin_v.empty()) fnv(p.skin_v.data(), p.skin_v.size() * sizeof(SkinSourceVertex));
             if (!p.i.empty()) fnv(p.i.data(), p.i.size() * sizeof(uint32_t));
             char buf[17];
             snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
@@ -884,6 +1062,12 @@ int main(int argc, char** argv) {
                      << p.local_offset_x << ", "
                      << p.local_offset_y << ", "
                      << p.local_offset_z << "]";
+            if (p.skinned) {
+                mdl_file << ", \"skinned_output_offset\": ["
+                         << p.skinned_output_offset_x << ", "
+                         << p.skinned_output_offset_y << ", "
+                         << p.skinned_output_offset_z << "]";
+            }
             mdl_file << ", \"bounds\": {\"min\": [" << p.min_x << ", " << p.min_y << ", " << p.min_z << "], \"max\": [" << p.max_x << ", " << p.max_y << ", " << p.max_z << "]}";
             mdl_file << " }" << (i == extracted.size() - 1 ? "" : ",") << "\n";
         }

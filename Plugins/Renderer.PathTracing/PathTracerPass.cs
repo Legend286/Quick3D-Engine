@@ -24,8 +24,8 @@ public class PathTracerPass : RenderPass
     private RhiSampler _blitSampler;
     private RhiSampler _computeSampler;
 
-    private RhiTexture _accumulationBuffer;
-    private RhiTexture _outputBuffer;
+    private RhiTexture? _accumulationBuffer;
+    private RhiTexture? _outputBuffer;
     private RhiAccelStruct? _tlas;
     private uint _frameCount;
     private int _lastMaterialHash;
@@ -33,29 +33,27 @@ public class PathTracerPass : RenderPass
 
     private readonly RhiDevice _device;
     private readonly IEntityStore _world;
-    private readonly SceneGraph _scene;
     private readonly string _contentRoot;
     private readonly Renderer _renderer;
     private readonly RaytracingSceneCache _sceneCache;
+    private readonly RasterSceneGpuCache _rasterSceneCache;
 
     private uint _lastWidth = 0;
     private uint _lastHeight = 0;
     private float _lastAspect = 1.0f;
     private uint _lastDebugFlags = uint.MaxValue;
 
-    private RhiBuffer _cameraBuffer;
-    private RhiBuffer _lightBuffer;
-    private RhiBuffer _instanceBuffer;
-    private RhiBuffer _partBuffer;
-    private RhiBuffer _materialBuffer;
-
-    private List<InstanceData> _instances = new();
-    private List<PartData> _parts = new();
-    private List<MaterialData> _materials = new();
-
     private RhiBindlessHeap _bindlessHeap;
 
-    public unsafe PathTracerPass(RhiDevice device, IEntityStore world, SceneGraph scene, ScenePass scenePass, string contentRoot, RhiBindlessHeap sharedHeap, Renderer renderer)
+    internal unsafe PathTracerPass(
+        RhiDevice device,
+        IEntityStore world,
+        SceneGraph scene,
+        ScenePass scenePass,
+        string contentRoot,
+        RhiBindlessHeap sharedHeap,
+        Renderer renderer,
+        RasterSceneGpuCache rasterSceneCache)
     {
         Name = string.IsNullOrWhiteSpace(scenePass.Name) ||
             scenePass.Name.Equals("PbrPass", StringComparison.OrdinalIgnoreCase)
@@ -63,11 +61,11 @@ public class PathTracerPass : RenderPass
             : $"Path Tracing · {scenePass.Name}";
         _device = device;
         _world = world;
-        _scene = scene;
         _contentRoot = contentRoot;
         _renderer = renderer;
         _bindlessHeap = sharedHeap;
         _sceneCache = new RaytracingSceneCache(device, world);
+        _rasterSceneCache = rasterSceneCache;
 
         string shaderDir = Path.Combine(_contentRoot, "shaders");
 
@@ -86,11 +84,7 @@ public class PathTracerPass : RenderPass
         _blitSampler = RhiSampler.Create(_device);
         _computeSampler = RhiSampler.Create(_device);
 
-        _instanceBuffer = RhiBuffer.Create(_device, 16384 * (ulong)sizeof(InstanceData), RhiNative.BufferUsage.Storage);
-        _partBuffer = RhiBuffer.Create(_device, 16384 * (ulong)sizeof(PartData), RhiNative.BufferUsage.Storage);
-        _materialBuffer = RhiBuffer.Create(_device, 16384 * (ulong)sizeof(MaterialData), RhiNative.BufferUsage.Storage);
-        _cameraBuffer = RhiBuffer.Create(_device, (ulong)sizeof(CameraData), RhiNative.BufferUsage.Storage);
-        _lightBuffer = RhiBuffer.Create(_device, 16384 * (ulong)sizeof(LightData), RhiNative.BufferUsage.Storage);
+
     }
 
     private string LoadShaderSource(string relPath)
@@ -102,8 +96,18 @@ public class PathTracerPass : RenderPass
 
     public override void Setup(RenderGraphBuilder builder)
     {
-        builder.Write(Renderer.BackBufferHandle, ResourceState.RenderTarget);
-        builder.Write(Renderer.DepthBufferHandle, ResourceState.DepthStencil);
+        builder.Read(
+            RenderGraphResources.VisibilityIdentifiersHandle,
+            ResourceState.ShaderRead);
+        builder.Read(
+            RenderGraphResources.VisibilityBarycentricsHandle,
+            ResourceState.ShaderRead);
+        builder.Read(
+            RenderGraphResources.DepthBufferHandle,
+            ResourceState.ShaderRead);
+        builder.Write(
+            RenderGraphResources.BackBufferHandle,
+            ResourceState.RenderTarget);
     }
 
     public override unsafe void Execute(ICommandSink sink, RenderGraphContext ctx)
@@ -128,37 +132,19 @@ public class PathTracerPass : RenderPass
             _frameCount = 0;
         }
 
-        SceneDataExtractor.Extract(
-            _device,
-            _world,
-            _scene,
-            _bindlessHeap,
+        _rasterSceneCache.Prepare(
+            ctx.FrameNumber,
             _lastAspect,
-            ref _cameraBuffer,
-            ref _lightBuffer,
-            ref _instanceBuffer,
-            ref _partBuffer,
-            ref _materialBuffer,
-            _renderer.ActiveCameraEntity,
-            Vector3.UnitZ,
-            _frameCount,
-            _renderer.DebugFlags,
-            _renderer.ProjectionBlend,
-            _renderer.OrthographicSize,
             w,
-            h,
-            out SceneFrameData frameData,
-            out ScenePushData pushData);
+            h);
+        SceneFrameData frameData = _rasterSceneCache.FrameData;
+        ScenePushData pushData = _rasterSceneCache.PushData;
 
         if (_lastDebugFlags != pushData.DebugFlags)
         {
             _lastDebugFlags = pushData.DebugFlags;
             _frameCount = 0;
         }
-
-        _instances = frameData.Instances;
-        _parts = frameData.Parts;
-        _materials = frameData.Materials;
 
         if (frameData.Camera.ViewProj != _lastViewProj)
         {
@@ -167,7 +153,7 @@ public class PathTracerPass : RenderPass
         }
 
         int currentMatHash = 0;
-        foreach (var m in _materials)
+        foreach (var m in frameData.Materials)
         {
             currentMatHash = HashCode.Combine(currentMatHash,
                 m.BaseColor.GetHashCode(), m.Metallic.GetHashCode(), m.Roughness.GetHashCode(), m.Subsurface.GetHashCode(), m.SubsurfaceColor.GetHashCode(), m.SubsurfaceRadius.GetHashCode());
@@ -197,19 +183,36 @@ public class PathTracerPass : RenderPass
         sink.BeginComputePass("Path Tracer Compute");
         sink.BindPipeline(_computePipeline);
 
-        sink.UseBuffer(_instanceBuffer, 1);
-        sink.UseBuffer(_partBuffer, 1);
-        sink.UseBuffer(_materialBuffer, 1);
-        sink.UseBuffer(_cameraBuffer, 1);
-        sink.UseBuffer(_lightBuffer, 1);
+        sink.UseBuffer(_rasterSceneCache.InstanceBuffer, 1);
+        sink.UseBuffer(_rasterSceneCache.PartBuffer, 1);
+        sink.UseBuffer(_rasterSceneCache.MaterialBuffer, 1);
+        sink.UseBuffer(_rasterSceneCache.CameraBuffer, 1);
+        sink.UseBuffer(_rasterSceneCache.LightBuffer, 1);
+        frameData.BindGeometry(sink);
         if (_bindlessHeap.IsInitialized)
         {
             sink.BindHeap(1, _bindlessHeap);
             sink.BindSampler(0, _computeSampler);
         }
 
-        sink.BindTexture(0, _accumulationBuffer);
-        sink.BindTexture(1, _outputBuffer);
+        sink.BindTexture(0, _accumulationBuffer!);
+        sink.BindTexture(1, _outputBuffer!);
+        if (!ctx.TryGetTexture(
+                RenderGraphResources.VisibilityIdentifiersHandle,
+                out RhiTexture visibilityIdentifiers) ||
+            !ctx.TryGetTexture(
+                RenderGraphResources.VisibilityBarycentricsHandle,
+                out RhiTexture visibilityBarycentrics) ||
+            !ctx.TryGetTexture(
+                RenderGraphResources.DepthBufferHandle,
+                out RhiTexture visibilityDepth))
+        {
+            sink.EndComputePass();
+            return;
+        }
+        sink.BindTexture(6, visibilityIdentifiers);
+        sink.BindTexture(7, visibilityBarycentrics);
+        sink.BindTexture(8, visibilityDepth);
 
         if (_tlas != null)
         {
@@ -221,19 +224,13 @@ public class PathTracerPass : RenderPass
         sink.Dispatch((w + 63) / 64, h, 1, 64, 1, 1);
         sink.EndComputePass();
 
-        ctx.TryGetTexture(Renderer.DepthBufferHandle, out RhiTexture depthTarget);
-        sink.BeginRenderPass(colorTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store,
-                              depthTarget, RhiNative.LoadOp.Clear, RhiNative.StoreOp.Store);
+        sink.BeginRenderPass(
+            colorTarget,
+            RhiNative.LoadOp.Clear,
+            RhiNative.StoreOp.Store);
         sink.SetViewport(0, 0, w, h);
-        if (depthTarget != null)
-        {
-            sink.BindPipeline(_blitPipelineWithDepth);
-        }
-        else
-        {
-            sink.BindPipeline(_blitPipeline);
-        }
-        sink.BindTexture(0, _outputBuffer);
+        sink.BindPipeline(_blitPipeline);
+        sink.BindTexture(0, _outputBuffer!);
         sink.BindSampler(0, _blitSampler);
         sink.Draw(3);
         sink.EndPass();
@@ -251,11 +248,6 @@ public class PathTracerPass : RenderPass
         _computeSampler?.Dispose();
         _accumulationBuffer?.Dispose();
         _outputBuffer?.Dispose();
-        _instanceBuffer?.Dispose();
-        _partBuffer?.Dispose();
-        _materialBuffer?.Dispose();
-        _cameraBuffer?.Dispose();
-        _lightBuffer?.Dispose();
         _sceneCache?.Dispose();
     }
 }

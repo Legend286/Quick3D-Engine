@@ -25,18 +25,18 @@ public sealed class SceneLoader
         string path = Path.IsPathRooted(sceneName)
             ? sceneName
             : Path.Combine(_contentRoot, sceneName);
-            
+
         if (!File.Exists(path) &&
-            !path.EndsWith(".scene.json", System.StringComparison.OrdinalIgnoreCase))
+            !path.EndsWith(".scene.json", StringComparison.OrdinalIgnoreCase))
         {
-            string directScenePath = path + ".scene.json";
             string scenesDirectoryPath = Path.Combine(
                 _contentRoot,
                 "scenes",
                 sceneName + ".scene.json");
-            path = File.Exists(directScenePath)
-                ? directScenePath
-                : scenesDirectoryPath;
+            string directScenePath = path + ".scene.json";
+            path = File.Exists(scenesDirectoryPath)
+                ? scenesDirectoryPath
+                : directScenePath;
         }
 
         if (!File.Exists(path))
@@ -51,8 +51,23 @@ public sealed class SceneLoader
         };
         var scene = JsonSerializer.Deserialize<SceneGraph>(json, opts)
             ?? throw new InvalidDataException($"Empty scene: {path}");
+        EnsureDefaultPass(scene);
         _cache[sceneName] = scene;
         return scene;
+    }
+
+    private static void EnsureDefaultPass(SceneGraph scene)
+    {
+        if (scene.Passes.Count != 0)
+            return;
+
+        scene.Passes.Add(new ScenePass
+        {
+            Name = "PbrPass",
+            ShaderVertex = "shaders/pbr.slang",
+            ShaderFragment = "shaders/pbr.slang",
+            Entry = "main0"
+        });
     }
 
     public string ResolveMeshSource(SceneGraph scene, string meshName)

@@ -28,6 +28,25 @@ engine_cook <input.glb|gltf> [out_dir] [-scale x y z] [--basisu-path <abs>]
 | `<input.glb\|gltf>` | Source model (positional, required). |
 | `[out_dir]` | Where to dump models/textures/scenes/materials. Default = `<input>`'s parent. |
 | `-scale x y z` | Multiply all vertex positions. Negative-axis scales flip triangle winding automatically. |
+
+## Import scale and skinned meshes
+
+`-scale` is baked into **both** static and skinned parts. Static geometry is
+scaled through the node world transform; skinned geometry (which is deformed
+on the GPU from skeleton data) is scaled at three consistent sites so the rig
+and mesh stay in the same space:
+
+- skinned source vertex positions in the `.msh` stream,
+- the skeleton reference pose and animation translation samples in `.skel`/
+  `.anim` (`BuildSkeleton`/`SampleChannel` in `Cook/AnimationCook.h`),
+- the inverse-bind matrices, conjugated by the scale so bind-pose skinning
+  (`global' * inverseBind'`) remains identity.
+
+Uniform scales (a single factor on all three axes, the common unit-conversion
+case) are exact. Non-uniform scales with rotated bones are an engine-wide
+limitation shared with most engines — bind pose can drift under non-uniform
+scale + rotation, so prefer a uniform factor for rigged characters. A zero
+axis is treated as scale 1.0 (degenerate input guard).
 | `--basisu-path <abs>` | Override the `basisu` binary location. AssetImportWindow passes this automatically when basisu ships alongside engine_cook in the published bundle. |
 
 ## Exit codes

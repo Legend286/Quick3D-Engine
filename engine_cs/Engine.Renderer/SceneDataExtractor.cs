@@ -5,6 +5,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Engine.Assets;
 using Engine.RHI;
+using Engine.RenderGraph;
 using Engine.Scene;
 using Engine.Scene.Components;
 using Engine.CBindings;
@@ -22,7 +23,19 @@ internal sealed class SceneFrameData
     public List<PartData> Parts { get; } = new();
     public List<MaterialData> Materials { get; } = new();
     public HashSet<Engine.Assets.Mesh> UniqueMeshes { get; } = new();
+    public HashSet<RhiBuffer> DynamicVertexBuffers { get; } = new();
     public ScenePushData PushData;
+
+    internal void BindGeometry(ICommandSink sink)
+    {
+        foreach (Engine.Assets.Mesh mesh in UniqueMeshes)
+        {
+            sink.UseBuffer(mesh.VertexBuffer, 1);
+            sink.UseBuffer(mesh.IndexBuffer, 1);
+        }
+        foreach (RhiBuffer buffer in DynamicVertexBuffers)
+            sink.UseBuffer(buffer, 1);
+    }
 }
 
 internal static class SceneDataExtractor
@@ -38,6 +51,7 @@ internal static class SceneDataExtractor
         ref RhiBuffer instanceBuffer,
         ref RhiBuffer partBuffer,
         ref RhiBuffer materialBuffer,
+        AnimationFrameContext animationContext,
         ulong activeCameraId,
         Vector3 localCameraForward,
         uint frameCount,
@@ -307,6 +321,19 @@ internal static class SceneDataExtractor
                             materials.Add(new MaterialData { BaseColor = Vector4.One, AlbedoTexIndex = 0xFFFFFFFF, NormalTexIndex = 0xFFFFFFFF, RmaTexIndex = 0xFFFFFFFF, EmissiveTexIndex = 0xFFFFFFFF, OcclusionTexIndex = 0xFFFFFFFF });
                         }
 
+                        ulong vertexAddress = mesh.VertexBuffer.DeviceAddress;
+                        if (mesh.DeformationKind == MeshDeformationKind.Deforming &&
+                            world.TryGet<AnimatorComponent>(id, out _) &&
+                            animationContext.TryGet(
+                                id,
+                                p.MeshId,
+                                out RhiBuffer? dynamicBuffer,
+                                out ulong dynamicAddress))
+                        {
+                            vertexAddress = dynamicAddress;
+                            frameData.DynamicVertexBuffers.Add(dynamicBuffer!);
+                        }
+
                         parts.Add(new PartData
                         {
                             AabbMin = new Vector4(aabbMin, 1.0f),
@@ -314,7 +341,7 @@ internal static class SceneDataExtractor
                             LocalOffset = new Vector4(
                                 p.LocalOffset,
                                 0.0f),
-                            Vertices = mesh.VertexBuffer.DeviceAddress,
+                            Vertices = vertexAddress,
                             Indices = mesh.IndexBuffer.DeviceAddress,
                             IndexCount = mesh.IndexCount,
                             MaterialIdx = matIdx,

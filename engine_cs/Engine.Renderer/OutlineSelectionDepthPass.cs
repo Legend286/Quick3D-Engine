@@ -145,11 +145,7 @@ internal sealed class OutlineSelectionDepthPass : RenderPass, IDisposable
         sink.UseBuffer(_sceneCache.PartBuffer, 1);
         sink.UseBuffer(_sceneCache.CameraBuffer, 1);
         sink.UseBuffer(_drawCommands, 1);
-        foreach (Engine.Assets.Mesh mesh in frameData.UniqueMeshes)
-        {
-            sink.UseBuffer(mesh.VertexBuffer, 1);
-            sink.UseBuffer(mesh.IndexBuffer, 1);
-        }
+        frameData.BindGeometry(sink);
         ScenePushData push = _sceneCache.PushData;
         sink.PushConstants(
             0,

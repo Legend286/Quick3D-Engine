@@ -136,6 +136,7 @@ internal sealed class RasterSceneGpuCache : IDisposable, ISceneGpuDataProvider
             ref _instanceBuffer[_bufferIndex],
             ref _partBuffer[_bufferIndex],
             ref _materialBuffer[_bufferIndex],
+            _renderer.AnimationFrameContext,
             _renderer.ActiveCameraEntity,
             Vector3.UnitZ,
             unchecked((uint)frameNumber),

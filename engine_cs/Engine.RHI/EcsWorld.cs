@@ -152,6 +152,47 @@ public struct ModelComponent
     }
 }
 
+/// <summary>CPU-owned animation intent consumed by the GPU animation pass.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct AnimatorComponent
+{
+    /// <summary>Bit set when this animator should advance and evaluate.</summary>
+    public const uint ActiveFlag = 1u << 0;
+
+    /// <summary>Stable skeleton asset ID registered by the animation asset service.</summary>
+    public uint SkeletonId;
+
+    /// <summary>Stable animation clip asset ID registered by the animation asset service.</summary>
+    public uint BaseClipId;
+
+    /// <summary>Current clip time in seconds.</summary>
+    public float Time;
+
+    /// <summary>Playback rate; zero pauses without changing active state.</summary>
+    public float PlaybackRate;
+
+    /// <summary>Flags controlling GPU evaluation.</summary>
+    public uint Flags;
+
+    /// <summary>Generation used to reject stale slot work after entity reuse.</summary>
+    public uint Generation;
+
+    /// <summary>Creates an active base-clip animator.</summary>
+    public static AnimatorComponent Create(
+        uint skeletonId,
+        uint clipId,
+        float playbackRate = 1.0f,
+        bool looping = true)
+        => new()
+        {
+            SkeletonId = skeletonId,
+            BaseClipId = clipId,
+            PlaybackRate = playbackRate,
+            Flags = ActiveFlag | (looping ? 1u << 1 : 0u),
+            Generation = 1,
+        };
+}
+
 [StructLayout(LayoutKind.Sequential)]
 public struct MaterialComponent
 {

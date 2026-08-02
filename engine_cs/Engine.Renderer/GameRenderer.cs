@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 using System;
+using System.Linq;
 using Engine.CBindings;
 using Engine.RHI;
 using static Engine.CBindings.Log;
@@ -48,6 +49,8 @@ public sealed class GameRenderer : IDisposable
     private ulong _gizmoEntity;
     private float _sceneAnimationTime;
     private ulong _selectionPickRequest;
+    private readonly Dictionary<ulong, (uint Generation, uint ClipId, float Time)>
+        _skeletonDebugClocks = new();
     private readonly Dictionary<ulong, string>
         _pendingSubmeshMaterials = new();
 
@@ -266,10 +269,7 @@ public sealed class GameRenderer : IDisposable
     private void DrawEditorGizmo(InputState input, uint width, uint height)
     {
         _gizmoConsumesPointer = false;
-        if (SelectedEntity == 0 ||
-            SelectedEntity == _editorCameraEnt ||
-            !_world.TryGet<Transform>(SelectedEntity, out Transform transform) ||
-            !_world.TryGet<Camera>(_editorCameraEnt, out Camera camera) ||
+        if (!_world.TryGet<Camera>(_editorCameraEnt, out Camera camera) ||
             !_world.TryGet<Transform>(_editorCameraEnt, out Transform cameraTransform))
         {
             CompleteGizmoEdit();
@@ -283,6 +283,16 @@ public sealed class GameRenderer : IDisposable
             camera, cameraTransform, Vector3.UnitZ, aspect,
             _renderer.ProjectionBlend, _renderer.OrthographicSize,
             out Matrix4x4 view, out Matrix4x4 projection, out _);
+        DrawSkeletonDebug(view, projection, logicalWidth, logicalHeight);
+
+        if (SelectedEntity == 0 ||
+            SelectedEntity == _editorCameraEnt ||
+            !_world.TryGet<Transform>(SelectedEntity, out Transform transform))
+        {
+            CompleteGizmoEdit();
+            DrawPluginOverlayProvider?.Invoke()?.Invoke(input, width, height);
+            return;
+        }
 
         Matrix4x4 model =
             Matrix4x4.CreateScale(transform.Scale) *
@@ -349,6 +359,200 @@ public sealed class GameRenderer : IDisposable
         DrawPluginOverlayProvider?.Invoke()?.Invoke(input, width, height);
     }
 
+    private void DrawSkeletonDebug(
+        Matrix4x4 view,
+        Matrix4x4 projection,
+        float width,
+        float height)
+    {
+        ImGuiNET.ImDrawListPtr drawList =
+            ImGuiNET.ImGui.GetForegroundDrawList();
+        Matrix4x4 viewProjection = view * projection;
+
+        if (_skeletonDebugClocks.Count > _world.Entities.Count)
+        {
+            foreach (ulong entity in _skeletonDebugClocks.Keys.ToList())
+            {
+                if (!_world.Entities.Contains(entity))
+                    _skeletonDebugClocks.Remove(entity);
+            }
+        }
+
+        foreach (ulong entity in _world.Entities)
+        {
+            if (!_world.TryGet<AnimatorComponent>(entity, out AnimatorComponent animator) ||
+                (animator.Flags & AnimatorComponent.ActiveFlag) == 0)
+            {
+                _skeletonDebugClocks.Remove(entity);
+                continue;
+            }
+
+            Engine.Assets.SkeletonAsset? skeleton =
+                Engine.Assets.AnimationAssetRegistry.GetSkeleton(animator.SkeletonId);
+            if (skeleton == null ||
+                skeleton.Bones.Length == 0 ||
+                skeleton.ReferencePose.Length != skeleton.Bones.Length ||
+                !_world.TryGet<Transform>(entity, out Transform entityTransform))
+            {
+                continue;
+            }
+
+            Engine.Assets.AnimationClipAsset? clip =
+                Engine.Assets.AnimationAssetRegistry.GetClip(animator.BaseClipId);
+            (float debugTime, bool looping) =
+                AdvanceSkeletonDebugClock(entity, animator, clip);
+
+            Vector3[] positions = BuildSkeletonWorldPositions(
+                skeleton,
+                clip,
+                debugTime,
+                looping,
+                entityTransform.Matrix);
+            uint color = ImGuiNET.ImGui.ColorConvertFloat4ToU32(
+                entity == SelectedEntity
+                    ? new Vector4(1.0f, 0.72f, 0.15f, 1.0f)
+                    : new Vector4(0.15f, 0.85f, 1.0f, 1.0f));
+
+            for (int boneIndex = 0; boneIndex < skeleton.Bones.Length; ++boneIndex)
+            {
+                int parentIndex = skeleton.Bones[boneIndex].ParentIndex;
+                if (parentIndex < 0 || parentIndex >= positions.Length)
+                    continue;
+                if (!TryProjectSkeletonPoint(
+                        positions[parentIndex], viewProjection, width, height,
+                        out Vector2 parentScreen) ||
+                    !TryProjectSkeletonPoint(
+                        positions[boneIndex], viewProjection, width, height,
+                        out Vector2 boneScreen))
+                {
+                    continue;
+                }
+                drawList.AddLine(parentScreen, boneScreen, color, 2.0f);
+            }
+        }
+    }
+
+    /// <summary>Advances and returns the debug skeleton clock for one entity.
+    /// Mirrors the GPU animator: time advances by the renderer delta when not
+    /// paused, and wraps modulo clip duration when looping. The returned
+    /// looping flag is the combined animator-or-clip value the shader uses.</summary>
+    private (float Time, bool Looping) AdvanceSkeletonDebugClock(
+        ulong entity,
+        AnimatorComponent animator,
+        Engine.Assets.AnimationClipAsset? clip)
+    {
+        float deltaTime = _renderer.AnimationDeltaTime;
+        if (!_skeletonDebugClocks.TryGetValue(
+                entity,
+                out (uint Generation, uint ClipId, float Time) clock) ||
+            clock.Generation != animator.Generation ||
+            clock.ClipId != animator.BaseClipId)
+        {
+            clock = (animator.Generation, animator.BaseClipId, animator.Time);
+        }
+
+        bool looping = (animator.Flags & (1u << 1)) != 0 ||
+            clip != null && (clip.Metadata.Flags & 1u) != 0;
+        bool paused = (animator.Flags & (1u << 3)) != 0;
+        if (!paused)
+            clock.Time += deltaTime * animator.PlaybackRate;
+        if (looping && clip != null && clip.Metadata.Duration > 0.0f)
+            clock.Time %= clip.Metadata.Duration;
+
+        _skeletonDebugClocks[entity] = clock;
+        return (clock.Time, looping);
+    }
+
+    private static Vector3[] BuildSkeletonWorldPositions(
+        Engine.Assets.SkeletonAsset skeleton,
+        Engine.Assets.AnimationClipAsset? clip,
+        float clipTime,
+        bool looping,
+        Matrix4x4 entityMatrix)
+    {
+        var localPoses = new Engine.Assets.LocalTransformGpu[skeleton.Bones.Length];
+        for (int boneIndex = 0; boneIndex < localPoses.Length; ++boneIndex)
+        {
+            localPoses[boneIndex] = clip == null
+                ? skeleton.ReferencePose[boneIndex]
+                : Engine.Assets.AnimationSampler.SampleClip(
+                    clip,
+                    clipTime,
+                    (uint)boneIndex,
+                    looping,
+                    skeleton.ReferencePose[boneIndex]);
+        }
+
+        var globalMatrices = new Matrix4x4[skeleton.Bones.Length];
+        var resolved = new bool[globalMatrices.Length];
+
+        Matrix4x4 Resolve(int boneIndex)
+        {
+            if (resolved[boneIndex])
+                return globalMatrices[boneIndex];
+
+            Engine.Assets.LocalTransformGpu local =
+                localPoses[boneIndex];
+            Quaternion rotation = new(
+                local.Rotation.X,
+                local.Rotation.Y,
+                local.Rotation.Z,
+                local.Rotation.W);
+            Matrix4x4 localMatrix =
+                Matrix4x4.CreateScale(
+                    new Vector3(local.Scale.X, local.Scale.Y, local.Scale.Z)) *
+                Matrix4x4.CreateFromQuaternion(rotation) *
+                Matrix4x4.CreateTranslation(
+                    new Vector3(
+                        local.Translation.X,
+                        local.Translation.Y,
+                        local.Translation.Z));
+            int parentIndex = skeleton.Bones[boneIndex].ParentIndex;
+            globalMatrices[boneIndex] = parentIndex >= 0 &&
+                                        parentIndex < globalMatrices.Length
+                ? localMatrix * Resolve(parentIndex)
+                : localMatrix;
+            resolved[boneIndex] = true;
+            return globalMatrices[boneIndex];
+        }
+
+        var positions = new Vector3[globalMatrices.Length];
+        for (int boneIndex = 0; boneIndex < positions.Length; ++boneIndex)
+        {
+            Matrix4x4 worldMatrix = Resolve(boneIndex) * entityMatrix;
+            positions[boneIndex] = new Vector3(
+                worldMatrix.M41,
+                worldMatrix.M42,
+                worldMatrix.M43);
+        }
+        return positions;
+    }
+
+    private static bool TryProjectSkeletonPoint(
+        Vector3 world,
+        Matrix4x4 viewProjection,
+        float width,
+        float height,
+        out Vector2 screen)
+    {
+        Vector4 clip = Vector4.Transform(
+            new Vector4(world, 1.0f),
+            viewProjection);
+        if (!float.IsFinite(clip.W) || clip.W <= 1e-5f)
+        {
+            screen = default;
+            return false;
+        }
+
+        float inverseW = 1.0f / clip.W;
+        float ndcX = clip.X * inverseW;
+        float ndcY = clip.Y * inverseW;
+        screen = new Vector2(
+            (ndcX * 0.5f + 0.5f) * width,
+            (1.0f - (ndcY * 0.5f + 0.5f)) * height);
+        return float.IsFinite(screen.X) && float.IsFinite(screen.Y);
+    }
+
     private OPERATION GetGizmoOperation() => GizmoOperation switch
     {
         ViewportGizmoOperation.Rotate => OPERATION.ROTATE,
@@ -391,6 +595,7 @@ public sealed class GameRenderer : IDisposable
         DrainPickResults();
         EnsureCamera();
         _renderer.UpdateProjectionTransition(input.DeltaTime);
+        _renderer.SetAnimationDeltaTime(input.DeltaTime);
         UpdateOrbitingLights(input.DeltaTime);
 
         if (input.KeyP && !_wasKeyPDown)

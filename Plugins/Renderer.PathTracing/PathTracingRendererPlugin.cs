@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+using System;
 using Engine.Plugins;
 using Engine.RenderGraph;
 using Engine.Renderer;
@@ -36,6 +37,11 @@ public sealed class PathTracingRendererPlugin :
     {
         var result = new RendererPluginPlan();
         var renderer = (Engine.Renderer.Renderer)context.Renderer!;
+        if (context.SceneGpuDataProvider is not RasterSceneGpuCache rasterSceneCache)
+        {
+            throw new InvalidOperationException(
+                "Path tracing requires the canonical raster visibility scene provider.");
+        }
         foreach (ScenePass scenePass in
                  context.Scene.Passes)
         {
@@ -47,7 +53,8 @@ public sealed class PathTracingRendererPlugin :
                     scenePass,
                     context.ContentRoot,
                     context.BindlessHeap,
-                    renderer));
+                    renderer,
+                    rasterSceneCache));
         }
         return result;
     }

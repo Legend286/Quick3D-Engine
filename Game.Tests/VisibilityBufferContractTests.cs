@@ -487,6 +487,46 @@ public sealed class VisibilityBufferContractTests
             "Renderer.cs"));
     }
 
+    [Fact]
+    public void PathTracing_ConsumesCanonicalRasterVisibility()
+    {
+        string pathPass = ReadRepositoryFile(
+            "Plugins",
+            "Renderer.PathTracing",
+            "PathTracerPass.cs");
+        string pathPlugin = ReadRepositoryFile(
+            "Plugins",
+            "Renderer.PathTracing",
+            "PathTracingRendererPlugin.cs");
+        string pathShader = ReadRepositoryFile(
+            "Content",
+            "shaders",
+            "path_tracer.slang");
+        string renderer = ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "Renderer.cs");
+
+        Assert.Contains("VisibilityIdentifiersHandle", pathPass);
+        Assert.Contains("VisibilityBarycentricsHandle", pathPass);
+        Assert.Contains("DepthBufferHandle", pathPass);
+        Assert.Contains("sink.BindTexture(6, visibilityIdentifiers)", pathPass);
+        Assert.Contains("sink.BindTexture(7, visibilityBarycentrics)", pathPass);
+        Assert.Contains("sink.BindTexture(8, visibilityDepth)", pathPass);
+        Assert.Contains("Texture2D<uint2> visibilityIdentifiers", pathShader);
+        Assert.Contains("Texture2D<float2> visibilityBarycentrics", pathShader);
+        Assert.Contains("Texture2D<float> visibilityDepth", pathShader);
+        Assert.Contains("if (bounce == 0)", pathShader);
+        Assert.Contains("visibilityIdentifiers.Load", pathShader);
+        Assert.Contains("primaryDepth = visibilityDepthValue", pathShader);
+        Assert.Contains("else if (push.hasGeometry != 0u)", pathShader);
+        Assert.Contains("context.SceneGpuDataProvider is not RasterSceneGpuCache", pathPlugin);
+        Assert.DoesNotContain("new PbrPass", pathPlugin);
+        Assert.Contains("FindPathTracerInsertionIndex", renderer);
+        Assert.Contains("rasterBase.Plan.Passes[index]", renderer);
+        Assert.Contains("new VisibilityPickingPass", renderer);
+    }
+
     private static string ReadRepositoryFile(params string[] parts)
     {
         string directory = AppDomain.CurrentDomain.BaseDirectory;

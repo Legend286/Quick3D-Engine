@@ -37,12 +37,25 @@ public class ModelPartDefinition
     [JsonPropertyName("local_offset")]
     public float[] LocalOffset { get; set; } =
         new float[3];
+
+    /// <summary>Gets or sets the translation applied after GPU skinning.</summary>
+    [JsonPropertyName("skinned_output_offset")]
+    public float[] SkinnedOutputOffset { get; set; } =
+        new float[3];
 }
 
 public class ModelDefinition
 {
     [JsonPropertyName("version")]
     public int Version { get; set; }
+
+    /// <summary>Cooked skeleton sidecar relative to this model file, or empty.</summary>
+    [JsonPropertyName("skeleton")]
+    public string Skeleton { get; set; } = "";
+
+    /// <summary>Cooked animation sidecar relative to this model file, or empty.</summary>
+    [JsonPropertyName("animation")]
+    public string Animation { get; set; } = "";
 
     [JsonPropertyName("parts")]
     public ModelPartDefinition[] Parts { get; set; } = Array.Empty<ModelPartDefinition>();
@@ -63,6 +76,7 @@ public struct ModelPart
     public Vector3 BoundsSphereCenter;
     public float BoundsSphereRadius;
     public Vector3 LocalOffset;
+    public Vector3 SkinnedOutputOffset;
 }
 
 public class Model
@@ -72,6 +86,10 @@ public class Model
     /// Gets or sets the original `.mdl` part represented by this model, or -1.
     /// </summary>
     public int SourcePartIndex { get; set; } = -1;
+    /// <summary>Resolved skeleton sidecar path next to the model, or empty.</summary>
+    public string SkeletonPath { get; set; } = string.Empty;
+    /// <summary>Resolved animation sidecar path next to the model, or empty.</summary>
+    public string AnimationPath { get; set; } = string.Empty;
     public ModelPart[] Parts { get; set; } = Array.Empty<ModelPart>();
 }
 
@@ -162,6 +180,57 @@ public static class ModelLoader
     /// <summary>
     /// Creates a model view containing one stable source part.
     /// </summary>
+    /// <summary>
+    /// Resolves the animation sidecar for a model: the embedded `.mdl`
+    /// reference first, then the same-basename convention, then a scan of
+    /// sibling sidecars. The legacy cook named the `.mdl` after the glTF
+    /// root node while naming `.skel`/`.anim` after the source file stem,
+    /// so the same-basename lookup alone misses divergently-named assets.
+    /// </summary>
+    public static string? ResolveAnimationSidecar(
+        string mdlPath,
+        Model model)
+    {
+        if (!string.IsNullOrWhiteSpace(model.AnimationPath) &&
+            File.Exists(model.AnimationPath))
+        {
+            return Path.GetFullPath(model.AnimationPath);
+        }
+
+        string legacy = Path.ChangeExtension(mdlPath, ".anim");
+        if (File.Exists(legacy))
+            return Path.GetFullPath(legacy);
+
+        string? directory = Path.GetDirectoryName(mdlPath);
+        if (string.IsNullOrEmpty(directory))
+            return null;
+
+        string? skelStem = null;
+        string[] skeletons = Directory.GetFiles(directory, "*.skel");
+        if (skeletons.Length == 1)
+            skelStem = Path.GetFileNameWithoutExtension(skeletons[0]);
+
+        string[] animations = Directory.GetFiles(directory, "*.anim");
+        if (animations.Length == 0)
+            return null;
+        if (animations.Length == 1)
+            return Path.GetFullPath(animations[0]);
+        if (skelStem != null)
+        {
+            foreach (string animation in animations)
+            {
+                if (string.Equals(
+                        Path.GetFileNameWithoutExtension(animation),
+                        skelStem,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return Path.GetFullPath(animation);
+                }
+            }
+        }
+        return null;
+    }
+
     public static Model SelectPart(Model source, int partIndex)
     {
         if ((uint)partIndex >= (uint)source.Parts.Length)
@@ -172,6 +241,8 @@ public static class ModelLoader
         {
             SourcePath = source.SourcePath,
             SourcePartIndex = partIndex,
+            SkeletonPath = source.SkeletonPath,
+            AnimationPath = source.AnimationPath,
             Parts = [part]
         };
     }
@@ -180,11 +251,24 @@ public static class ModelLoader
     {
         ModelDefinition def = ReadDefinition(path);
 
+        string? modelDirectory = Path.GetDirectoryName(path);
         var model = new Model
         {
             SourcePath = path,
             Parts = new ModelPart[def.Parts.Length]
         };
+        if (!string.IsNullOrEmpty(def.Skeleton))
+        {
+            model.SkeletonPath = Path.Combine(
+                modelDirectory ?? "",
+                def.Skeleton);
+        }
+        if (!string.IsNullOrEmpty(def.Animation))
+        {
+            model.AnimationPath = Path.Combine(
+                modelDirectory ?? "",
+                def.Animation);
+        }
 
         for (int i = 0; i < def.Parts.Length; i++)
         {
@@ -196,6 +280,13 @@ public static class ModelLoader
                     partDef.LocalOffset[0],
                     partDef.LocalOffset[1],
                     partDef.LocalOffset[2]);
+            }
+            if (partDef.SkinnedOutputOffset.Length >= 3)
+            {
+                part.SkinnedOutputOffset = new Vector3(
+                    partDef.SkinnedOutputOffset[0],
+                    partDef.SkinnedOutputOffset[1],
+                    partDef.SkinnedOutputOffset[2]);
             }
             
             if (!string.IsNullOrEmpty(partDef.Mesh))

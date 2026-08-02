@@ -124,11 +124,7 @@ internal sealed class VisibilityBufferPass : RenderPass, IDisposable
             sink.UseBuffer(_sceneCache.InstanceBuffer, 1);
             sink.UseBuffer(_sceneCache.PartBuffer, 1);
             sink.UseBuffer(_sceneCache.CameraBuffer, 1);
-            foreach (Engine.Assets.Mesh mesh in frameData.UniqueMeshes)
-            {
-                sink.UseBuffer(mesh.VertexBuffer, 1);
-                sink.UseBuffer(mesh.IndexBuffer, 1);
-            }
+            frameData.BindGeometry(sink);
             sink.PushConstants(
                 0,
                 (uint)sizeof(ScenePushData),

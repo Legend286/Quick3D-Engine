@@ -102,11 +102,7 @@ internal sealed class VisibilityReconstructionPass : RenderPass, IDisposable
         sink.UseBuffer(_sceneCache.InstanceBuffer, 1);
         sink.UseBuffer(_sceneCache.PartBuffer, 1);
         sink.UseBuffer(_sceneCache.MaterialBuffer, 1);
-        foreach (Engine.Assets.Mesh mesh in frameData.UniqueMeshes)
-        {
-            sink.UseBuffer(mesh.VertexBuffer, 1);
-            sink.UseBuffer(mesh.IndexBuffer, 1);
-        }
+        frameData.BindGeometry(sink);
         sink.BindTexture(4, identifiers);
         sink.BindTexture(5, barycentrics);
         sink.BindTexture(6, depth);

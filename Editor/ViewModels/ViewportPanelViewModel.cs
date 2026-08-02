@@ -507,7 +507,21 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
 
         _gameLoop = (IGameLoop)Activator.CreateInstance(loopType)!;
         _gameLoop.Init(_device.Handle, _swap.Handle, _world, true);
-        _gameLoop.LoadScene(_contentRoot, ResolveStartupScene());
+        string startupScene = ResolveStartupScene();
+        CurrentSceneName = startupScene;
+        _gameLoop.LoadScene(_contentRoot, startupScene);
+        try
+        {
+            _baseScene = new Engine.Scene.SceneLoader(_contentRoot)
+                .Load(startupScene);
+        }
+        catch (Exception ex)
+        {
+            _baseScene = new Engine.Scene.SceneGraph();
+            Log.Warn(
+                $"[Viewport] Could not retain startup scene metadata: {ex.Message}",
+                "Editor");
+        }
         _gameLoop.IsPathTracingRendererAvailable =
             PluginCatalogService.Shared.IsEnabled(
                 "core.renderer.path-tracing");
@@ -642,12 +656,19 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         if (_world == null) return;
         string path = Path.IsPathRooted(CurrentSceneName)
             ? CurrentSceneName
-            : Path.Combine(_contentRoot, CurrentSceneName);
+            : Path.Combine(
+                _contentRoot,
+                "scenes",
+                CurrentSceneName);
         if (!path.EndsWith(".scene.json", StringComparison.OrdinalIgnoreCase))
             path += ".scene.json";
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        Engine.Scene.SceneSaver.Save(_world, _baseScene, path);
+        Engine.Scene.SceneSaver.Save(
+            _world,
+            _baseScene,
+            path,
+            _contentRoot);
         IsDirty = false;
     }
 
@@ -866,10 +887,46 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         _world.Set(ent, Engine.RHI.ModelComponent.Create(modelId));
         _world.Set(ent, Engine.Scene.Components.Transform.Default);
 
+        string? animationPath = ResolveAnimationSidecar(
+            absolutePath,
+            model);
+        if (animationPath != null)
+        {
+            try
+            {
+                Engine.Assets.AnimationAssetImportResult animation =
+                    Engine.Assets.AnimationAssetLoader.Load(animationPath);
+                _world.Set(
+                    ent,
+                    Engine.RHI.AnimatorComponent.Create(
+                        animation.SkeletonId,
+                        animation.FirstClipId));
+                Log.Info(
+                    $"Imported animation sidecar '{animationPath}' " +
+                    $"with {animation.Skeleton.Bones.Length} bone(s) and " +
+                    $"{animation.ClipIds.Count} clip(s).",
+                    "Editor");
+                _gameLoop?.InvalidateRenderPlan();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(
+                    $"Failed to import animation sidecar '{animationPath}': {ex.Message}",
+                    "Editor");
+            }
+        }
+
         IsDirty = true;
         _renderBurstFrames = Math.Max(_renderBurstFrames, 8);
         RequestRender();
     }
+
+    private static string? ResolveAnimationSidecar(
+        string mdlPath,
+        Engine.Assets.Model model)
+        => Engine.Assets.ModelLoader.ResolveAnimationSidecar(
+            mdlPath,
+            model);
 
     public ulong AddPointLight()
     {
@@ -1414,7 +1471,21 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
                 Dispatcher.UIThread.Post(() =>
                 {
                     Log.Info($"[Watcher] Scene file changed: {e.FullPath}. Reloading...", "Editor");
-                    _gameLoop?.LoadScene(_contentRoot, ResolveStartupScene());
+                    string sceneName = Path.GetFileName(e.FullPath);
+                    if (sceneName.EndsWith(".scene.json", StringComparison.OrdinalIgnoreCase))
+                        sceneName = sceneName[..^".scene.json".Length];
+                    try
+                    {
+                        _baseScene = new Engine.Scene.SceneLoader(_contentRoot)
+                            .Load(sceneName);
+                        _gameLoop?.LoadScene(_contentRoot, sceneName);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(
+                            $"[Watcher] Failed to reload scene '{sceneName}': {ex.Message}",
+                            "Editor");
+                    }
                 });
             };
         }

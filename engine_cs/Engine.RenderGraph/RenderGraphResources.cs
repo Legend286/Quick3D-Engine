@@ -36,6 +36,8 @@ public static class RenderGraphResources
         new(0x80000022);
     public static readonly ResourceHandle VisibilityReferenceHandle =
         new(0x80000023);
+    public static readonly ResourceHandle MaterialPickingDepthHandle =
+        new(0x80000024);
     private const uint ShadowCascadeHandleBase = 0x80000003;
 
     public static ResourceHandle GetShadowPageHandle(int pageIndex)

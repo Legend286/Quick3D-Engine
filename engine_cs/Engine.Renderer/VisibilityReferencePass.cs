@@ -207,11 +207,7 @@ internal sealed class VisibilityReferencePass : RenderPass, IDisposable
                 sink.UseBuffer(_sceneCache.PartBuffer, 1);
                 sink.UseBuffer(_sceneCache.MaterialBuffer, 1);
                 sink.UseBuffer(_sceneCache.CameraBuffer, 1);
-                foreach (Engine.Assets.Mesh mesh in frameData.UniqueMeshes)
-                {
-                    sink.UseBuffer(mesh.VertexBuffer, 1);
-                    sink.UseBuffer(mesh.IndexBuffer, 1);
-                }
+                frameData.BindGeometry(sink);
                 if (_owner.BindlessHeap.IsInitialized)
                 {
                     sink.BindHeap(1, _owner.BindlessHeap);

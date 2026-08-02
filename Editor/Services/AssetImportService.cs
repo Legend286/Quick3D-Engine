@@ -5,11 +5,13 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Engine.Assets;
+using Engine.Editor.ViewModels;
 using static Engine.CBindings.Log;
 
 namespace Engine.Editor.Services;
@@ -67,13 +69,50 @@ public sealed class AssetImportService : ObservableObject
         private set => SetProperty(ref _statusMessage, value);
     }
 
+    /// <summary>Inspects a glTF/GLB source without running texture compression.</summary>
+    public async Task<AssetImportInspection> InspectAsync(string sourceFile)
+    {
+        string cookExecutable = FindCookExecutable()
+            ?? throw new FileNotFoundException("engine_cook executable was not found.");
+        ProcessStartInfo processInfo = new()
+        {
+            FileName = cookExecutable,
+            Arguments = QuoteArgument(sourceFile) + " --inspect",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using Process process = new() { StartInfo = processInfo };
+        if (!process.Start())
+            throw new InvalidOperationException("engine_cook could not be started.");
+        Task<string> outputTask = process.StandardOutput.ReadToEndAsync();
+        Task<string> errorTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync().ConfigureAwait(false);
+        string output = await outputTask.ConfigureAwait(false);
+        string error = await errorTask.ConfigureAwait(false);
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"Inspection failed (code {process.ExitCode}): {error.Trim()}");
+
+        AssetImportInspection? inspection =
+            JsonSerializer.Deserialize<AssetImportInspection>(output);
+        return inspection
+            ?? throw new InvalidDataException("engine_cook returned invalid inspection JSON.");
+    }
+
     internal bool TryStart(
         string sourceFile,
         string targetDirectory,
         string assetType,
         float scaleX,
         float scaleY,
-        float scaleZ)
+        float scaleZ,
+        bool importMesh,
+        bool importSkeleton,
+        bool importMaterials,
+        bool importTextures,
+        IReadOnlyList<string> animationNames)
     {
         if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
             return false;
@@ -86,7 +125,12 @@ public sealed class AssetImportService : ObservableObject
                 assetType,
                 scaleX,
                 scaleY,
-                scaleZ));
+                scaleZ,
+                importMesh,
+                importSkeleton,
+                importMaterials,
+                importTextures,
+                animationNames));
         return true;
     }
 
@@ -96,7 +140,12 @@ public sealed class AssetImportService : ObservableObject
         string assetType,
         float scaleX,
         float scaleY,
-        float scaleZ)
+        float scaleZ,
+        bool importMesh,
+        bool importSkeleton,
+        bool importMaterials,
+        bool importTextures,
+        IReadOnlyList<string> animationNames)
     {
         try
         {
@@ -112,15 +161,32 @@ public sealed class AssetImportService : ObservableObject
                 ? $" --basisu-path \"{basisuPath}\""
                 : string.Empty;
 
+            var arguments = new StringBuilder();
+            arguments.Append(QuoteArgument(sourceFile));
+            arguments.Append(' ').Append(QuoteArgument(targetDirectory));
+            arguments.Append(" -scale ")
+                .Append(scaleX.ToString(CultureInfo.InvariantCulture))
+                .Append(' ').Append(scaleY.ToString(CultureInfo.InvariantCulture))
+                .Append(' ').Append(scaleZ.ToString(CultureInfo.InvariantCulture));
+            if (!importMesh)
+                arguments.Append(" --no-mesh");
+            if (importSkeleton)
+                arguments.Append(" --import-skeleton");
+            if (!importMaterials)
+                arguments.Append(" --no-materials");
+            if (!importTextures)
+                arguments.Append(" --no-textures");
+            foreach (string animationName in animationNames)
+            {
+                arguments.Append(" --import-animation ")
+                    .Append(QuoteArgument(animationName));
+            }
+            arguments.Append(basisuFlag);
+
             var processInfo = new ProcessStartInfo
             {
                 FileName = cookExecutable,
-                Arguments =
-                    $"\"{sourceFile}\" \"{targetDirectory}\" " +
-                    $"-scale {scaleX.ToString(CultureInfo.InvariantCulture)} " +
-                    $"{scaleY.ToString(CultureInfo.InvariantCulture)} " +
-                    $"{scaleZ.ToString(CultureInfo.InvariantCulture)}" +
-                    basisuFlag,
+                Arguments = arguments.ToString(),
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -212,6 +278,9 @@ public sealed class AssetImportService : ObservableObject
             Math.Max(1, maximum),
             false);
     }
+
+    private static string QuoteArgument(string value)
+        => $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"";
 
     private static string? FindCookExecutable()
     {

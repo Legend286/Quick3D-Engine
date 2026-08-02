@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using Avalonia;
+using Avalonia.Threading;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
@@ -45,8 +46,33 @@ public partial class AssetImportWindow : Window
                 vm.AssetType = "Texture";
             else
                 vm.AssetType = "Model";
+
+            if (vm.AssetType == "Model")
+                await InspectSourceAsync(vm);
         }
     }
+
+    private static async Task InspectSourceAsync(AssetImportViewModel vm)
+    {
+        vm.IsInspecting = true;
+        vm.InspectionMessage = "Inspecting source animations...";
+        try
+        {
+            AssetImportInspection inspection =
+                await Services.AssetImportService.Shared
+                    .InspectAsync(vm.SourceFile);
+            vm.ApplyInspection(inspection);
+        }
+        catch (Exception ex)
+        {
+            vm.ClearInspection($"Inspection failed: {ex.Message}");
+        }
+        finally
+        {
+            vm.IsInspecting = false;
+        }
+    }
+
     private void OnImportClicked(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not AssetImportViewModel vm) return;
@@ -57,13 +83,27 @@ public partial class AssetImportWindow : Window
             return;
         }
 
+        if (vm.AssetType == "Model" &&
+            !vm.ImportMesh &&
+            !vm.ImportSkeleton &&
+            vm.SelectedAnimationNames().Count == 0)
+        {
+            vm.StatusMessage = "Select mesh, skeleton, or at least one animation.";
+            return;
+        }
+
         if (!Services.AssetImportService.Shared.TryStart(
                 vm.SourceFile,
                 vm.TargetDirectory,
                 vm.AssetType,
                 vm.ScaleX,
                 vm.ScaleY,
-                vm.ScaleZ))
+                vm.ScaleZ,
+                vm.ImportMesh,
+                vm.ImportSkeleton,
+                vm.ImportMaterials,
+                vm.ImportTextures,
+                vm.SelectedAnimationNames()))
         {
             vm.StatusMessage = "Another asset import is already running.";
             return;

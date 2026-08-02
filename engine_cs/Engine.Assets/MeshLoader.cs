@@ -19,9 +19,11 @@ public class Mesh : IDisposable
 {
     public RhiBuffer VertexBuffer;
     public RhiBuffer IndexBuffer;
+    public RhiBuffer? SkinSourceBuffer;
     public uint VertexCount;
     public uint IndexCount;
     public uint IndexFormat; // 16 or 32
+    public MeshDeformationKind DeformationKind;
     public RhiAccelStruct? Blas;
     /// <summary>Gets the geometry-derived local sphere centre.</summary>
     public Vector3 BoundsSphereCenter;
@@ -35,13 +37,17 @@ public class Mesh : IDisposable
         uint ic,
         uint ifmt,
         Vector3 boundsSphereCenter,
-        float boundsSphereRadius)
+        float boundsSphereRadius,
+        RhiBuffer? skinSourceBuffer = null,
+        MeshDeformationKind deformationKind = MeshDeformationKind.Static)
     {
         VertexBuffer = vb;
         IndexBuffer = ib;
+        SkinSourceBuffer = skinSourceBuffer;
         VertexCount = vc;
         IndexCount = ic;
         IndexFormat = ifmt;
+        DeformationKind = deformationKind;
         BoundsSphereCenter = boundsSphereCenter;
         BoundsSphereRadius = boundsSphereRadius;
     }
@@ -50,6 +56,7 @@ public class Mesh : IDisposable
     {
         VertexBuffer?.Dispose();
         IndexBuffer?.Dispose();
+        SkinSourceBuffer?.Dispose();
         Blas?.Dispose();
     }
 }
@@ -177,12 +184,18 @@ public static class MeshLoader
         fixed (byte* ptr = fileBytes)
         {
             MeshHeader* header = (MeshHeader*)ptr;
-            if (header->Magic != 0x3148534D)
+            bool isSkinned = header->Magic == 0x3248534D;
+            if (!isSkinned && header->Magic != 0x3148534D)
                 throw new InvalidDataException("Invalid .msh file magic.");
+            if (header->VertexCount == 0 ||
+                header->IndexFormat is not (16u or 32u))
+                throw new InvalidDataException("Invalid .msh counts or index format.");
 
             ulong iSize = (ulong)header->IndexCount * (header->IndexFormat == 16 ? 2ul : 4ul);
+            if ((ulong)fileBytes.Length < 16ul + iSize)
+                throw new InvalidDataException("Truncated .msh index data.");
             ulong expectedVSize = (ulong)fileBytes.Length - 16ul - iSize;
-            int stride = (int)(expectedVSize / header->VertexCount);
+            int stride = checked((int)(expectedVSize / header->VertexCount));
             (Vector3 sphereCenter, float sphereRadius) =
                 CalculateBoundingSphere(
                     ptr + 16,
@@ -190,8 +203,14 @@ public static class MeshLoader
                     stride);
 
             ulong vSizeTarget = (ulong)header->VertexCount * (ulong)sizeof(Vertex);
+            ulong skinSourceSize = isSkinned
+                ? checked((ulong)header->VertexCount * (ulong)Marshal.SizeOf<SkinSourceVertexGpu>())
+                : 0ul;
 
             RhiBuffer vb = RhiBuffer.Create(device, vSizeTarget, RhiNative.BufferUsage.Vertex | RhiNative.BufferUsage.Storage);
+            RhiBuffer? skinSourceBuffer = isSkinned
+                ? RhiBuffer.Create(device, skinSourceSize, RhiNative.BufferUsage.Storage)
+                : null;
             RhiBuffer ib = RhiBuffer.Create(device, iSize, RhiNative.BufferUsage.Index | RhiNative.BufferUsage.Storage);
             string meshName = Path.GetFileName(path);
             vb.SetDebugName($"{meshName} vertices", "Model");
@@ -217,12 +236,42 @@ public static class MeshLoader
                     vb.Upload((IntPtr)upPtr, vSizeTarget);
                 }
             }
-            else if (stride == sizeof(Vertex))
+            else if (stride == sizeof(Vertex) && !isSkinned)
             {
                 vb.Upload(new IntPtr(ptr + 16), vSizeTarget);
             }
+            else if (isSkinned && stride == Marshal.SizeOf<SkinSourceVertexGpu>())
+            {
+                skinSourceBuffer!.Upload(new IntPtr(ptr + 16), skinSourceSize);
+                SkinSourceVertexGpu[] bindPose = new SkinSourceVertexGpu[header->VertexCount];
+                new ReadOnlySpan<byte>(ptr + 16, checked((int)skinSourceSize))
+                    .CopyTo(MemoryMarshal.AsBytes(bindPose.AsSpan()));
+                Vertex[] output = new Vertex[header->VertexCount];
+                for (int index = 0; index < output.Length; ++index)
+                {
+                    SkinSourceVertexGpu source = bindPose[index];
+                    output[index] = new Vertex
+                    {
+                        px = source.Position.X,
+                        py = source.Position.Y,
+                        pz = source.Position.Z,
+                        nx = source.Normal.X,
+                        ny = source.Normal.Y,
+                        nz = source.Normal.Z,
+                        tu = source.Texcoord.X,
+                        tv = source.Texcoord.Y,
+                        tx = source.Tangent.X,
+                        ty = source.Tangent.Y,
+                        tz = source.Tangent.Z,
+                        tw = source.Tangent.W,
+                    };
+                }
+                vb.Upload<Vertex>(output.AsSpan());
+            }
             else
             {
+                skinSourceBuffer?.Dispose();
+                vb.Dispose();
                 throw new InvalidDataException($"Unknown vertex stride {stride}");
             }
 
@@ -235,7 +284,11 @@ public static class MeshLoader
                 header->IndexCount,
                 header->IndexFormat,
                 sphereCenter,
-                sphereRadius);
+                sphereRadius,
+                skinSourceBuffer,
+                isSkinned
+                    ? MeshDeformationKind.Deforming
+                    : MeshDeformationKind.Static);
             lock (_lock)
             {
                 _cache[fullPath] = mesh;

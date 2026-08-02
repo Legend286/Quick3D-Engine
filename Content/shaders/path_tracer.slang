@@ -17,6 +17,21 @@ struct BindlessHeap {
 [[vk::binding(3, 0)]] RWTexture2D<float4> accumulationBuffer;
 [[vk::binding(4, 0)]] RWTexture2D<float4> outputBuffer;
 [[vk::binding(5, 0)]] RaytracingAccelerationStructure tlas;
+[[vk::binding(6, 0)]] Texture2D<uint2> visibilityIdentifiers;
+[[vk::binding(7, 0)]] Texture2D<float2> visibilityBarycentrics;
+[[vk::binding(8, 0)]] Texture2D<float> visibilityDepth;
+
+float3 UnpackVisibilityBarycentrics(float2 barycentricXY)
+{
+    float3 barycentrics = max(
+        float3(
+            barycentricXY,
+            1.0 - barycentricXY.x - barycentricXY.y),
+        0.0);
+    return barycentrics / max(
+        barycentrics.x + barycentrics.y + barycentrics.z,
+        1.0e-6);
+}
 
 // =====================================================================
 // PCG RNG
@@ -604,26 +619,45 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
         float3 rayOrigin;
         float3 rayDir;
         BuildPrimaryRay(ndc, rayOrigin, rayDir);
-        RayDesc dbgRay;
-        dbgRay.Origin = rayOrigin; dbgRay.TMin = 0.001;
-        dbgRay.Direction = rayDir; dbgRay.TMax = 10000.0;
-        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> dbgQ;
-        if (push.hasGeometry != 0u) { dbgQ.TraceRayInline(tlas, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xFF, dbgRay); dbgQ.Proceed(); }
+        uint2 visibilityId =
+            visibilityIdentifiers.Load(int3(dispatchThreadID.xy, 0));
+        float visibilityDepthValue =
+            visibilityDepth.Load(int3(dispatchThreadID.xy, 0));
         float3 dbgColor = float3(0.0);
-        if (push.hasGeometry != 0u && dbgQ.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-            uint partIdx = dbgQ.CommittedInstanceID();
-            uint primitiveId = dbgQ.CommittedPrimitiveIndex();
-            float2 committedBarycentrics =
-                dbgQ.CommittedTriangleBarycentrics();
-            float3 barycentrics = float3(
-                1.0 -
-                    committedBarycentrics.x -
-                    committedBarycentrics.y,
-                committedBarycentrics.x,
-                committedBarycentrics.y);
-            float t = dbgQ.CommittedRayT();
-            float3 hitPosition = rayOrigin + rayDir * t;
+        bool visibilityHit =
+            push.hasGeometry != 0u &&
+            visibilityDepthValue < 0.999999;
+        if (visibilityHit) {
+            uint partIdx = visibilityId.x;
+            uint primitiveId = visibilityId.y;
             PartData part = push.parts[partIdx];
+            uint triangleOffset = primitiveId * 3u;
+            visibilityHit = triangleOffset + 2u < part.indexCount;
+            if (!visibilityHit)
+            {
+                outputBuffer[dispatchThreadID.xy] =
+                    float4(0.0, 0.0, 0.0, 1.0);
+                return;
+            }
+            float3 barycentrics = UnpackVisibilityBarycentrics(
+                visibilityBarycentrics.Load(
+                    int3(dispatchThreadID.xy, 0)));
+            uint index0 = LoadPartVertexIndex(part, triangleOffset);
+            uint index1 = LoadPartVertexIndex(part, triangleOffset + 1u);
+            uint index2 = LoadPartVertexIndex(part, triangleOffset + 2u);
+            Vertex vertex0 = part.vertices[index0];
+            Vertex vertex1 = part.vertices[index1];
+            Vertex vertex2 = part.vertices[index2];
+            float3 localPosition =
+                barycentrics.x * float3(vertex0.px, vertex0.py, vertex0.pz) +
+                barycentrics.y * float3(vertex1.px, vertex1.py, vertex1.pz) +
+                barycentrics.z * float3(vertex2.px, vertex2.py, vertex2.pz) +
+                part.localOffset.xyz;
+            InstanceData instance =
+                push.instances[part.instanceIdx];
+            float3 hitPosition = mul(
+                instance.modelMatrix,
+                float4(localPosition, 1.0)).xyz;
             InstanceData instance =
                 push.instances[part.instanceIdx];
             uint debugSeed =
@@ -749,7 +783,9 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
             } else if (debugView == 19u) {
                 dbgColor = tangent * 0.5 + 0.5;
             }
-        } else {
+        }
+        if (!visibilityHit)
+        {
             dbgColor =
                 debugView == 1u || debugView >= 13u
                 ? float3(0.0)
@@ -764,7 +800,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
 
     uint seed = dispatchThreadID.y * uint(push.resolution.x) + dispatchThreadID.x + push.frameCount * 719393;
     
-    float2 pixelCenter = float2(dispatchThreadID.xy) + float2(rand(seed), rand(seed));
+    float2 pixelCenter = float2(dispatchThreadID.xy) + 0.5;
     float2 inUV = pixelCenter * push.resolution.zw;
     float2 ndc  = inUV * 2.0 - 1.0;
     ndc.y = -ndc.y;
@@ -795,20 +831,84 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
     for (int iter = 0; iter < 32; iter++) {
         if (bounce >= MAX_BOUNCES) break;
 
-        RayQuery<RAY_FLAG_FORCE_OPAQUE> q;
-        if (push.hasGeometry != 0u) {
+        bool hit = false;
+        uint partIdx = 0u;
+        uint primId = 0u;
+        float3 bary = float3(0.0, 0.0, 1.0);
+        float3 hitPos = float3(0.0);
+
+        if (bounce == 0)
+        {
+            float visibilityDepthValue =
+                visibilityDepth.Load(int3(dispatchThreadID.xy, 0));
+            if (visibilityDepthValue < 0.999999 &&
+                push.hasGeometry != 0u)
+            {
+                uint2 identifiers =
+                    visibilityIdentifiers.Load(
+                        int3(dispatchThreadID.xy, 0));
+                PartData visibilityPart = push.parts[identifiers.x];
+                uint triangleOffset = identifiers.y * 3u;
+                if (triangleOffset + 2u < visibilityPart.indexCount)
+                {
+                    primaryDepth = visibilityDepthValue;
+                    bary = UnpackVisibilityBarycentrics(
+                        visibilityBarycentrics.Load(
+                            int3(dispatchThreadID.xy, 0)));
+                    uint index0 = LoadPartVertexIndex(
+                        visibilityPart,
+                        triangleOffset);
+                    uint index1 = LoadPartVertexIndex(
+                        visibilityPart,
+                        triangleOffset + 1u);
+                    uint index2 = LoadPartVertexIndex(
+                        visibilityPart,
+                        triangleOffset + 2u);
+                    Vertex vertex0 = visibilityPart.vertices[index0];
+                    Vertex vertex1 = visibilityPart.vertices[index1];
+                    Vertex vertex2 = visibilityPart.vertices[index2];
+                    float3 localPosition =
+                        bary.x * float3(vertex0.px, vertex0.py, vertex0.pz) +
+                        bary.y * float3(vertex1.px, vertex1.py, vertex1.pz) +
+                        bary.z * float3(vertex2.px, vertex2.py, vertex2.pz) +
+                        visibilityPart.localOffset.xyz;
+                    InstanceData visibilityInstance =
+                        push.instances[visibilityPart.instanceIdx];
+                    hitPos = mul(
+                        visibilityInstance.modelMatrix,
+                        float4(localPosition, 1.0)).xyz;
+                    partIdx = identifiers.x;
+                    primId = identifiers.y;
+                    hit = true;
+                }
+            }
+            if (!hit)
+            {
+                radiance += throughput * GetSkyRadiance(
+                    ray.Direction,
+                    sunDir,
+                    push.sky);
+                break;
+            }
+        }
+        else if (push.hasGeometry != 0u)
+        {
+            RayQuery<RAY_FLAG_FORCE_OPAQUE> q;
             q.TraceRayInline(tlas, RAY_FLAG_FORCE_OPAQUE, 0xFF, ray);
             q.Proceed();
+            if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+            {
+                partIdx = q.CommittedInstanceID();
+                primId = q.CommittedPrimitiveIndex();
+                float2 b = q.CommittedTriangleBarycentrics();
+                bary = float3(1.0 - b.x - b.y, b.x, b.y);
+                float t = q.CommittedRayT();
+                hitPos = ray.Origin + ray.Direction * t;
+                hit = true;
+            }
         }
         
-        if (push.hasGeometry != 0u && q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-            uint partIdx = q.CommittedInstanceID();
-            uint primId  = q.CommittedPrimitiveIndex();
-            float2 b     = q.CommittedTriangleBarycentrics();
-            float3 bary  = float3(1.0 - b.x - b.y, b.x, b.y);
-            float  t     = q.CommittedRayT();
-            
-            float3 hitPos = ray.Origin + ray.Direction * t;
+        if (hit) {
             float3 N, vertexNormal, T, B, albedo;
             float2 surfaceUv;
             float ambientOcclusion;

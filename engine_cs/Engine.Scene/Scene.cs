@@ -97,4 +97,7 @@ public sealed class ModelRef
     [JsonPropertyName("part_index")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? PartIndex { get; set; }
+    [JsonPropertyName("animation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AnimationSource { get; set; }
 }

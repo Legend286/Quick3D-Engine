@@ -40,19 +40,23 @@ would allocate an unused heap for every submitted frame.
 
 The main renderer keeps one `RenderGraphExecutor` alive across frames. Command
 recorders remain submission-scoped, while transient heaps and timing history
-remain renderer-scoped. The executor captures CPU command-recording duration
-for each pass.
+remain renderer-scoped. The executor captures both per-pass CPU command-recording
+durations and a render-graph wall-clock duration for each execution. The
+per-pass values are diagnostic detail; the frame CPU value includes graph setup,
+pass recording, submission, and timing bookkeeping.
 
 GPU timing uses three reusable timestamp-query pools per active queue. Metal
 assigns unique counter pairs to each encoder inside a 64-sample logical-pass
 block. Explicit draw and dispatch boundaries are preferred; stage-only render
-timing sums vertex and fragment intervals. The displayed workload sums sampled
-passes per queue and selects the longer asynchronous queue, excluding swapchain
-fences and presentation pacing outside measured encoders. The frame resolves
-each pool once, and a later frame polls it without waiting. If all pools are
-still in flight, the executor skips that frame's GPU capture rather than
-blocking rendering. Backends without timestamp support leave the nullable GPU
-fields empty.
+timing sums vertex and fragment intervals. The displayed frame GPU duration is the completed command-buffer GPU start-to-end
+span, with graphics and asynchronous-compute spans combined by their longest
+queue interval. Per-pass values remain the sampled encoder-boundary durations.
+The summed sampled-pass workload is retained separately for scheduling and is
+not presented as total frame time. A lower median of recent raw frame spans
+feeds the adaptive scheduler. The frame resolves each pool once, and a later
+frame polls it without waiting. If all pools are still in flight, the executor
+skips that frame's GPU capture rather than blocking rendering. Backends without
+timestamp support leave the nullable GPU fields empty.
 
 Each completed capture is associated with its exact compiled plan, execution
 frame, queue, and successfully recorded pass slots. Graphics and asynchronous
@@ -62,12 +66,11 @@ samples, so invalid, unsupported, and queue-local gaps cannot inherit another
 pass's previous timing. Captures from a rebuilt plan are discarded even when
 the new plan happens to contain the same number of passes.
 
-The displayed frame duration and adaptive work controller use the lower
-median of the latest 15 active graphics workloads. This rejects isolated
-marker spikes without hiding sustained GPU pressure. The completed command
-buffer's GPU start-to-end span remains internal and validates pass samples,
-but never controls scheduling because it can include fullscreen display
-synchronization.
+The adaptive work controller uses the lower median of the latest 15 completed
+raw GPU frame spans. This rejects isolated frame spikes without hiding sustained
+GPU pressure. The diagnostics view reports the current raw span instead of the
+median, while sampled pass sums remain available internally as queue-local GPU
+work for domain accounting.
 
 Skipped passes do not invalidate timing results for passes that recorded valid
 encoder-boundary samples. Their duration remains unavailable while valid pass
@@ -146,3 +149,18 @@ scene without painting over editor controls.
 Pass display names describe the active implementation. Raster scene passes are
 reported as `Forward PBR`; compute path-traced scene passes are reported as
 `Path Tracing`, independent of legacy names stored in scene JSON.
+
+## Hybrid Visibility-Primary Path Tracing
+
+When path tracing is active with visibility buffers enabled, the path renderer
+reuses the canonical clustered plan's `VisibilityBufferPass` and shared
+`RasterSceneGpuCache`. The path plugin contributes only its compute and blit
+overlay; it does not construct a `PbrPass`, second rasterizer, or second scene
+snapshot. The overlay reads the existing identifier, barycentric, and depth
+resources for its primary hit, reconstructs the triangle from the persistent
+scene buffers, and retains TLAS queries for secondary transport and shadows.
+
+The same raster visibility resources remain available to `VisibilityPickingPass`,
+so entity selection and material drops resolve the picked `PartData` index even
+while path tracing is displayed. The raster base pass list owns the shared
+resources and remains the sole owner during plan disposal.

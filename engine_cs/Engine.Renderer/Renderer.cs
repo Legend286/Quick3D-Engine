@@ -38,11 +38,14 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         public DirectionalShadowPass? DirectionalShadowPass { get; init; }
         public PunctualShadowState? PunctualShadowState { get; init; }
         public PunctualShadowPass? PunctualShadowPass { get; init; }
+        public bool OwnsRasterSceneCache { get; init; } = true;
+        public IReadOnlyList<RenderPass>? OwnedPasses { get; init; }
 
         public void Dispose()
         {
-            Plan.Passes.DisposeAll();
-            RasterSceneCache?.Dispose();
+            (OwnedPasses ?? Plan.Passes).DisposeAll();
+            if (OwnsRasterSceneCache)
+                RasterSceneCache?.Dispose();
         }
     }
 
@@ -67,6 +70,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
     private DDGIAtlasResourceHandles? _boundDDGIHandles;
     private readonly GpuWorkScheduler _gpuWorkScheduler = new();
     private readonly VisibilityPicker _visibilityPicker;
+    private readonly AnimationFrameContext _animationFrameContext;
     private long _renderedFrameCount;
     private long _renderPlanVersion;
     private CachedRenderPlan? _rasterPlan;
@@ -115,6 +119,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
     private bool _renderSky = true;
     private bool _renderGrid = true;
     private bool _renderShadows = true;
+    private float _animationDeltaTime = 1.0f / 60.0f;
     private RhiBindlessHeap _sharedBindlessHeap;
     private ShaderCompileCache _compileCache = new();
 
@@ -249,6 +254,14 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
 
     internal float ProjectionBlend => _projectionBlend;
 
+    /// <summary>Gets the clamped per-frame animation delta used by the GPU animator.</summary>
+    internal float AnimationDeltaTime => _animationDeltaTime;
+
+    internal void SetAnimationDeltaTime(float deltaTime)
+        => _animationDeltaTime = float.IsFinite(deltaTime)
+            ? Math.Clamp(deltaTime, 0.0f, 0.1f)
+            : 1.0f / 60.0f;
+
     /// <summary>Per-frame upstream-derived Slang <c>-D</c> argv tokens,
     /// refreshed whenever <see cref="ReloadPluginShaders"/> is invoked.
     /// Plugins read this via <c>RendererPluginContext.ShaderCliArgs</c> and
@@ -283,6 +296,9 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
     }
 
     internal uint DebugFlags => (uint)_debugView;
+
+    internal AnimationFrameContext AnimationFrameContext =>
+        _animationFrameContext;
 
     internal CameraData BuildCameraData(
         Engine.Scene.Components.Camera camera,
@@ -338,6 +354,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _pathTracingPlugin = pathTracingPlugin;
         _sharedBindlessHeap = new RhiBindlessHeap(_device, 4096);
         _visibilityPicker = new VisibilityPicker(_device);
+        _animationFrameContext = new AnimationFrameContext(_device);
         _graphExecutor = new RenderGraphExecutor(_device)
         {
             EnableGpuTiming = true,
@@ -394,21 +411,31 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             return;
         }
 
+        bool pathPlanWasActive =
+            _plan == _pathTracingPlan?.Plan;
         _pathTracingPlan?.Dispose();
-        if (_plan == _pathTracingPlan?.Plan)
-            _plan = null;
         _pathTracingPlan = null;
+        if (pathPlanWasActive)
+        {
+            _plan = null;
+            _rasterSceneCache = null;
+            _directionalShadowState = null;
+            _directionalShadowPass = null;
+            _punctualShadowState = null;
+            _punctualShadowPass = null;
+        }
         _pathTracingPlugin = plugin;
         if (_usePathTracer &&
             plugin == null)
         {
             _usePathTracer = false;
-            if (_currentScene != null)
-            {
-                ActivateOrCompileRenderPlan(
-                    _currentScene,
-                    _contentRoot);
-            }
+        }
+        if (pathPlanWasActive &&
+            _currentScene != null)
+        {
+            ActivateOrCompileRenderPlan(
+                _currentScene,
+                _contentRoot);
         }
     }
 
@@ -530,10 +557,14 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             return;
         }
 
-        bool wasActive =
-            _plan == _rasterPlan?.Plan;
+        bool rasterOrPathPlanWasActive =
+            _plan == _rasterPlan?.Plan ||
+            _plan == _pathTracingPlan?.Plan;
+        _pathTracingPlan?.Dispose();
+        _pathTracingPlan = null;
         _rasterPlan?.Dispose();
-        if (wasActive)
+        _rasterPlan = null;
+        if (rasterOrPathPlanWasActive)
         {
             _plan = null;
             _rasterSceneCache = null;
@@ -542,11 +573,10 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             _punctualShadowState = null;
             _punctualShadowPass = null;
         }
-        _rasterPlan = null;
         _clusteredPlugin = plugin;
-        if (!_usePathTracer &&
-            plugin != null &&
-            _currentScene != null)
+        if (plugin != null &&
+            _currentScene != null &&
+            rasterOrPathPlanWasActive)
         {
             ActivateOrCompileRenderPlan(
                 _currentScene,
@@ -562,12 +592,15 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _loader = new SceneLoader(contentRoot);
         SceneGraph scene = _loader.Load(sceneName);
         ReleaseCurrentSceneResources();
+        var animationImports =
+            new Dictionary<string, AnimationAssetImportResult>(
+                StringComparer.OrdinalIgnoreCase);
 
         foreach (var modelRef in scene.Models)
         {
-            var mdlPath = Path.Combine(_contentRoot, modelRef.Source);
-            if (!File.Exists(mdlPath))
-                mdlPath = Path.Combine(_contentRoot, "assets", Path.GetFileName(modelRef.Source));
+            string mdlPath = ResolveContentAssetPath(
+                modelRef.Source,
+                _contentRoot);
 
             Model? model = null;
             try
@@ -603,6 +636,45 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 ModelComponent.Create(
                     modelId,
                     modelRef.StaticShadowCaster));
+
+            string? animationPath = ResolveAnimationPath(
+                modelRef,
+                _contentRoot);
+            if (animationPath == null)
+            {
+                animationPath = Engine.Assets.ModelLoader.ResolveAnimationSidecar(
+                    mdlPath,
+                    model);
+            }
+            if (animationPath != null)
+            {
+                try
+                {
+                    if (!animationImports.TryGetValue(
+                            animationPath,
+                            out AnimationAssetImportResult? animation))
+                    {
+                        animation = AnimationAssetLoader.Load(animationPath);
+                        animationImports.Add(animationPath, animation);
+                    }
+                    _world.Set(
+                        ent,
+                        AnimatorComponent.Create(
+                            animation.SkeletonId,
+                            animation.FirstClipId));
+                    Info(
+                        $"[Renderer] Loaded animation sidecar '{animationPath}' " +
+                        $"with {animation.Skeleton.Bones.Length} bone(s).",
+                        "Renderer");
+                }
+                catch (Exception ex)
+                {
+                    Warn(
+                        $"[Renderer] Failed to load animation sidecar " +
+                        $"'{animationPath}': {ex.Message}",
+                        "Renderer");
+                }
+            }
 
             var pos = modelRef.Position ?? new float[] { 0, 0, 0 };
             var rot = modelRef.Rotation ?? new float[] { 0, 0, 0, 1 };
@@ -688,6 +760,51 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         MaterialLoader.ClearCache();
         TextureLoader.ClearCache();
         AssetRegistry.Clear();
+        AnimationAssetRegistry.Clear();
+    }
+
+    private static string? ResolveAnimationPath(
+        ModelRef modelRef,
+        string contentRoot)
+    {
+        string? source = modelRef.AnimationSource;
+        if (string.IsNullOrWhiteSpace(source))
+            return null;
+
+        string path = ResolveContentAssetPath(source, contentRoot);
+        return File.Exists(path) ? Path.GetFullPath(path) : null;
+    }
+
+    private static string ResolveContentAssetPath(
+        string source,
+        string contentRoot)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+            return Path.Combine(contentRoot, "__missing__");
+
+        string normalized = source.Replace('\\', Path.DirectorySeparatorChar);
+        if (Path.IsPathRooted(normalized))
+            return Path.GetFullPath(normalized);
+
+        if (normalized.StartsWith(
+                "Content" + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = normalized[("Content" + Path.DirectorySeparatorChar).Length..];
+        }
+
+        string contentRelative = Path.Combine(contentRoot, normalized);
+        if (File.Exists(contentRelative))
+            return contentRelative;
+
+        string assetsRelative = Path.Combine(
+            contentRoot,
+            "assets",
+            Path.GetFileName(normalized));
+        if (File.Exists(assetsRelative))
+            return assetsRelative;
+
+        return contentRelative;
     }
 
     private void WaitForSceneGpuIdle()
@@ -901,17 +1018,26 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
 
         bool pathTracing =
             pluginId == PathTracingPluginId;
-        CachedRenderPlan? stale = pathTracing
-            ? _pathTracingPlan
-            : _rasterPlan;
         bool wasActive =
-            stale != null &&
-            _plan == stale.Plan;
-        stale?.Dispose();
+            _plan == (pathTracing
+                ? _pathTracingPlan?.Plan
+                : _rasterPlan?.Plan);
         if (pathTracing)
+        {
+            _pathTracingPlan?.Dispose();
             _pathTracingPlan = null;
+        }
         else
+        {
+            bool rasterWasActive =
+                _plan == _rasterPlan?.Plan ||
+                _plan == _pathTracingPlan?.Plan;
+            _pathTracingPlan?.Dispose();
+            _pathTracingPlan = null;
+            _rasterPlan?.Dispose();
             _rasterPlan = null;
+            wasActive |= rasterWasActive;
+        }
 
         if (wasActive)
         {
@@ -990,22 +1116,74 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 ShaderIncludeDirs = _activeShaderIncludeDirs,
                 SharedShaderCache = _compileCache
             };
+        CachedRenderPlan? rasterBase = null;
+        if (usePathTracer && _enableVisibilityBuffer)
+        {
+            rasterBase = _rasterPlan;
+            if (rasterBase == null)
+            {
+                rasterBase = CompileRenderPlan(
+                    scene,
+                    contentRoot,
+                    usePathTracer: false);
+                _rasterPlan = rasterBase;
+            }
+            pluginContext.SceneGpuDataProvider =
+                rasterBase.RasterSceneCache as ISceneGpuDataProvider;
+        }
+
         RendererPluginPlan pluginPlan =
             plugin.BuildPlan(pluginContext);
-        pluginContext.SceneGpuDataProvider =
-            pluginPlan.RasterSceneCache as ISceneGpuDataProvider;
+        if (!usePathTracer)
+        {
+            pluginContext.SceneGpuDataProvider =
+                pluginPlan.RasterSceneCache as ISceneGpuDataProvider;
+        }
 
         var extPasses = new List<RenderPass>();
         var extPostPasses = new List<RenderPass>();
-        foreach (var ext in _extensionPlugins)
+        if (!usePathTracer)
         {
-            RendererPluginPlan extPlan =
-                ext.BuildPlan(pluginContext);
-            extPasses.AddRange(extPlan.Passes);
-            extPostPasses.AddRange(extPlan.PostPasses);
+            foreach (var ext in _extensionPlugins)
+            {
+                RendererPluginPlan extPlan =
+                    ext.BuildPlan(pluginContext);
+                extPasses.AddRange(extPlan.Passes);
+                extPostPasses.AddRange(extPlan.PostPasses);
+            }
         }
-        passes.AddRange(extPasses);
-        passes.AddRange(pluginPlan.Passes);
+        if (usePathTracer && rasterBase != null)
+        {
+            int insertIndex = FindPathTracerInsertionIndex(
+                rasterBase.Plan.Passes);
+            for (int index = 0; index < insertIndex; ++index)
+                passes.Add(rasterBase.Plan.Passes[index]);
+            passes.AddRange(pluginPlan.Passes);
+            for (int index = insertIndex;
+                 index < rasterBase.Plan.Passes.Length;
+                 ++index)
+            {
+                passes.Add(rasterBase.Plan.Passes[index]);
+            }
+        }
+        else
+        {
+            passes.AddRange(extPasses);
+            passes.AddRange(pluginPlan.Passes);
+        }
+
+        if (!usePathTracer &&
+            HasActiveGpuAnimator())
+        {
+            passes.Insert(
+                0,
+                new GpuAnimationPass(
+                    _device,
+                    _world,
+                    contentRoot,
+                    this,
+                    _animationFrameContext));
+        }
 
         if (!usePathTracer &&
             pluginPlan.RasterSceneCache == null)
@@ -1073,20 +1251,47 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         var newPlan = new RenderGraphCompiler().Compile(passes);
 
         Info("[Renderer] Render graph compiled successfully", "Renderer");
+        bool sharesRasterBase =
+            usePathTracer &&
+            rasterBase != null;
         return new CachedRenderPlan
         {
             Plan = newPlan,
-            RasterSceneCache =
-                (Engine.Renderer.RasterSceneGpuCache?)pluginPlan.RasterSceneCache,
-            DirectionalShadowState =
-                (Engine.Renderer.DirectionalShadowState?)pluginPlan.DirectionalShadowState,
-            DirectionalShadowPass =
-                (Engine.Renderer.DirectionalShadowPass?)pluginPlan.DirectionalShadowPass,
-            PunctualShadowState =
-                (Engine.Renderer.PunctualShadowState?)pluginPlan.PunctualShadowState,
-            PunctualShadowPass =
-                (Engine.Renderer.PunctualShadowPass?)pluginPlan.PunctualShadowPass
+            RasterSceneCache = sharesRasterBase
+                ? rasterBase!.RasterSceneCache
+                : (Engine.Renderer.RasterSceneGpuCache?)pluginPlan.RasterSceneCache,
+            DirectionalShadowState = sharesRasterBase
+                ? rasterBase!.DirectionalShadowState
+                : (Engine.Renderer.DirectionalShadowState?)pluginPlan.DirectionalShadowState,
+            DirectionalShadowPass = sharesRasterBase
+                ? rasterBase!.DirectionalShadowPass
+                : (Engine.Renderer.DirectionalShadowPass?)pluginPlan.DirectionalShadowPass,
+            PunctualShadowState = sharesRasterBase
+                ? rasterBase!.PunctualShadowState
+                : (Engine.Renderer.PunctualShadowState?)pluginPlan.PunctualShadowState,
+            PunctualShadowPass = sharesRasterBase
+                ? rasterBase!.PunctualShadowPass
+                : (Engine.Renderer.PunctualShadowPass?)pluginPlan.PunctualShadowPass,
+            OwnsRasterSceneCache = !sharesRasterBase,
+            OwnedPasses = sharesRasterBase
+                ? pluginPlan.Passes.ToArray()
+                : null
         };
+    }
+
+    private static int FindPathTracerInsertionIndex(
+        IReadOnlyList<RenderPass> passes)
+    {
+        for (int index = 0; index < passes.Count; ++index)
+        {
+            if (passes[index] is GridPass ||
+                passes[index] is OutlineCompositePass ||
+                passes[index] is ImGuiPass)
+            {
+                return index;
+            }
+        }
+        return passes.Count;
     }
 
     private void ActivateRenderPlan(CachedRenderPlan state)
@@ -1146,27 +1351,6 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         }
 
         if (!required)
-        {
-            _visibilityIdentifiersTexture?.Dispose();
-            _visibilityIdentifiersTexture = null;
-            _visibilityBarycentricsTexture?.Dispose();
-            _visibilityBarycentricsTexture = null;
-            _visibilityReconstructionTexture?.Dispose();
-            _visibilityReconstructionTexture = null;
-            _visibilityReferenceTexture?.Dispose();
-            _visibilityReferenceTexture = null;
-            _graphExecutor.UnbindTexture(VisibilityIdentifiersHandle);
-            _graphExecutor.UnbindTexture(VisibilityBarycentricsHandle);
-            _graphExecutor.UnbindTexture(VisibilityReconstructionHandle);
-            _graphExecutor.UnbindTexture(VisibilityReferenceHandle);
-            return;
-        }
-
-        bool comparisonRequired =
-            _debugView == ViewportDebugView.VisibilityBuffer ||
-            VisibilityReconstructionPass.IsReconstructionView(_debugView) ||
-            VisibilityShadingPass.IsShadingView(_debugView);
-        if (!comparisonRequired)
         {
             _visibilityIdentifiersTexture?.Dispose();
             _visibilityIdentifiersTexture = null;
@@ -1342,6 +1526,11 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
 
         try
         {
+            foreach (RenderPass pass in _plan.Passes)
+            {
+                if (pass is GpuAnimationPass animationPass)
+                    animationPass.SetDeltaTime(_animationDeltaTime);
+            }
             _graphExecutor.Execute(_plan, syncFence, waitValue, syncFence, signalValue);
             ConsumeGpuWorkTimings();
             _renderedFrameCount++;
@@ -1425,7 +1614,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         }
 
         _lastConsumedGpuTimingFrame = timingFrame;
-        if (_graphExecutor.LastGpuFrameMilliseconds is
+        if (_graphExecutor.LastGpuFrameMedianMilliseconds is
                 double completedFrameMilliseconds)
         {
             _gpuWorkScheduler.RecordFrameGpuTime(
@@ -1496,15 +1685,11 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         var passTimings = _graphExecutor.LastPassTimings;
         var passes = new RenderGraphPassDiagnostics[_plan.Passes.Length];
         var lastWriters = new Dictionary<ResourceHandle, int>();
-        double cpuTotal = 0.0;
-
         for (int i = 0; i < _plan.Passes.Length; ++i)
         {
             double cpuMilliseconds = i < passTimings.Count
                 ? passTimings[i].CpuMilliseconds
                 : 0.0;
-            cpuTotal += cpuMilliseconds;
-
             var accesses = new RenderGraphAccessDiagnostics[_plan.PassAccesses[i].Count];
             var dependencies = new HashSet<string>();
             for (int accessIndex = 0; accessIndex < accesses.Length; ++accessIndex)
@@ -1638,8 +1823,8 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             _graphExecutor.LastGpuTimingFrameNumber >= 0
                 ? _graphExecutor.LastGpuTimingFrameNumber
                 : _renderedFrameCount,
-            cpuTotal,
-            _graphExecutor.LastGpuWorkMilliseconds,
+            _graphExecutor.LastCpuFrameMilliseconds,
+            _graphExecutor.LastGpuFrameMilliseconds,
             _plan.Aliasing.TotalHeapSize,
             allocations.Aggregate(
                 0ul,
@@ -1747,11 +1932,23 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             bytesPerPixel;
     }
 
+    private bool HasActiveGpuAnimator()
+    {
+        foreach (ulong entity in _world.Entities)
+        {
+            if (_world.TryGet(entity, out AnimatorComponent animator) &&
+                (animator.Flags & AnimatorComponent.ActiveFlag) != 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     internal ulong RequestPick(uint x, uint y, uint w, uint h)
     {
         AssertRenderThread();
         if (_currentScene == null ||
-            _usePathTracer ||
             !_enableVisibilityBuffer ||
             _currentScene.Passes.Count == 0)
         {
@@ -1785,6 +1982,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _visibilityReferenceTexture?.Dispose();
         _visibilityReferenceTexture = null;
         _visibilityPicker.Dispose();
+        _animationFrameContext.Dispose();
         _graphExecutor.Dispose();
         _shadowAtlasPreviewRenderer?.Dispose();
         _shadowAtlasPreviewRenderer = null;
@@ -1792,6 +1990,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _sharedBindlessHeap = null!;
         _compileCache?.Dispose();
         _compileCache = null!;
+        AnimationAssetRegistry.Clear();
         EditorShaderBridge.ActiveShaderContextChanged -= OnActiveShaderContextChanged;
         if (s_active == this)
             s_active = null;

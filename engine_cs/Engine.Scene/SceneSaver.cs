@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 using System;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Engine.RHI;
@@ -10,7 +11,11 @@ namespace Engine.Scene;
 
 public static class SceneSaver
 {
-    public static void Save(IEntityStore world, SceneGraph baseScene, string path)
+    public static void Save(
+        IEntityStore world,
+        SceneGraph baseScene,
+        string path,
+        string? contentRoot = null)
     {
         // We only overwrite the Models and Lights lists. We retain the Passes from the baseScene.
         baseScene.Models.Clear();
@@ -29,14 +34,11 @@ public static class SceneSaver
                     {
                         var modelRef = new ModelRef();
                         // Get the relative path for Source. Example: "Content/models/foo.mdl" -> "models/foo.mdl"
-                        var source = model.SourcePath;
-                        if (source.StartsWith("Content/") || source.StartsWith("Content\\"))
-                        {
-                            source = source.Substring(8);
-                        }
-                        
-                        modelRef.Source = source.Replace('\\', '/');
-                        modelRef.Name = Path.GetFileNameWithoutExtension(source);
+                        modelRef.Source = NormalizeAssetSource(
+                            model.SourcePath,
+                            contentRoot);
+                        modelRef.Name = Path.GetFileNameWithoutExtension(
+                            modelRef.Source);
                         
                         modelRef.Position = new float[] { transform.Position.X, transform.Position.Y, transform.Position.Z };
                         modelRef.Rotation = new float[] { transform.Rotation.X, transform.Rotation.Y, transform.Rotation.Z, transform.Rotation.W };
@@ -47,6 +49,18 @@ public static class SceneSaver
                             model.SourcePartIndex >= 0
                                 ? model.SourcePartIndex
                                 : null;
+                        if (world.TryGet<AnimatorComponent>(entity, out _))
+                        {
+                            modelRef.AnimationSource =
+                                !string.IsNullOrWhiteSpace(
+                                    model.AnimationPath)
+                                    ? NormalizeAssetSource(
+                                        model.AnimationPath,
+                                        contentRoot)
+                                    : Path.ChangeExtension(
+                                        modelRef.Source,
+                                        ".anim");
+                        }
 
                         baseScene.Models.Add(modelRef);
                     }
@@ -107,9 +121,53 @@ public static class SceneSaver
         var options = new JsonSerializerOptions { WriteIndented = true };
         string json = JsonSerializer.Serialize(baseScene, options);
 
-        // Atomic write
+        string? directory = Path.GetDirectoryName(Path.GetFullPath(path));
+        if (!string.IsNullOrEmpty(directory))
+            Directory.CreateDirectory(directory);
+
         string tempPath = path + ".tmp";
-        File.WriteAllText(tempPath, json);
+        byte[] bytes = Encoding.UTF8.GetBytes(json);
+        using (FileStream stream = new(
+                   tempPath,
+                   FileMode.Create,
+                   FileAccess.Write,
+                   FileShare.None))
+        {
+            stream.Write(bytes, 0, bytes.Length);
+            stream.Flush(true);
+        }
         File.Move(tempPath, path, overwrite: true);
+    }
+
+    private static string NormalizeAssetSource(
+        string source,
+        string? contentRoot)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+            return string.Empty;
+
+        string normalized = source.Replace('\\', '/');
+        if (Path.IsPathRooted(source))
+        {
+            string fullSource = Path.GetFullPath(source);
+            if (!string.IsNullOrWhiteSpace(contentRoot))
+            {
+                string fullRoot = Path.GetFullPath(contentRoot)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string rootPrefix = fullRoot + Path.DirectorySeparatorChar;
+                if (fullSource.StartsWith(
+                        rootPrefix,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return Path.GetRelativePath(fullRoot, fullSource)
+                        .Replace('\\', '/');
+                }
+            }
+            return normalized;
+        }
+
+        if (normalized.StartsWith("Content/", StringComparison.OrdinalIgnoreCase))
+            return normalized["Content/".Length..];
+        return normalized;
     }
 }
