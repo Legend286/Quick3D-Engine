@@ -133,6 +133,13 @@ and retain Forward PBR to avoid allocating full viewport visibility targets.
   tile renders have been encoded. Deferred point lights select cached cubemap
   faces from the committed origin rather than the newer shading position, so
   they cannot expose mixed-frame seams while waiting.
+- Deferred shadowed lights evaluate attenuation, spotlight cones, and BRDF
+  direction from the committed position, direction, range, and shape paired
+  with their atlas tiles. Colour and intensity remain live because they do not
+  change shadow projection. Cluster assignment conservatively admits both the
+  current and committed influence volumes, so a budget-delayed transform
+  cannot lose lighting at a cluster boundary or compare a new light transform
+  against an older shadow map.
 - Atlas allocations remain stable for the lifetime of a light entity. Every
   allocated face republishes the same bindless page and tile indices each
   frame, including faces omitted from the current update schedule.

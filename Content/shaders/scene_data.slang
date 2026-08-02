@@ -116,6 +116,8 @@ struct PunctualShadowFaceData {
     float4 dynamicUvScaleBias;
     float4 textureIndicesAndFlags;
     float4 committedLightPosition;
+    float4 committedLightDirection;
+    float4 committedLightShapeParams;
 };
 
 struct ScenePushData {

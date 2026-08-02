@@ -40,8 +40,9 @@ internal sealed class PunctualShadowState : IDisposable
         public long[] LastUpdatedFrames { get; } =
             { -1, -1, -1, -1, -1, -1 };
         public int CandidateLightSignature;
-        public Vector4 CandidateLightPosition;
         public Vector4 CommittedLightPosition;
+        public Vector4 CommittedLightDirection;
+        public Vector4 CommittedLightShapeParams;
         public int UpdateIntervalFrames = 1;
         public float VisualPriority;
         public int ResolutionSubdivision = 32;
@@ -366,6 +367,9 @@ internal sealed class PunctualShadowState : IDisposable
                 entry.StaticValid[faceIndex] ? 1.0f : 0.0f,
                 entry.DynamicValid[faceIndex] ? 1.0f : 0.0f),
             CommittedLightPosition = entry.CommittedLightPosition,
+            CommittedLightDirection = entry.CommittedLightDirection,
+            CommittedLightShapeParams =
+                entry.CommittedLightShapeParams,
         };
     }
 
@@ -624,7 +628,6 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                 continue;
 
             entry.CandidateLightSignature = candidate.LightSignature;
-            entry.CandidateLightPosition = candidate.Light.Position;
             entry.UpdateIntervalFrames =
                 candidate.UpdateIntervalFrames;
             entry.VisualPriority = candidate.VisualPriority;
@@ -701,6 +704,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                             60.0f) * 0.02f;
                 lightWork.Add(new LightWork(
                     entry,
+                    candidate.Light,
                     candidate.LightSignature,
                     candidate.Priority,
                     urgency,
@@ -806,7 +810,11 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                     if (work.LightDirty)
                     {
                         entry.CommittedLightPosition =
-                            entry.CandidateLightPosition;
+                            work.CandidateLight.Position;
+                        entry.CommittedLightDirection =
+                            work.CandidateLight.Direction;
+                        entry.CommittedLightShapeParams =
+                            work.CandidateLight.ShapeParams;
                     }
                     for (int faceIndex = 0;
                          faceIndex < entry.FaceCount;
@@ -1030,6 +1038,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
 
     private readonly record struct LightWork(
         PunctualShadowState.LightEntry Entry,
+        LightData CandidateLight,
         int LightSignature,
         float Priority,
         float Urgency,

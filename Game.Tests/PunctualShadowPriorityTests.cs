@@ -91,6 +91,21 @@ public sealed class PunctualShadowPriorityTests
         Assert.Contains("PendingResolutionReadyFrame", punctual);
         Assert.Contains("_frameNumber + 1", punctual);
         Assert.Contains("if (!updateStatic && !updateDynamic)", punctual);
+        Assert.Contains("CommittedLightDirection", punctual);
+        Assert.Contains("CommittedLightShapeParams", punctual);
+        string pbr = ReadRepositoryFile(
+            "Content",
+            "shaders",
+            "pbr.slang");
+        string clusters = ReadRepositoryFile(
+            "Content",
+            "shaders",
+            "cluster_lights.slang");
+        Assert.Contains("GetCommittedPunctualLight", pbr);
+        Assert.Contains("LightData shadingLight = light", pbr);
+        Assert.Contains(
+            "PunctualLightIntersectsCluster(\n                            committedLight",
+            clusters);
     }
 
     private static string ReadRepositoryFile(params string[] parts)

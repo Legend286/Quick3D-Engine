@@ -147,6 +147,8 @@ public struct PunctualShadowFaceData
     public Vector4 DynamicUvScaleBias;
     public Vector4 TextureIndicesAndFlags;
     public Vector4 CommittedLightPosition;
+    public Vector4 CommittedLightDirection;
+    public Vector4 CommittedLightShapeParams;
 }
 
 [StructLayout(LayoutKind.Sequential)]

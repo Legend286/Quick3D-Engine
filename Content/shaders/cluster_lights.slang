@@ -42,6 +42,32 @@ bool SphereIntersectsCluster(float3 center, float radius, Plane planes[6])
     return true;
 }
 
+bool PunctualLightIntersectsCluster(
+    LightData light,
+    Plane planes[6])
+{
+    float lightType = light.direction.w;
+    if (lightType == 1.0)
+        return SphereIntersectsCluster(
+            light.position.xyz,
+            light.position.w,
+            planes);
+    if (lightType != 2.0)
+        return false;
+    float3 axis = normalize(light.direction.xyz);
+    float outerCos = clamp(light.shapeParams.y, 0.001, 0.999);
+    float tanTheta =
+        sqrt(max(1.0 - outerCos * outerCos, 0.0)) / outerCos;
+    float halfRange = light.position.w * 0.5;
+    float capRadius = light.position.w * tanTheta;
+    float boundsRadius = sqrt(
+        halfRange * halfRange + capRadius * capRadius);
+    return SphereIntersectsCluster(
+        light.position.xyz + axis * halfRange,
+        boundsRadius,
+        planes);
+}
+
 bool PointInsideFiniteCone(float3 p, float3 apex, float3 axis, float height, float tanTheta)
 {
     float3 v = p - apex;
@@ -205,20 +231,29 @@ void computeMain(uint3 threadId : SV_DispatchThreadID)
         float lightType = light.direction.w;
         bool intersects = lightType == 0.0;
 
-        if (lightType == 1.0) {
-            intersects = SphereIntersectsCluster(light.position.xyz, light.position.w, planes);
-        } else if (lightType == 2.0) {
-            float3 axis = normalize(light.direction.xyz);
-            float outerCos = clamp(light.shapeParams.y, 0.001, 0.999);
-            float tanTheta = sqrt(max(1.0 - outerCos * outerCos, 0.0)) / outerCos;
-            float halfRange = light.position.w * 0.5;
-            float capRadius = light.position.w * tanTheta;
-            float boundsRadius = sqrt(
-                halfRange * halfRange + capRadius * capRadius);
-            intersects = SphereIntersectsCluster(
-                light.position.xyz + axis * halfRange,
-                boundsRadius,
+        if (lightType == 1.0 || lightType == 2.0) {
+            intersects = PunctualLightIntersectsCluster(
+                light,
                 planes);
+            uint faceIndex = lightIndex * 6;
+            if (faceIndex < push.punctualShadowFaceCount) {
+                PunctualShadowFaceData face =
+                    push.punctualShadowFaces[faceIndex];
+                if (face.textureIndicesAndFlags.z >= 0.5 ||
+                    face.textureIndicesAndFlags.w >= 0.5) {
+                    LightData committedLight = light;
+                    committedLight.position =
+                        face.committedLightPosition;
+                    committedLight.direction =
+                        face.committedLightDirection;
+                    committedLight.shapeParams =
+                        face.committedLightShapeParams;
+                    intersects = intersects ||
+                        PunctualLightIntersectsCluster(
+                            committedLight,
+                            planes);
+                }
+            }
         }
 
         if (intersects) {

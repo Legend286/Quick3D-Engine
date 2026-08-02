@@ -338,6 +338,25 @@ float EvaluatePunctualShadow(
     return min(staticVisibility, dynamicVisibility);
 }
 
+LightData GetCommittedPunctualLight(
+    uint lightIndex,
+    LightData currentLight)
+{
+    uint recordIndex = lightIndex * 6;
+    if (recordIndex >= push.punctualShadowFaceCount)
+        return currentLight;
+    PunctualShadowFaceData face =
+        push.punctualShadowFaces[recordIndex];
+    if (face.textureIndicesAndFlags.z < 0.5 &&
+        face.textureIndicesAndFlags.w < 0.5)
+        return currentLight;
+    LightData committedLight = currentLight;
+    committedLight.position = face.committedLightPosition;
+    committedLight.direction = face.committedLightDirection;
+    committedLight.shapeParams = face.committedLightShapeParams;
+    return committedLight;
+}
+
 float3 EvaluateLightContribution(
     uint lightIndex,
     LightData light,
@@ -350,24 +369,42 @@ float3 EvaluateLightContribution(
     float3 B)
 {
     float lightType = light.direction.w;
+    LightData shadingLight = light;
+    if (lightType != 0.0 &&
+        light.shapeParams.w >= 0.5 &&
+        push.punctualShadowFaceCount > 0)
+    {
+        shadingLight = GetCommittedPunctualLight(
+            lightIndex,
+            light);
+        lightType = shadingLight.direction.w;
+    }
     float3 L;
     float attenuation = 1.0;
 
     if (lightType == 0.0) {
-        L = normalize(-light.direction.xyz);
+        L = normalize(-shadingLight.direction.xyz);
     } else {
-        float3 delta = light.position.xyz - worldPos;
+        float3 delta = shadingLight.position.xyz - worldPos;
         float dist = max(length(delta), 0.001);
         L = delta / dist;
 
-        float range = max(light.position.w, 0.001);
+        float range = max(shadingLight.position.w, 0.001);
         float falloff = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
         attenuation = (falloff * falloff) / (dist * dist + 1.0);
 
         if (lightType == 2.0) {
-            float theta = dot(L, normalize(-light.direction.xyz));
-            float epsilon = max(light.shapeParams.x - light.shapeParams.y, 0.001);
-            float intensity = clamp((theta - light.shapeParams.y) / epsilon, 0.0, 1.0);
+            float theta = dot(
+                L,
+                normalize(-shadingLight.direction.xyz));
+            float epsilon = max(
+                shadingLight.shapeParams.x -
+                    shadingLight.shapeParams.y,
+                0.001);
+            float intensity = clamp(
+                (theta - shadingLight.shapeParams.y) / epsilon,
+                0.0,
+                1.0);
             attenuation *= intensity * intensity;
         }
     }
@@ -387,7 +424,7 @@ float3 EvaluateLightContribution(
         push.punctualShadowFaceCount > 0)
         visibility = EvaluatePunctualShadow(
             lightIndex,
-            light,
+            shadingLight,
             worldPos,
             geometricNormal,
             L);

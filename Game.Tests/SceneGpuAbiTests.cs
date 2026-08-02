@@ -51,11 +51,21 @@ public sealed class SceneGpuAbiTests
                 nameof(MaterialData.OcclusionTexIndex))
                 .ToInt32());
         Assert.Equal(64, Marshal.SizeOf<LightData>());
-        Assert.Equal(128, Marshal.SizeOf<PunctualShadowFaceData>());
+        Assert.Equal(160, Marshal.SizeOf<PunctualShadowFaceData>());
         Assert.Equal(
             112,
             Marshal.OffsetOf<PunctualShadowFaceData>(
                 nameof(PunctualShadowFaceData.CommittedLightPosition))
+                .ToInt32());
+        Assert.Equal(
+            128,
+            Marshal.OffsetOf<PunctualShadowFaceData>(
+                nameof(PunctualShadowFaceData.CommittedLightDirection))
+                .ToInt32());
+        Assert.Equal(
+            144,
+            Marshal.OffsetOf<PunctualShadowFaceData>(
+                nameof(PunctualShadowFaceData.CommittedLightShapeParams))
                 .ToInt32());
     }
 }
