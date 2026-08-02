@@ -79,8 +79,8 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         Engine.RenderGraph.RenderGraphResources.BackBufferHandle;
     public static readonly ResourceHandle DepthBufferHandle =
         Engine.RenderGraph.RenderGraphResources.DepthBufferHandle;
-    public static readonly ResourceHandle OutlineMaskHandle =
-        Engine.RenderGraph.RenderGraphResources.OutlineMaskHandle;
+    public static readonly ResourceHandle OutlineSelectionDepthHandle =
+        Engine.RenderGraph.RenderGraphResources.OutlineSelectionDepthHandle;
     public static readonly ResourceHandle VisibilityIdentifiersHandle =
         Engine.RenderGraph.RenderGraphResources.VisibilityIdentifiersHandle;
     public static readonly ResourceHandle VisibilityBarycentricsHandle =
@@ -167,7 +167,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
     private readonly List<IRendererPlanPlugin> _extensionPlugins = new();
 
     private RhiTexture? _depthTexture;
-    private RhiTexture? _outlineMaskTexture;
+    private RhiTexture? _outlineSelectionDepthTexture;
     private RhiTexture? _visibilityIdentifiersTexture;
     private RhiTexture? _visibilityBarycentricsTexture;
     private RhiTexture? _visibilityReconstructionTexture;
@@ -978,8 +978,21 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 this));
         }
 
-        passes.Add(new OutlineMaskPass(_device, _world, scene, contentRoot, this));
-        passes.Add(new OutlineCompositePass(_device, contentRoot, this));
+        RasterSceneGpuCache? outlineSceneCache =
+            pluginPlan.RasterSceneCache as RasterSceneGpuCache;
+        bool renderInstanceOutline =
+            !usePathTracer &&
+            _enableVisibilityBuffer &&
+            scene.Passes.Count > 0 &&
+            outlineSceneCache != null;
+        if (renderInstanceOutline)
+        {
+            passes.Add(new OutlineSelectionDepthPass(
+                _device,
+                contentRoot,
+                outlineSceneCache!,
+                this));
+        }
 
         if (_renderGrid)
         {
@@ -987,6 +1000,15 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         }
 
         passes.AddRange(extPostPasses);
+
+        if (renderInstanceOutline)
+        {
+            passes.Add(new OutlineCompositePass(
+                _device,
+                contentRoot,
+                outlineSceneCache!,
+                this));
+        }
 
         if (_imguiRenderer != null)
             passes.Add(new ImGuiPass(_imguiRenderer));
@@ -1166,7 +1188,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         if (_depthTexture == null || _depthWidth != width || _depthHeight != height)
         {
             _depthTexture?.Dispose();
-            _outlineMaskTexture?.Dispose();
+            _outlineSelectionDepthTexture?.Dispose();
             _visibilityIdentifiersTexture?.Dispose();
             _visibilityBarycentricsTexture?.Dispose();
             _visibilityReconstructionTexture?.Dispose();
@@ -1179,18 +1201,20 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             _depthWidth = width > 0 ? width : 1;
             _depthHeight = height > 0 ? height : 1;
 
-            var desc = new Engine.CBindings.RhiNative.TextureDesc
-            {
-                Abi = 1,
-                Width = _depthWidth,
-                Height = _depthHeight,
-                MipLevels = 1,
-                Format = Engine.CBindings.RhiNative.TextureFormat.Depth32Float,
-                UsageFlags = Engine.CBindings.RhiNative.TextureRenderTarget
-            };
-            _depthTexture = RhiTexture.CreateDepth(_device, _depthWidth, _depthHeight);
+            _depthTexture = RhiTexture.CreateDepth(
+                _device,
+                _depthWidth,
+                _depthHeight,
+                shaderReadable: true);
 
-            _outlineMaskTexture = RhiTexture.CreateRenderTarget(_device, _depthWidth, _depthHeight, Engine.CBindings.RhiNative.TextureFormat.Bgra8Unorm);
+            _outlineSelectionDepthTexture = RhiTexture.CreateDepth(
+                _device,
+                _depthWidth,
+                _depthHeight,
+                shaderReadable: true);
+            _outlineSelectionDepthTexture.SetDebugName(
+                "Selected Instance Depth",
+                "Editor Outline");
         }
 
         EnsureVisibilityBufferResources();
@@ -1199,8 +1223,13 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _graphExecutor.BindSwapchain(backBuffer, BackBufferHandle, ResourceState.RenderTarget);
         if (_depthTexture != null)
             _graphExecutor.BindSwapchain(_depthTexture, DepthBufferHandle, ResourceState.DepthStencil);
-        if (_outlineMaskTexture != null)
-            _graphExecutor.BindSwapchain(_outlineMaskTexture, OutlineMaskHandle, ResourceState.RenderTarget);
+        if (_outlineSelectionDepthTexture != null)
+        {
+            _graphExecutor.BindSwapchain(
+                _outlineSelectionDepthTexture,
+                OutlineSelectionDepthHandle,
+                ResourceState.DepthStencil);
+        }
         if (_visibilityIdentifiersTexture != null)
         {
             _graphExecutor.BindSwapchain(
@@ -1513,7 +1542,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                         ? (ulong)_depthWidth * _depthHeight * 8ul
                     : access.Resource == BackBufferHandle ||
                         access.Resource == DepthBufferHandle ||
-                        access.Resource == OutlineMaskHandle
+                        access.Resource == OutlineSelectionDepthHandle
                         ? (ulong)_depthWidth * _depthHeight * 4ul
                         : 0;
                 resources.Add(new RenderGraphResourceDiagnostics(
@@ -1617,7 +1646,8 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
     {
         if (handle == BackBufferHandle) return "Back Buffer";
         if (handle == DepthBufferHandle) return "Scene Depth";
-        if (handle == OutlineMaskHandle) return "Outline Mask";
+        if (handle == OutlineSelectionDepthHandle)
+            return "Selected Instance Depth";
         if (handle == VisibilityIdentifiersHandle)
             return "Visibility Identifiers";
         if (handle == VisibilityBarycentricsHandle)
@@ -1703,8 +1733,8 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _loader = null;
         _depthTexture?.Dispose();
         _depthTexture = null;
-        _outlineMaskTexture?.Dispose();
-        _outlineMaskTexture = null;
+        _outlineSelectionDepthTexture?.Dispose();
+        _outlineSelectionDepthTexture = null;
         _visibilityIdentifiersTexture?.Dispose();
         _visibilityIdentifiersTexture = null;
         _visibilityBarycentricsTexture?.Dispose();

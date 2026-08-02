@@ -21,7 +21,7 @@
     "../../Content/shaders/punctual_shadow_cull.slang",
     "../../Content/shaders/shadow_tile_clear.slang",
     "../../Content/shaders/grid.slang",
-    "../../Content/shaders/outline_mask.slang",
+    "../../Content/shaders/outline_selection_depth.slang",
     "../../Content/shaders/outline_composite.slang",
     "../../Content/shaders/shadow_atlas_preview.slang"
   ]

@@ -1,57 +1,166 @@
+#include "scene_data.slang"
+
 struct PushConstants
 {
-    uint Width;
-    uint Height;
+    PartData* parts;
+    InstanceData* instances;
+    uint partCount;
+    uint selectedEntityLow;
+    uint selectedEntityHigh;
+    uint width;
+    uint height;
+    float depthEpsilon;
+    float outlineRadius;
+    uint pad0;
 };
 
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> push;
 
-[[vk::binding(0, 0)]] SamplerState smp;
-[[vk::binding(1, 0)]] Texture2D maskTex;
+[[vk::binding(0, 0)]]
+Texture2D<uint2> visibilityIdentifiers : register(t0);
+[[vk::binding(1, 0)]]
+Texture2D<float> sceneDepth : register(t1);
+[[vk::binding(2, 0)]]
+Texture2D<float> selectionDepth : register(t2);
 
-struct VertexOut
+struct VertexOutput
 {
-    float4 Position : SV_Position;
-    float2 TexCoord : TEXCOORD;
+    float4 position : SV_Position;
 };
 
 [shader("vertex")]
-VertexOut vertexMain(uint vertexID : SV_VertexID)
+VertexOutput vertexMain(uint vertexId : SV_VertexID)
 {
-    VertexOut vout;
-    // Generate a fullscreen triangle
-    vout.TexCoord = float2((vertexID << 1) & 2, vertexID & 2);
-    vout.Position = float4(vout.TexCoord * 2.0 - 1.0, 0.0, 1.0);
-    return vout;
+    float2 uv = float2((vertexId << 1) & 2, vertexId & 2);
+    VertexOutput output;
+    output.position = float4(uv * 2.0 - 1.0, 0.0, 1.0);
+    return output;
+}
+
+int2 ClampPixel(int2 pixel)
+{
+    return clamp(
+        pixel,
+        int2(0, 0),
+        int2(int(push.width) - 1, int(push.height) - 1));
+}
+
+float LoadSelectionDepth(int2 pixel)
+{
+    return selectionDepth.Load(int3(ClampPixel(pixel), 0));
+}
+
+bool HasSelection(int2 pixel)
+{
+    return LoadSelectionDepth(pixel) < 0.999999;
+}
+
+bool VisibilityMatchesSelection(int2 pixel)
+{
+    int2 clampedPixel = ClampPixel(pixel);
+    float depth = sceneDepth.Load(int3(clampedPixel, 0));
+    if (depth >= 0.999999)
+        return false;
+    uint2 identifiers =
+        visibilityIdentifiers.Load(int3(clampedPixel, 0));
+    if (identifiers.x >= push.partCount)
+        return false;
+    PartData part = push.parts[identifiers.x];
+    InstanceData instance = push.instances[part.instanceIdx];
+    return instance.entityIdLow == push.selectedEntityLow &&
+        instance.entityIdHigh == push.selectedEntityHigh;
+}
+
+bool SelectionIsOccluded(int2 pixel)
+{
+    int2 clampedPixel = ClampPixel(pixel);
+    float selected = selectionDepth.Load(int3(clampedPixel, 0));
+    if (selected >= 0.999999 ||
+        VisibilityMatchesSelection(clampedPixel))
+    {
+        return false;
+    }
+    float scene = sceneDepth.Load(int3(clampedPixel, 0));
+    return scene < 0.999999 &&
+        selected > scene + push.depthEpsilon;
 }
 
 [shader("fragment")]
-float4 fragmentMain(VertexOut vin) : SV_Target
+float4 fragmentMain(VertexOutput input) : SV_Target
 {
-    float2 texelSize = float2(1.0 / float(push.Width), 1.0 / float(push.Height));
-    float2 uv = vin.TexCoord;
-    uv.y = 1.0 - uv.y; // NDC Y flip
-
-    // Read center pixel
-    float center = maskTex.Sample(smp, uv).r;
-
-    // Read neighbors (cross) with clamping to prevent wrap-around
-    float n = maskTex.Sample(smp, clamp(uv + float2(0, -texelSize.y * 2.0), 0.0, 1.0)).r;
-    float s = maskTex.Sample(smp, clamp(uv + float2(0, texelSize.y * 2.0), 0.0, 1.0)).r;
-    float e = maskTex.Sample(smp, clamp(uv + float2(texelSize.x * 2.0, 0), 0.0, 1.0)).r;
-    float w = maskTex.Sample(smp, clamp(uv + float2(-texelSize.x * 2.0, 0), 0.0, 1.0)).r;
-
-    float sum = n + s + e + w;
-
-    // Edge detection: if center is NOT masked, but neighbors ARE masked
-    // (i.e. we are outside the object, but right next to it)
-    // We use > 0.5 for sum because the background clear color is (0.05, 0.06, 0.09) in rhi_metal
-    if (center < 0.1 && sum > 0.5)
+    int2 pixel = int2(input.position.xy);
+    bool centerSelected = HasSelection(pixel);
+    float nearestOpposite = 100.0;
+    int2 nearestSelectedPixel = pixel;
+    for (int y = -3; y <= 3; ++y)
     {
-        return float4(1.0, 0.5, 0.0, 1.0); // Orange outline
+        for (int x = -3; x <= 3; ++x)
+        {
+            int2 offset = int2(x, y);
+            float distancePixels = length(float2(offset));
+            if (distancePixels > push.outlineRadius + 0.35)
+                continue;
+            int2 samplePixel = ClampPixel(pixel + offset);
+            bool sampleSelected = HasSelection(samplePixel);
+            if (sampleSelected == centerSelected ||
+                distancePixels >= nearestOpposite)
+            {
+                continue;
+            }
+            nearestOpposite = distancePixels;
+            if (sampleSelected)
+                nearestSelectedPixel = samplePixel;
+        }
     }
-    
-    // Transparent everywhere else
-    return float4(0.0, 0.0, 0.0, 0.0);
+
+    bool hasEdge = nearestOpposite < 99.0;
+    int2 classificationPixel = centerSelected
+        ? pixel
+        : nearestSelectedPixel;
+    bool visible = VisibilityMatchesSelection(classificationPixel);
+    bool occluded = SelectionIsOccluded(classificationPixel);
+    if (!visible && !occluded && HasSelection(classificationPixel))
+        visible = true;
+
+    float softEdge = hasEdge
+        ? 1.0 - smoothstep(
+            push.outlineRadius - 0.9,
+            push.outlineRadius + 0.15,
+            nearestOpposite)
+        : 0.0;
+    float crispEdge = hasEdge
+        ? 1.0 - smoothstep(0.85, 1.75, nearestOpposite)
+        : 0.0;
+    float edgeAlpha = max(crispEdge * 0.96, softEdge * 0.52);
+    float3 visibleColor = float3(1.0, 0.36, 0.035);
+    float3 occludedColor = float3(0.58, 0.26, 1.0);
+    float3 edgeColor = occluded ? occludedColor : visibleColor;
+
+    float fillAlpha = 0.0;
+    if (centerSelected)
+    {
+        if (occluded)
+        {
+            float selected = LoadSelectionDepth(pixel);
+            float scene = sceneDepth.Load(int3(ClampPixel(pixel), 0));
+            float separation = saturate(
+                (selected - scene - push.depthEpsilon) * 320.0);
+            fillAlpha = lerp(0.075, 0.145, separation);
+        }
+        else if (visible)
+        {
+            fillAlpha = 0.028;
+        }
+    }
+
+    float alpha = max(edgeAlpha, fillAlpha);
+    if (alpha <= 0.0001)
+        return 0.0;
+    float3 fillColor = occluded
+        ? occludedColor
+        : visibleColor;
+    float edgeMix = edgeAlpha / max(alpha, 0.0001);
+    float3 color = lerp(fillColor * 0.72, edgeColor, edgeMix);
+    return float4(color, alpha);
 }

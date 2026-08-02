@@ -73,16 +73,36 @@ preview screenshots (Phase 3+).
 
 ## Object Selection and Outlines
 
-The Editor implements a hardware-accelerated object selection and outline rendering pipeline through three RenderGraph passes:
+The Editor implements a hardware-accelerated object selection and outline rendering pipeline:
 
 1. `IdPickingPass`: Renders the entity ID (`uint64_t`) into a dedicated texture format (`R32Uint`). The Editor reads back this texture at the cursor coordinate on mouse click to resolve selections in O(1) time regardless of scene complexity.
-2. `OutlineMaskPass`: Generates a solid white 2D silhouette of the currently selected entity. This pass does not read or write depth, meaning the selection outline acts as an X-Ray overlay visible through scene geometry.
-3. `OutlineCompositePass`: A post-processing pass that samples the `OutlineMaskPass` output texture using a cross-neighborhood edge detection shader. It renders an orange outline at the silhouette boundary directly onto the backbuffer.
+2. `OutlineSelectionDepthPass`: Finds the selected entity in the shared raster
+   scene cache and rasterizes only its existing indirect part range into a
+   shader-readable depth target. It allocates no duplicate scene, camera, or
+   mesh buffers and preserves the complete behind-wall silhouette.
+3. `OutlineCompositePass`: Resolves the frontmost visibility-buffer part to
+   `PartData.instanceIdx` and compares the resulting 64-bit entity ID with the
+   selection. A soft screen-space dilation produces a crisp warm visible edge
+   and glow. Selected depth behind scene depth produces a violet occluded edge
+   and depth-scaled translucent interior tint.
 
-The composite pass binds the current outline mask directly for each draw.
-Viewport resize can therefore replace the mask without leaving a stale native
-pointer in the shared bindless heap, and without mutating an argument buffer
-that an earlier GPU frame may still be reading.
+`RenderGraphResources.OutlineSelectionDepthHandle` identifies the persistent
+shader-readable `Depth32Float` selection surface imported by these passes.
+
+The visibility ID is authoritative for visible coverage. Selected depth is
+used only where the frontmost visibility ID cannot represent geometry hidden
+behind another surface. This avoids the former duplicate white-mask renderer
+and keeps occlusion styling stable without temporal jitter.
+
+Unselected frames record neither outline encoder. Selected frames rasterize
+only the selected instance's part range, then run one fullscreen composite.
+The composite searches a circular three-pixel neighborhood in the selected
+depth texture and performs entity-buffer lookups only for the classified edge
+sample, avoiding a scene-wide second geometry pass and repeated ID lookups for
+every dilation tap. Both selected-depth rasterization and composition are
+scissored to the selected instance's projected AABB plus five pixels whenever
+all bounds corners have a finite projection; near-plane intersections fall
+back to the complete viewport for correctness.
 
 ## Asset Thumbnails
 
@@ -308,10 +328,10 @@ vertical space for the content browser and diagnostics tools than the previous
 
 ### Related Files
 - `Game/IdPickingPass.cs`
-- `Game/OutlineMaskPass.cs`
-- `Game/OutlineCompositePass.cs`
+- `Engine.Renderer/OutlineSelectionDepthPass.cs`
+- `Engine.Renderer/OutlineCompositePass.cs`
 - `Content/shaders/id_picking.slang`
-- `Content/shaders/outline_mask.slang`
+- `Content/shaders/outline_selection_depth.slang`
 - `Content/shaders/outline_composite.slang`
 
 ## Material Layer Stacking & 3D Noise Parameters
@@ -328,4 +348,5 @@ The GPU shaders (`pbr.slang` and `path_tracer.slang`) perform energy-conserving 
 To protect the selection outline pass and matrix pipeline from invalid inputs:
 1. `NumericInputBehavior` filters keystrokes on numeric inputs across Avalonia views (`NumericUpDown` and `TextBox`), constraining characters to digits `0-9`, `-`, and `.`.
 2. `InspectorViewModel` sanitizes transform positions, rotations, and scales against `NaN` and `Infinity`.
-3. `OutlineMaskPass` and `SceneDataExtractor` validate model and view-projection matrices prior to GPU buffer upload, preventing selection outline corruption.
+3. `SceneDataExtractor` validates model and view-projection matrices prior to
+   GPU buffer upload; selection depth reuses those validated scene records.

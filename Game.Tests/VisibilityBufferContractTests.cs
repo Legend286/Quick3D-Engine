@@ -290,8 +290,11 @@ public sealed class VisibilityBufferContractTests
             "LoadPartVertexIndex(part, vid)",
             ReadRepositoryFile("Content", "shaders", "shadow_depth.slang"));
         Assert.Contains(
-            "LoadPartVertexIndex(part, vid)",
-            ReadRepositoryFile("Content", "shaders", "outline_mask.slang"));
+            "LoadPartVertexIndex(part, vertexId)",
+            ReadRepositoryFile(
+                "Content",
+                "shaders",
+                "outline_selection_depth.slang"));
         Assert.Contains(
             "LoadPartVertexIndex(part, vid)",
             ReadRepositoryFile("Content", "shaders", "id_picking.slang"));
@@ -429,7 +432,7 @@ public sealed class VisibilityBufferContractTests
                 "new VisibilityBufferDebugPass(",
                 StringComparison.Ordinal) <
             renderer.IndexOf(
-                "new OutlineMaskPass(",
+                "new OutlineSelectionDepthPass(",
                 StringComparison.Ordinal));
         Assert.DoesNotContain("\"Visibility PBR\",", viewModel);
         Assert.DoesNotContain("\"Reconstructed UV\",", viewModel);
@@ -442,17 +445,42 @@ public sealed class VisibilityBufferContractTests
     }
 
     [Fact]
-    public void OutlineMask_SkipsUnselectedFramesWithoutClearing()
+    public void Outline_UsesInstanceIdsAndSelectedDepth()
     {
-        string pass = ReadRepositoryFile(
+        string depthPass = ReadRepositoryFile(
             "engine_cs",
             "Engine.Renderer",
-            "OutlineMaskPass.cs");
+            "OutlineSelectionDepthPass.cs");
+        string compositePass = ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "OutlineCompositePass.cs");
+        string shader = ReadRepositoryFile(
+            "Content",
+            "shaders",
+            "outline_composite.slang");
 
+        Assert.Contains("FindSelectedInstance", depthPass);
+        Assert.Contains("instance.FirstPartIndex", depthPass);
+        Assert.Contains("TryGetSelectionScissor", depthPass);
+        Assert.Contains("OutlineSelectionDepthHandle", depthPass);
+        Assert.Contains("VisibilityIdentifiersHandle", compositePass);
+        Assert.Contains("DepthBufferHandle", compositePass);
+        Assert.Contains("OutlineSelectionDepthHandle", compositePass);
+        Assert.Contains("VisibilityMatchesSelection", shader);
+        Assert.Contains("SelectionIsOccluded", shader);
         Assert.Contains(
-            "if (selectedId == 0)\n            return;",
-            pass);
-        Assert.DoesNotContain("emptyMask", pass);
+            "visibilityIdentifiers : register(t0)",
+            shader);
+        Assert.Contains("sceneDepth : register(t1)", shader);
+        Assert.Contains("selectionDepth : register(t2)", shader);
+        Assert.Contains("sink.BindTexture(0, identifiers)", compositePass);
+        Assert.Contains("sink.BindTexture(1, sceneDepth)", compositePass);
+        Assert.Contains("sink.BindTexture(2, selectionDepth)", compositePass);
+        Assert.DoesNotContain("new OutlineMaskPass(", ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "Renderer.cs"));
     }
 
     private static string ReadRepositoryFile(params string[] parts)

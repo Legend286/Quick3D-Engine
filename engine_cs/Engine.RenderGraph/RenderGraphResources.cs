@@ -26,7 +26,8 @@ public static class RenderGraphResources
 {
     public static readonly ResourceHandle BackBufferHandle = new(0x80000000);
     public static readonly ResourceHandle DepthBufferHandle = new(0x80000001);
-    public static readonly ResourceHandle OutlineMaskHandle = new(0x80000002);
+    public static readonly ResourceHandle OutlineSelectionDepthHandle =
+        new(0x80000002);
     public static readonly ResourceHandle VisibilityIdentifiersHandle =
         new(0x80000020);
     public static readonly ResourceHandle VisibilityBarycentricsHandle =
