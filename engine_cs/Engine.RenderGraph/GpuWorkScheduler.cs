@@ -79,8 +79,7 @@ public sealed class GpuWorkScheduler
             BudgetMilliseconds = 2.0,
             EstimatedUnitMilliseconds = 1.0,
             MaximumUnits = 1,
-            BurstMaximumUnits = 4,
-            CarryLimitMilliseconds = 6.0,
+            BurstMaximumUnits = 1,
         },
         new()
         {
@@ -88,8 +87,7 @@ public sealed class GpuWorkScheduler
             BudgetMilliseconds = 6.0,
             EstimatedUnitMilliseconds = 0.25,
             MaximumUnits = 24,
-            BurstMaximumUnits = 96,
-            CarryLimitMilliseconds = 12.0,
+            BurstMaximumUnits = 48,
         },
         new()
         {

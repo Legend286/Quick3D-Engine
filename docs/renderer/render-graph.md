@@ -88,12 +88,12 @@ compute work and the independent directional-shadow graphics pass.
 The renderer GPU work scheduler places cacheable work into per-domain frame
 budgets. The renderer begins the scheduler frame before executing any graph
 pass, so extension ordering and absent shadow passes cannot leave stale
-admissions or reset diagnostics after earlier work. Unused directional and
-punctual time becomes bounded carry-over for a
-later burst, while completed asynchronous GPU timings update estimated unit
-cost with an exponential moving average. Transform and camera invalidation are
-correctness work: forced admission bypasses time and unit limits so all
-affected shadows use matching transforms in the current frame.
+admissions or reset diagnostics after earlier work. Shadow domains do not bank
+idle time into a later burst; completed asynchronous GPU timings update
+estimated unit cost with an exponential moving average. Transform and camera
+invalidation receive priority but do not bypass admission. Deferred lights
+retain their complete committed matrix, origin, and atlas tiles until an atomic
+update is admitted.
 
 DDGI uses a separate measured 4 ms domain. It begins at a 32-probe estimate and
 adjusts submission size from 1 through 128 probes using delayed pass timings.
@@ -105,15 +105,14 @@ persistent-atlas scan. Consequently, a light edit reaches built probes outside
 the current clipmaps without scanning all 262,144 slots in one frame. Empty
 sky-only probes are eligible only when the independent sky revision changes.
 
-Directional shadows use a 2 ms base target and can consume accumulated carry
-for up to four cascades. Dirty cascades share one culling encoder and disjoint
-indirect-command ranges before their four persistent pages are rendered.
-Punctual shadows use a separate 6 ms base domain, homogeneous batches of at
-most 24 faces, and a 96-face carry burst ceiling. Static and movable updates
+Directional shadows use a 2 ms base target and update at most one persistent
+cascade page per frame. A rotating dirty-cascade cursor prevents a continuously
+moving sun or camera from refreshing only the nearest page.
+Punctual shadows use a separate 6 ms base domain and homogeneous batches of at
+most 24 faces. Static and movable updates
 for one light remain atomic so sampling matrices cannot lead rendered pages.
-Forced invalidation can exceed the normal two-batch working set when a graph
-rebuild dirties many lights together. Per-batch culling and indirect-command
-buffers therefore grow on the render thread to match the admitted point and
+Invalidation never exceeds the current face allowance. Per-batch culling and
+indirect-command buffers grow on the render thread to match admitted point and
 spot batches, remain distinct until submission completes, and are retained for
 reuse by later frames.
 

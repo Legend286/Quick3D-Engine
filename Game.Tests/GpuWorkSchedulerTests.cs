@@ -25,16 +25,17 @@ public sealed class GpuWorkSchedulerTests
     }
 
     [Fact]
-    public void ShadowBudget_CarriesUnusedWorkIntoNextFrame()
+    public void ShadowBudget_DoesNotBurstAfterAnIdleFrame()
     {
         var scheduler = new GpuWorkScheduler();
         scheduler.BeginFrame(1);
         scheduler.BeginFrame(2);
 
         Assert.Equal(
-            3,
+            1,
             scheduler.GetUnitAllowance(GpuWorkDomain.Shadows));
-        Assert.True(scheduler.TryAdmit(GpuWorkDomain.Shadows, 3));
+        Assert.True(scheduler.TryAdmit(GpuWorkDomain.Shadows));
+        Assert.False(scheduler.TryAdmit(GpuWorkDomain.Shadows));
     }
 
     [Fact]

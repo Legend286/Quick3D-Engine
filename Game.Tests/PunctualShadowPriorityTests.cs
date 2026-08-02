@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 
+using System;
+using System.IO;
+using System.Linq;
 using Engine.Renderer;
 using Xunit;
 
@@ -61,5 +64,52 @@ public sealed class PunctualShadowPriorityTests
 
         Assert.True(nearby > distantDue);
         Assert.True(distantOverdue > nearby);
+    }
+
+    [Fact]
+    public void ShadowInvalidation_RespectsMeasuredAdmission()
+    {
+        string directional = ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "DirectionalShadowPass.cs");
+        string punctual = ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "PunctualShadowPass.cs");
+
+        Assert.DoesNotContain("forced: true", directional);
+        Assert.DoesNotContain("forced: hasForcedWork", punctual);
+        Assert.Contains("_nextCascadeToUpdate", directional);
+        Assert.Contains("dirtyCascadeCount - scheduledCascadeCount", directional);
+        Assert.Contains(
+            "selectedFaceCount + faceCount > frameFaceLimit",
+            punctual);
+        Assert.Contains(
+            "GpuWorkDomain.PunctualShadows,\n                batchFaceCount);",
+            punctual);
+        Assert.Contains("PendingResolutionReadyFrame", punctual);
+        Assert.Contains("_frameNumber + 1", punctual);
+        Assert.Contains("if (!updateStatic && !updateDynamic)", punctual);
+    }
+
+    private static string ReadRepositoryFile(params string[] parts)
+    {
+        string directory = AppDomain.CurrentDomain.BaseDirectory;
+        for (int depth = 0; depth < 10; ++depth)
+        {
+            string candidate = Path.Combine(
+                new[] { directory }.Concat(parts).ToArray());
+            if (File.Exists(candidate))
+                return File.ReadAllText(candidate);
+
+            DirectoryInfo? parent = Directory.GetParent(directory);
+            if (parent == null)
+                break;
+            directory = parent.FullName;
+        }
+
+        throw new FileNotFoundException(
+            $"Repository file '{Path.Combine(parts)}' was not found.");
     }
 }

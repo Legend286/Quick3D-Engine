@@ -47,6 +47,10 @@ internal sealed class PunctualShadowState : IDisposable
         public int ResolutionSubdivision = 32;
         public int ResolutionTargetSubdivision = 32;
         public int ResolutionTargetFrames;
+        public ShadowAtlasAllocation[]? PendingStaticTiles;
+        public ShadowAtlasAllocation[]? PendingDynamicTiles;
+        public int PendingResolutionSubdivision;
+        public long PendingResolutionReadyFrame;
         public long ReadyFrame;
     }
 
@@ -229,6 +233,13 @@ internal sealed class PunctualShadowState : IDisposable
         LightEntry entry,
         int preferredSubdivision)
     {
+        if (entry.PendingStaticTiles != null &&
+            entry.PendingDynamicTiles != null)
+        {
+            if (entry.PendingResolutionSubdivision == preferredSubdivision)
+                return true;
+            ReleasePendingResolution(entry);
+        }
         if (entry.ResolutionTargetSubdivision != preferredSubdivision)
         {
             entry.ResolutionTargetSubdivision = preferredSubdivision;
@@ -254,6 +265,28 @@ internal sealed class PunctualShadowState : IDisposable
     {
         int preferredSubdivision =
             entry.ResolutionTargetSubdivision;
+        if (entry.PendingStaticTiles != null &&
+            entry.PendingDynamicTiles != null)
+        {
+            if (_frameNumber < entry.PendingResolutionReadyFrame)
+                return false;
+            ShadowAtlasAllocation[] previousStatic = entry.StaticTiles;
+            ShadowAtlasAllocation[] previousDynamic = entry.DynamicTiles;
+            entry.StaticTiles = entry.PendingStaticTiles;
+            entry.DynamicTiles = entry.PendingDynamicTiles;
+            entry.PendingStaticTiles = null;
+            entry.PendingDynamicTiles = null;
+            entry.ResolutionSubdivision =
+                entry.PendingResolutionSubdivision;
+            entry.ResolutionTargetFrames = 0;
+            _retiredTileSets.Add(new RetiredTileSet(
+                _frameNumber + 3,
+                previousStatic,
+                previousDynamic));
+            Array.Clear(entry.StaticValid);
+            Array.Clear(entry.DynamicValid);
+            return true;
+        }
         if (!_atlas.TryAllocateTileSet(
                 entry.FaceCount,
                 preferredSubdivision,
@@ -286,19 +319,31 @@ internal sealed class PunctualShadowState : IDisposable
             return false;
         }
 
-        _retiredTileSets.Add(new RetiredTileSet(
-            _frameNumber + 3,
-            entry.StaticTiles,
-            entry.DynamicTiles));
-        entry.StaticTiles = staticTiles;
-        entry.DynamicTiles = dynamicTiles;
-        entry.ResolutionSubdivision = subdivision;
-        entry.ResolutionTargetFrames = 0;
+        entry.PendingStaticTiles = staticTiles;
+        entry.PendingDynamicTiles = dynamicTiles;
+        entry.PendingResolutionSubdivision = subdivision;
+        entry.PendingResolutionReadyFrame = _frameNumber + 1;
         RegisterPages(staticTiles);
         RegisterPages(dynamicTiles);
-        Array.Clear(entry.StaticValid);
-        Array.Clear(entry.DynamicValid);
-        return true;
+        return false;
+    }
+
+    private void ReleasePendingResolution(LightEntry entry)
+    {
+        if (entry.PendingStaticTiles != null)
+        {
+            foreach (ShadowAtlasAllocation tile in entry.PendingStaticTiles)
+                _atlas.Release(tile);
+        }
+        if (entry.PendingDynamicTiles != null)
+        {
+            foreach (ShadowAtlasAllocation tile in entry.PendingDynamicTiles)
+                _atlas.Release(tile);
+        }
+        entry.PendingStaticTiles = null;
+        entry.PendingDynamicTiles = null;
+        entry.PendingResolutionSubdivision = 0;
+        entry.PendingResolutionReadyFrame = 0;
     }
 
     public void UpdateFace(
@@ -396,6 +441,7 @@ internal sealed class PunctualShadowState : IDisposable
                 _bindlessHeap.Release(slot);
             foreach (LightEntry entry in _entries.Values)
             {
+                ReleasePendingResolution(entry);
                 foreach (ShadowAtlasAllocation tile in entry.StaticTiles)
                     _atlas.Release(tile);
                 foreach (ShadowAtlasAllocation tile in entry.DynamicTiles)
@@ -639,8 +685,6 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                 invalid || lightDirty || staticDirty || dynamicDirty ||
                 (resolutionDirty &&
                     framesSinceUpdate >= candidate.UpdateIntervalFrames);
-            bool forced =
-                invalid || lightDirty || staticDirty || dynamicDirty;
             if (cameraRelevant &&
                 updateDue &&
                 (lightDirty ||
@@ -663,8 +707,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                     lightDirty,
                     staticDirty,
                     dynamicDirty,
-                    resolutionDirty,
-                    forced));
+                    resolutionDirty));
             }
         }
 
@@ -683,25 +726,13 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             minimumAtomicFaces);
         var selectedWork = new List<LightWork>();
         int selectedFaceCount = 0;
-        bool hasForcedWork = false;
         foreach (LightWork work in lightWork)
         {
-            if (!work.Forced)
+            int faceCount = work.Entry.FaceCount;
+            if (selectedFaceCount + faceCount > frameFaceLimit)
                 continue;
             selectedWork.Add(work);
-            selectedFaceCount += work.Entry.FaceCount;
-            hasForcedWork = true;
-        }
-        if (!hasForcedWork)
-        {
-            foreach (LightWork work in lightWork)
-            {
-                int faceCount = work.Entry.FaceCount;
-                if (selectedFaceCount + faceCount > frameFaceLimit)
-                    continue;
-                selectedWork.Add(work);
-                selectedFaceCount += faceCount;
-            }
+            selectedFaceCount += faceCount;
         }
         List<List<LightWork>> batches =
             BuildHomogeneousBatches(selectedWork);
@@ -719,8 +750,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             batchFaceCount > 0 &&
             _scheduler.TryAdmit(
                 GpuWorkDomain.PunctualShadows,
-                batchFaceCount,
-                forced: hasForcedWork);
+                batchFaceCount);
         _scheduler.Defer(
             GpuWorkDomain.PunctualShadows,
             dirtyFaceCount - batchFaceCount);
@@ -746,6 +776,8 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
                         resolutionChanged ||
                         work.LightDirty ||
                         work.DynamicDirty;
+                    if (!updateStatic && !updateDynamic)
+                        continue;
                     for (int faceIndex = 0;
                          faceIndex < entry.FaceCount;
                          ++faceIndex)
@@ -1004,8 +1036,7 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
         bool LightDirty,
         bool StaticDirty,
         bool DynamicDirty,
-        bool ResolutionDirty,
-        bool Forced);
+        bool ResolutionDirty);
 
     private readonly record struct TileRenderJob(
         ShadowAtlasAllocation Tile,

@@ -88,8 +88,10 @@ shadows, and DDGI evaluation as forward raster shading.
   `ScenePushData`.
 - Raster PBR uses manual 3x3 PCF, edge clamping, cascade-scaled
   normal-dependent depth bias, and an overlap blend at cascade transitions.
-- Dirty pages update under a one-page-per-frame budget. Cached matrices remain
-  paired with cached depth pages until each update completes.
+- Dirty pages update under a strict one-page-per-frame budget. A rotating dirty
+  cursor prevents continuous camera or sun edits from starving outer cascades.
+  Cached matrices remain paired with cached depth pages until each update
+  completes.
 - The page pool defaults to 1 GiB and clamps at 1.5 GiB. The four cascades
   consume 256 MiB; punctual-light tiers allocate additional 4096x4096 pages
   lazily.
@@ -140,17 +142,22 @@ shadows, and DDGI evaluation as forward raster shading.
   conservatively retain all six faces because corner-only frustum overlap
   tests can reject crossing cubemap-face volumes.
 - Dirty punctual lights are scheduled globally. Lights with any invalid face
-  warm immediately. Valid lights become eligible only when their cadence
+  receive highest priority but remain subject to the measured face allowance.
+  Valid lights become eligible only when their cadence
   deadline arrives. Transform changes precede scene-cache refreshes, then an
   overdue ratio and absolute-age bonus combine with weighted visual priority.
   Nearby lights retain the fast lane under normal load, while sufficiently
   overdue distant lights still overtake them instead of starving. Batch
   construction never splits a point-light cubemap across frames.
+- Deferred transform changes keep sampling the complete previously committed
+  matrix, light origin, and tile set. All faces of an admitted light publish
+  together, preventing mixed-frame cubemap seams and budget-driven flicker.
 - Spot lights request one tile set. Point lights atomically request all six
   faces from the first tier that can contain the complete set; six faces
   therefore begin at the 4x4 tier rather than partially occupying 2x2.
-- Newly allocated pages wait one frame before their first write, ensuring the
-  page is present in the graph's imported-resource bindings and barriers.
+- Newly allocated lights and resolution-migration tile sets wait one frame
+  before their first write, ensuring every page is present in the graph's
+  imported-resource bindings and barriers before it can be published.
 - Every face has a cached static tile and a separately cached movable overlay.
   PBR samples both bindless depth tiles and combines their visibility.
 - The GPU culler filters transformed part bounds by both face frustum and

@@ -101,6 +101,7 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
     private float _candidateMaximumCasterDisplacement;
     private readonly long[] _renderedFrames = new long[16];
     private readonly int[] _renderedCascadeCounts = new int[16];
+    private int _nextCascadeToUpdate;
 
     public unsafe DirectionalShadowPass(
         RhiDevice device,
@@ -192,11 +193,20 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
         if (dirtyCascadeCount == 0)
             return;
 
+        int scheduledCascadeCount = Math.Min(
+            dirtyCascadeCount,
+            Math.Min(
+                _workScheduler.GetUnitAllowance(
+                    GpuWorkDomain.Shadows),
+                1));
         if (!_workScheduler.TryAdmit(
                 GpuWorkDomain.Shadows,
-                dirtyCascadeCount,
-                forced: true))
+                scheduledCascadeCount))
             return;
+        _workScheduler.Defer(
+            GpuWorkDomain.Shadows,
+            dirtyCascadeCount - scheduledCascadeCount);
+        dirtyCascadeCount = scheduledCascadeCount;
 
         EnsureDrawCommandBuffer(
             (ulong)dirtyCascadeCount *
@@ -307,6 +317,9 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
         int historyIndex = (int)(context.FrameNumber & 15);
         _renderedFrames[historyIndex] = context.FrameNumber;
         _renderedCascadeCounts[historyIndex] = dirtyCascadeCount;
+        _nextCascadeToUpdate =
+            (dirtyCascades[dirtyCascadeCount - 1] + 1) %
+            DirectionalShadowState.CascadeCount;
     }
 
     public bool TryGetRenderedCascadeCount(long frameNumber, out int count)
@@ -322,10 +335,13 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
         Span<int> dirtyCascades)
     {
         int dirtyCascadeCount = 0;
-        for (int cascadeIndex = 0;
-             cascadeIndex < DirectionalShadowState.CascadeCount;
-             ++cascadeIndex)
+        for (int cascadeOffset = 0;
+             cascadeOffset < DirectionalShadowState.CascadeCount;
+             ++cascadeOffset)
         {
+            int cascadeIndex =
+                (_nextCascadeToUpdate + cascadeOffset) %
+                DirectionalShadowState.CascadeCount;
             bool dirty =
                 !_state.ValidCascades[cascadeIndex] ||
                 _state.SceneSignatures[cascadeIndex] !=
