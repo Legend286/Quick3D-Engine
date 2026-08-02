@@ -19,6 +19,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Reflection;
@@ -896,17 +897,19 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
             {
                 Engine.Assets.AnimationAssetImportResult animation =
                     Engine.Assets.AnimationAssetLoader.Load(animationPath);
-                _world.Set(
-                    ent,
+                (uint clipId, float startTime) =
+                    SelectRandomAnimation(animation);
+                Engine.RHI.AnimatorComponent animator =
                     Engine.RHI.AnimatorComponent.Create(
                         animation.SkeletonId,
-                        animation.FirstClipId));
+                        clipId);
+                animator.Time = startTime;
+                _world.Set(ent, animator);
                 Log.Info(
                     $"Imported animation sidecar '{animationPath}' " +
                     $"with {animation.Skeleton.Bones.Length} bone(s) and " +
                     $"{animation.ClipIds.Count} clip(s).",
                     "Editor");
-                _gameLoop?.InvalidateRenderPlan();
             }
             catch (Exception ex)
             {
@@ -919,6 +922,28 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
         IsDirty = true;
         _renderBurstFrames = Math.Max(_renderBurstFrames, 8);
         RequestRender();
+    }
+
+    private static (uint ClipId, float StartTime) SelectRandomAnimation(
+        Engine.Assets.AnimationAssetImportResult animation)
+    {
+        var clips = animation.ClipIds.Values
+            .Select(clipId => Engine.Assets.AnimationAssetRegistry.GetClip(clipId))
+            .Where(clip => clip != null)
+            .Cast<Engine.Assets.AnimationClipAsset>()
+            .ToArray();
+        if (clips.Length == 0)
+            return (animation.FirstClipId, 0.0f);
+
+        Engine.Assets.AnimationClipAsset clip =
+            clips[Random.Shared.Next(clips.Length)];
+        float startTime = clip.Metadata.Duration > 0.0f
+            ? (float)(Random.Shared.NextDouble() * clip.Metadata.Duration)
+            : 0.0f;
+        uint clipId = animation.ClipIds
+            .First(pair => Engine.Assets.AnimationAssetRegistry.GetClip(pair.Value) == clip)
+            .Value;
+        return (clipId, startTime);
     }
 
     private static string? ResolveAnimationSidecar(
