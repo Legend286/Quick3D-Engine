@@ -88,6 +88,17 @@ internal sealed class VisibilityBufferPass : RenderPass, IDisposable
         ICommandSink sink,
         RenderGraphContext context)
     {
+        _owner.EnsurePrepared(sink, context);
+        ViewportDebugView debugView =
+            (ViewportDebugView)(_owner.PreparedPush.DebugFlags & 0xffu);
+        bool visibilityView =
+            debugView == ViewportDebugView.VisibilityBuffer;
+        if (!visibilityView &&
+            !VisibilityReconstructionPass.IsReconstructionView(debugView) &&
+            !VisibilityShadingPass.IsShadingView(debugView))
+        {
+            return;
+        }
         if (!context.TryGetTexture(
                 RenderGraphResources.VisibilityIdentifiersHandle,
                 out RhiTexture identifiers) ||
@@ -101,7 +112,6 @@ internal sealed class VisibilityBufferPass : RenderPass, IDisposable
             return;
         }
 
-        _owner.EnsurePrepared(sink, context);
         SceneFrameData frameData = _owner.PreparedFrameData;
         ScenePushData pushData = _owner.PreparedPush;
         uint width = Math.Max(context.Width, 1u);

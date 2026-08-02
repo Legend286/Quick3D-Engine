@@ -140,8 +140,11 @@ The left half is conventional Forward+ PBR rendered into an `RGBA16Float`
 reference target. The right half reconstructs the same world position,
 geometric normal, tangent frame, texture coordinates, material, explicit
 texture gradients, shadows, DDGI, and sky from visibility data. Differences
-are amplified 8× and blended toward red on the compute half; the yellow centre
-line separates the two paths.
+are amplified 8× and displayed as a dark-blue, blue, green, yellow, and red
+heat map on the right; the yellow centre line separates it from the raster
+reference. The comparison forces material AO to one on both paths so missing
+or fully black occlusion assets cannot hide BRDF, metallic, shadow, or
+reconstruction differences. Normal rendering continues to sample AO.
 
 Each 8×8 compute group gathers the depth slices represented by its covered
 pixels, reads the matching existing Forward+ cluster records, inserts their
@@ -173,9 +176,11 @@ eight bytes per pixel each, bringing active comparison storage to twenty-eight
 bytes per pixel excluding depth. Both diagnostic textures allocate lazily for
 visibility validation modes. Reconstruction dispatch and attribute-reference
 raster work run only for the six reconstruction modes. Compute PBR and its full
-PBR reference run only for **Visibility PBR**. Selecting any visibility debug
-view adds one fullscreen composite; other views record no reconstruction,
-shading, reference, or composite work.
+PBR reference run only for **Visibility PBR**. The identifier raster and its
+textures are also inactive outside visibility debug views, so ordinary Forward+
+rendering does not pay the temporary dual-raster validation cost. Selecting any
+visibility debug view adds one fullscreen composite; other views record no
+visibility raster, reconstruction, shading, reference, or composite work.
 
 The staged phase-two tile path deduplicates cluster lights now. A later
 optimization can apply the same cooperative loading to DDGI probe indices and

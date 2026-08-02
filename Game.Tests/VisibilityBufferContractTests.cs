@@ -205,6 +205,8 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("1.0 - barycentricXY.x - barycentricXY.y", shader);
         Assert.Contains("pixel.x < dimensions.x / 2u", shader);
         Assert.Contains("reference - reconstructed", shader);
+        Assert.Contains("ErrorHeatMap(error)", shader);
+        Assert.Contains("float3 ErrorHeatMap(float value)", shader);
         Assert.Contains("push.mode >= 14u && push.mode <= 19u", shader);
         Assert.Contains("push.mode == 20u", shader);
         Assert.DoesNotContain("ReconstructionErrorAmplification", shader);
@@ -364,6 +366,13 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("CreateVisibilityShadingPass()", plugin);
         Assert.Contains("push.mode == 20u", debugShader);
         Assert.Contains("length(reference - reconstructed) * 8.0", debugShader);
+        Assert.Contains("ErrorHeatMap(error)", debugShader);
+        Assert.DoesNotContain("float3 compared = lerp", debugShader);
+        Assert.Contains("if (debugView == 20u)\n        ao = 1.0;", pbr);
+        Assert.Contains("if (!visibilityView &&", ReadRepositoryFile(
+            "engine_cs",
+            "Engine.Renderer",
+            "VisibilityBufferPass.cs"));
         Assert.Contains("\"Visibility PBR\"", viewModel);
     }
 

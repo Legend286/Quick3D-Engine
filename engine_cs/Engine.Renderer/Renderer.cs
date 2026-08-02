@@ -1084,6 +1084,27 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             return;
         }
 
+        bool comparisonRequired =
+            _debugView == ViewportDebugView.VisibilityBuffer ||
+            VisibilityReconstructionPass.IsReconstructionView(_debugView) ||
+            VisibilityShadingPass.IsShadingView(_debugView);
+        if (!comparisonRequired)
+        {
+            _visibilityIdentifiersTexture?.Dispose();
+            _visibilityIdentifiersTexture = null;
+            _visibilityBarycentricsTexture?.Dispose();
+            _visibilityBarycentricsTexture = null;
+            _visibilityReconstructionTexture?.Dispose();
+            _visibilityReconstructionTexture = null;
+            _visibilityReferenceTexture?.Dispose();
+            _visibilityReferenceTexture = null;
+            _graphExecutor.UnbindTexture(VisibilityIdentifiersHandle);
+            _graphExecutor.UnbindTexture(VisibilityBarycentricsHandle);
+            _graphExecutor.UnbindTexture(VisibilityReconstructionHandle);
+            _graphExecutor.UnbindTexture(VisibilityReferenceHandle);
+            return;
+        }
+
         if (_visibilityIdentifiersTexture == null)
         {
             _visibilityIdentifiersTexture = RhiTexture.CreateRenderTarget(
@@ -1105,20 +1126,6 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
             _visibilityBarycentricsTexture.SetDebugName(
                 "Visibility Barycentrics",
                 "Visibility Buffer");
-        }
-        bool comparisonRequired =
-            _debugView == ViewportDebugView.VisibilityBuffer ||
-            VisibilityReconstructionPass.IsReconstructionView(_debugView) ||
-            VisibilityShadingPass.IsShadingView(_debugView);
-        if (!comparisonRequired)
-        {
-            _visibilityReconstructionTexture?.Dispose();
-            _visibilityReconstructionTexture = null;
-            _visibilityReferenceTexture?.Dispose();
-            _visibilityReferenceTexture = null;
-            _graphExecutor.UnbindTexture(VisibilityReconstructionHandle);
-            _graphExecutor.UnbindTexture(VisibilityReferenceHandle);
-            return;
         }
         if (_visibilityReconstructionTexture == null)
         {

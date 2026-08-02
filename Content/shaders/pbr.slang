@@ -413,6 +413,7 @@ float4 ShadePbrSurface(
     float barycentricWidth)
 {
     MaterialData mat = push.materials[input.materialIdx];
+    uint debugView = push.debugFlags & 0xFFu;
     
     float3 albedo = mat.baseColor.rgb;
     if (mat.albedoTexIndex != 0xFFFFFFFF) {
@@ -444,6 +445,8 @@ float4 ShadePbrSurface(
             uvDx,
             uvDy).r;
     }
+    if (debugView == 20u)
+        ao = 1.0;
 
     // Blend Layer 2 (evaluated first under Layer 1)
     if (mat.layer2MaskType != 0) {
@@ -561,7 +564,6 @@ float4 ShadePbrSurface(
         emissive *= emTex;
     }
 
-    uint debugView = push.debugFlags & 0xFFu;
     if (debugView == 1u) {
         float edgeDistance = min(
             barycentrics.x,

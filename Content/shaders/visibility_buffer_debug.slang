@@ -48,6 +48,30 @@ float3 VisualizeReconstructedValue(float3 value, uint mode)
     return value;
 }
 
+float3 ErrorHeatMap(float value)
+{
+    float scaled = saturate(value) * 4.0;
+    if (scaled < 1.0)
+        return lerp(
+            float3(0.005, 0.008, 0.025),
+            float3(0.0, 0.2, 1.0),
+            scaled);
+    if (scaled < 2.0)
+        return lerp(
+            float3(0.0, 0.2, 1.0),
+            float3(0.0, 1.0, 0.35),
+            scaled - 1.0);
+    if (scaled < 3.0)
+        return lerp(
+            float3(0.0, 1.0, 0.35),
+            float3(1.0, 0.9, 0.0),
+            scaled - 2.0);
+    return lerp(
+        float3(1.0, 0.9, 0.0),
+        float3(1.0, 0.0, 0.0),
+        scaled - 3.0);
+}
+
 [shader("fragment")]
 float4 fragmentMain(VisibilityDebugVertexOutput input) : SV_Target
 {
@@ -77,8 +101,6 @@ float4 fragmentMain(VisibilityDebugVertexOutput input) : SV_Target
             reconstructionOutput.Load(int3(pixel, 0)).rgb;
         float3 referenceDisplay =
             VisualizeReconstructedValue(reference, push.mode);
-        float3 reconstructedDisplay =
-            VisualizeReconstructedValue(reconstructed, push.mode);
         uint dividerDistance = pixel.x > dimensions.x / 2u
             ? pixel.x - dimensions.x / 2u
             : dimensions.x / 2u - pixel.x;
@@ -88,11 +110,7 @@ float4 fragmentMain(VisibilityDebugVertexOutput input) : SV_Target
             return float4(referenceDisplay, 1.0);
         float error = saturate(
             length(reference - reconstructed) * 8.0);
-        float3 compared = lerp(
-            reconstructedDisplay,
-            float3(1.0, 0.0, 0.0),
-            error);
-        return float4(compared, 1.0);
+        return float4(ErrorHeatMap(error), 1.0);
     }
 
     uint2 identifiers = visibilityIdentifiers.Load(int3(pixel, 0));
