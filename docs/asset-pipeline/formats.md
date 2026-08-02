@@ -5,7 +5,7 @@
 Cooked formats:
 
 - `.mdl` — meshes + sidecar meta.
-- `.msh` — versioned static (`MSH1`) or skinned (`MSH2`) mesh payload.
+- `.msh` — versioned static (`MSH1`) or skinned (`MSH2` legacy / `MSH3` integer-index) mesh payload.
 - `.anim` — versioned JSON skeleton and dense local-TRS animation clips.
 - `.ktx2` — Basis Universal transcode target.
 - `.audio` — miniaudio container.
@@ -14,8 +14,9 @@ Cooked formats:
 Version 1 `.anim` files contain `version: 1`, a `skeleton` object, and one or
 more named `clips`. Skeleton bones use stable array indices, a `parent` index,
 and optional `translation`, `rotation` quaternion, and `scale` arrays. The
-loader derives hierarchy depth and defaults missing inverse-bind matrices to
-identity. Each clip stores `sample_rate`, `duration`, `looping`, and dense
+cooker serializes inverse-bind matrices in CPU/System.Numerics ordering after
+one import-time transpose; the loader derives hierarchy depth and defaults
+missing inverse-bind matrices to identity. Each clip stores `sample_rate`, `duration`, `looping`, and dense
 `frames`; every frame must contain exactly one local transform per skeleton
 bone. Dropping a `.mdl` into the editor loads a sibling `.anim` with the same
 basename, registers its first clip, attaches an `AnimatorComponent`, and draws
@@ -26,16 +27,19 @@ loads that explicit source; legacy model references without `animation` remain
 static even when a sibling `.anim` exists.
 
 `MSH1` stores the existing 16-byte header, 48-byte static render vertices, and
-indices. `MSH2` uses the same header with skinned vertices stored as 80-byte
-records: position, normal, UV, tangent, four joint indices, and four weights.
-The cooker emits `MSH2` only for a primitive attached to the imported glTF skin
-with valid `JOINTS_0` and `WEIGHTS_0`; static or unsupported primitives remain
-`MSH1`. `MeshLoader` retains the source stream, classifies the mesh as
-`Deforming`, and the compute animation pass writes the existing 48-byte
+indices. Legacy `MSH2` uses the same header with skinned vertices stored as
+80-byte records whose four joint indices are float fields. `MSH3` keeps the
+80-byte record size but stores those four indices as little-endian unsigned
+32-bit integers; weights remain float32. The cooker emits `MSH3` for new
+skinned assets. `MeshLoader` accepts both versions, converts legacy `MSH2`
+indices to the runtime integer layout, retains the source stream, classifies the
+mesh as `Deforming`, and the compute animation pass writes the existing 48-byte
 visibility vertex stream before raster visibility, shadows, and path tracing
-consume it. Skinned source vertices stay in bind-pose space; the per-part
-`skinned_output_offset` metadata is applied after skinning so inverse-bind
-matrices remain correct.
+consume it. Skinned source vertices stay in bind-pose space. The cooker writes
+`skinned_output_offset` as the negative of the serialized `local_offset`, so the
+post-skin output and the part-local render offset cancel and preserve the
+model’s original local space. This is a placement correction, not a bone-matrix
+or inverse-bind conversion.
 
 Minimal example:
 
@@ -84,8 +88,8 @@ divergently-named imports.
 `PrimitiveMeshFactory` writes `MESH_V1`-compatible `MSH1` `.msh` files for UV
 spheres, tori, boxes, and subdivided planes. Writes use a same-directory
  temporary file, flush file contents to stable storage, and atomically replace
-the destination. Imported deforming meshes use the cooker-owned `MSH2` layout
-above.
+the destination. Imported deforming meshes use the cooker-owned `MSH3` layout above; `MSH2` is
+retained as a legacy compatibility input.
 
 Scene saves belong under `Content/scenes/` and store model sources relative to
 `Content/`; absolute model paths inside the content root are normalized during

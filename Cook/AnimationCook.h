@@ -7,6 +7,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <functional>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -86,31 +88,54 @@ inline double ReadComponent(
     const unsigned char* data,
     int component_type,
     bool normalized) {
+    if (!data)
+        return 0.0;
+
     switch (component_type) {
     case TINYGLTF_COMPONENT_TYPE_BYTE: {
-        auto value = *reinterpret_cast<const int8_t*>(data);
-        return normalized ? std::max(-1.0, value / 127.0) : value;
+        int8_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return normalized ? std::max(-1.0, static_cast<double>(value) / 127.0)
+                          : static_cast<double>(value);
     }
     case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE: {
-        auto value = *reinterpret_cast<const uint8_t*>(data);
-        return normalized ? value / 255.0 : value;
+        uint8_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return normalized ? static_cast<double>(value) / 255.0
+                          : static_cast<double>(value);
     }
     case TINYGLTF_COMPONENT_TYPE_SHORT: {
-        auto value = *reinterpret_cast<const int16_t*>(data);
-        return normalized ? std::max(-1.0, value / 32767.0) : value;
+        int16_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return normalized ? std::max(-1.0, static_cast<double>(value) / 32767.0)
+                          : static_cast<double>(value);
     }
     case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
-        auto value = *reinterpret_cast<const uint16_t*>(data);
-        return normalized ? value / 65535.0 : value;
+        uint16_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return normalized ? static_cast<double>(value) / 65535.0
+                          : static_cast<double>(value);
     }
-    case TINYGLTF_COMPONENT_TYPE_INT:
-        return *reinterpret_cast<const int32_t*>(data);
-    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-        return *reinterpret_cast<const uint32_t*>(data);
-    case TINYGLTF_COMPONENT_TYPE_FLOAT:
-        return *reinterpret_cast<const float*>(data);
-    case TINYGLTF_COMPONENT_TYPE_DOUBLE:
-        return *reinterpret_cast<const double*>(data);
+    case TINYGLTF_COMPONENT_TYPE_INT: {
+        int32_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return static_cast<double>(value);
+    }
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
+        uint32_t value = 0;
+        std::memcpy(&value, data, sizeof(value));
+        return static_cast<double>(value);
+    }
+    case TINYGLTF_COMPONENT_TYPE_FLOAT: {
+        float value = 0.0f;
+        std::memcpy(&value, data, sizeof(value));
+        return static_cast<double>(value);
+    }
+    case TINYGLTF_COMPONENT_TYPE_DOUBLE: {
+        double value = 0.0;
+        std::memcpy(&value, data, sizeof(value));
+        return value;
+    }
     default:
         return 0.0;
     }
@@ -119,107 +144,411 @@ inline double ReadComponent(
 inline std::vector<double> ReadAccessor(
     const tinygltf::Model& model,
     int accessor_index) {
-    if (accessor_index < 0 || accessor_index >= static_cast<int>(model.accessors.size()))
+    if (accessor_index < 0 ||
+        accessor_index >= static_cast<int>(model.accessors.size()))
         return {};
+
     const tinygltf::Accessor& accessor = model.accessors[accessor_index];
-    if (accessor.bufferView < 0 ||
-        accessor.bufferView >= static_cast<int>(model.bufferViews.size()))
-        return {};
-    const tinygltf::BufferView& view = model.bufferViews[accessor.bufferView];
-    if (view.buffer < 0 || view.buffer >= static_cast<int>(model.buffers.size()))
-        return {};
-    const tinygltf::Buffer& buffer = model.buffers[view.buffer];
-    int component_count = ComponentCount(accessor.type);
-    int component_size = tinygltf::GetComponentSizeInBytes(
+    const int component_count = ComponentCount(accessor.type);
+    const int component_size = tinygltf::GetComponentSizeInBytes(
         static_cast<uint32_t>(accessor.componentType));
     if (component_count <= 0 || component_size <= 0)
         return {};
-    int stride = accessor.ByteStride(view);
-    if (stride <= 0)
-        stride = component_count * component_size;
 
-    size_t start = view.byteOffset + accessor.byteOffset;
-    size_t required = start +
-        (accessor.count == 0 ? 0 : (accessor.count - 1) * stride) +
-        component_count * component_size;
-    if (required > buffer.data.size())
-        return {};
+    std::vector<double> values(
+        accessor.count * static_cast<size_t>(component_count), 0.0);
 
-    std::vector<double> values;
-    values.reserve(accessor.count * component_count);
-    for (size_t index = 0; index < accessor.count; ++index) {
-        const unsigned char* element = buffer.data.data() + start + index * stride;
-        for (int component = 0; component < component_count; ++component) {
-            values.push_back(ReadComponent(
-                element + component * component_size,
-                accessor.componentType,
-                accessor.normalized));
+    // A sparse accessor may legally omit its base buffer view. In that case
+    // the base values are zero and the sparse values below overwrite them.
+    if (accessor.bufferView >= 0) {
+        if (accessor.bufferView >= static_cast<int>(model.bufferViews.size()))
+            return {};
+        const tinygltf::BufferView& view = model.bufferViews[accessor.bufferView];
+        if (view.buffer < 0 || view.buffer >= static_cast<int>(model.buffers.size()))
+            return {};
+        const tinygltf::Buffer& buffer = model.buffers[view.buffer];
+        int stride = accessor.ByteStride(view);
+        if (stride <= 0)
+            stride = component_count * component_size;
+
+        const size_t start = view.byteOffset + accessor.byteOffset;
+        const size_t required = start +
+            (accessor.count == 0 ? 0 : (accessor.count - 1) * static_cast<size_t>(stride)) +
+            static_cast<size_t>(component_count * component_size);
+        if (required > buffer.data.size())
+            return {};
+
+        for (size_t index = 0; index < accessor.count; ++index) {
+            const unsigned char* element =
+                buffer.data.data() + start + index * static_cast<size_t>(stride);
+            for (int component = 0; component < component_count; ++component) {
+                values[index * component_count + component] = ReadComponent(
+                    element + component * component_size,
+                    accessor.componentType,
+                    accessor.normalized);
+            }
         }
     }
+
+    if (accessor.sparse.isSparse && accessor.sparse.count > 0) {
+        const auto& sparse = accessor.sparse;
+        if (sparse.indices.bufferView < 0 ||
+            sparse.indices.bufferView >= static_cast<int>(model.bufferViews.size()) ||
+            sparse.values.bufferView < 0 ||
+            sparse.values.bufferView >= static_cast<int>(model.bufferViews.size()))
+            return {};
+
+        const tinygltf::BufferView& index_view =
+            model.bufferViews[sparse.indices.bufferView];
+        const tinygltf::BufferView& value_view =
+            model.bufferViews[sparse.values.bufferView];
+        if (index_view.buffer < 0 ||
+            index_view.buffer >= static_cast<int>(model.buffers.size()) ||
+            value_view.buffer < 0 ||
+            value_view.buffer >= static_cast<int>(model.buffers.size()))
+            return {};
+
+        const tinygltf::Buffer& index_buffer = model.buffers[index_view.buffer];
+        const tinygltf::Buffer& value_buffer = model.buffers[value_view.buffer];
+        const int index_size = tinygltf::GetComponentSizeInBytes(
+            static_cast<uint32_t>(sparse.indices.componentType));
+        if (index_size <= 0)
+            return {};
+
+        const size_t index_start = index_view.byteOffset + sparse.indices.byteOffset;
+        const size_t value_start = value_view.byteOffset + sparse.values.byteOffset;
+        const size_t sparse_value_stride =
+            static_cast<size_t>(component_count * component_size);
+        if (index_start + sparse.count * static_cast<size_t>(index_size) >
+                index_buffer.data.size() ||
+            value_start + sparse.count * sparse_value_stride >
+                value_buffer.data.size())
+            return {};
+
+        for (size_t sparse_index = 0; sparse_index < static_cast<size_t>(sparse.count); ++sparse_index) {
+            const unsigned char* index_ptr = index_buffer.data.data() +
+                index_start + sparse_index * static_cast<size_t>(index_size);
+            const double decoded_index = ReadComponent(
+                index_ptr, sparse.indices.componentType, false);
+            if (!std::isfinite(decoded_index) || decoded_index < 0.0 ||
+                std::floor(decoded_index) != decoded_index ||
+                decoded_index >= static_cast<double>(accessor.count))
+                return {};
+
+            const size_t destination = static_cast<size_t>(decoded_index);
+            const unsigned char* element = value_buffer.data.data() +
+                value_start + sparse_index * sparse_value_stride;
+            for (int component = 0; component < component_count; ++component) {
+                values[destination * component_count + component] = ReadComponent(
+                    element + component * component_size,
+                    accessor.componentType,
+                    accessor.normalized);
+            }
+        }
+    }
+
     return values;
 }
 
-inline Transform NodeTransform(const tinygltf::Node& node) {
-    Transform result;
-    if (node.matrix.size() == 16) {
-        result.tx = node.matrix[12];
-        result.ty = node.matrix[13];
-        result.tz = node.matrix[14];
-        result.sx = std::sqrt(node.matrix[0] * node.matrix[0] +
-                              node.matrix[1] * node.matrix[1] +
-                              node.matrix[2] * node.matrix[2]);
-        result.sy = std::sqrt(node.matrix[4] * node.matrix[4] +
-                              node.matrix[5] * node.matrix[5] +
-                              node.matrix[6] * node.matrix[6]);
-        result.sz = std::sqrt(node.matrix[8] * node.matrix[8] +
-                              node.matrix[9] * node.matrix[9] +
-                              node.matrix[10] * node.matrix[10]);
-        double trace = node.matrix[0] + node.matrix[5] + node.matrix[10];
-        if (trace > 0.0) {
-            double s = 0.5 / std::sqrt(trace + 1.0);
-            result.qw = 0.25 / s;
-            result.qx = (node.matrix[6] - node.matrix[9]) * s;
-            result.qy = (node.matrix[8] - node.matrix[2]) * s;
-            result.qz = (node.matrix[1] - node.matrix[4]) * s;
-        }
-        return result;
-    }
-    if (node.translation.size() == 3) {
-        result.tx = node.translation[0];
-        result.ty = node.translation[1];
-        result.tz = node.translation[2];
-    }
-    if (node.rotation.size() == 4) {
-        result.qx = node.rotation[0];
-        result.qy = node.rotation[1];
-        result.qz = node.rotation[2];
-        result.qw = node.rotation[3];
-    }
-    if (node.scale.size() == 3) {
-        result.sx = node.scale[0];
-        result.sy = node.scale[1];
-        result.sz = node.scale[2];
-    }
-    return result;
-}
+using Matrix4 = std::array<double, 16>;
 
-inline std::array<double, 16> IdentityMatrix() {
-    std::array<double, 16> matrix{};
+inline Matrix4 IdentityMatrix() {
+    Matrix4 matrix{};
     matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0;
     return matrix;
 }
 
-inline std::array<double, 16> ReadMatrix(
-    const std::vector<double>& values,
-    size_t offset) {
-    std::array<double, 16> matrix = IdentityMatrix();
-    if (offset + 16 > values.size())
-        return matrix;
+inline Matrix4 MultiplyMatrix(const Matrix4& a, const Matrix4& b) {
+    Matrix4 result{};
     for (int row = 0; row < 4; ++row) {
         for (int column = 0; column < 4; ++column) {
-            matrix[row * 4 + column] = values[offset + column * 4 + row];
+            for (int k = 0; k < 4; ++k)
+                result[row * 4 + column] +=
+                    a[row * 4 + k] * b[k * 4 + column];
         }
     }
+    return result;
+}
+
+inline Matrix4 TransposeMatrix(const Matrix4& matrix) {
+    Matrix4 transposed{};
+    for (int row = 0; row < 4; ++row)
+        for (int column = 0; column < 4; ++column)
+            transposed[row * 4 + column] = matrix[column * 4 + row];
+    return transposed;
+}
+
+inline bool InvertMatrix(const Matrix4& source, Matrix4& inverse) {
+    double augmented[4][8]{};
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column)
+            augmented[row][column] = source[row * 4 + column];
+        augmented[row][row + 4] = 1.0;
+    }
+
+    for (int column = 0; column < 4; ++column) {
+        int pivot = column;
+        for (int row = column + 1; row < 4; ++row) {
+            if (std::abs(augmented[row][column]) >
+                std::abs(augmented[pivot][column]))
+                pivot = row;
+        }
+        if (std::abs(augmented[pivot][column]) <= 1.0e-12)
+            return false;
+        if (pivot != column) {
+            for (int item = 0; item < 8; ++item)
+                std::swap(augmented[pivot][item], augmented[column][item]);
+        }
+
+        const double divisor = augmented[column][column];
+        for (int item = 0; item < 8; ++item)
+            augmented[column][item] /= divisor;
+
+        for (int row = 0; row < 4; ++row) {
+            if (row == column)
+                continue;
+            const double factor = augmented[row][column];
+            for (int item = 0; item < 8; ++item)
+                augmented[row][item] -= factor * augmented[column][item];
+        }
+    }
+
+    for (int row = 0; row < 4; ++row)
+        for (int column = 0; column < 4; ++column)
+            inverse[row * 4 + column] = augmented[row][column + 4];
+    return true;
+}
+
+inline Matrix4 ComposeMatrix(const Transform& transform) {
+    double qx = transform.qx;
+    double qy = transform.qy;
+    double qz = transform.qz;
+    double qw = transform.qw;
+    const double quaternion_length =
+        std::sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+    if (quaternion_length > 1.0e-12) {
+        qx /= quaternion_length;
+        qy /= quaternion_length;
+        qz /= quaternion_length;
+        qw /= quaternion_length;
+    } else {
+        qx = qy = qz = 0.0;
+        qw = 1.0;
+    }
+
+    const double xx = qx * qx;
+    const double yy = qy * qy;
+    const double zz = qz * qz;
+    const double xy = qx * qy;
+    const double xz = qx * qz;
+    const double yz = qy * qz;
+    const double wx = qw * qx;
+    const double wy = qw * qy;
+    const double wz = qw * qz;
+
+    Matrix4 matrix = IdentityMatrix();
+    matrix[0] = (1.0 - 2.0 * (yy + zz)) * transform.sx;
+    matrix[1] = (2.0 * (xy - wz)) * transform.sy;
+    matrix[2] = (2.0 * (xz + wy)) * transform.sz;
+    matrix[3] = transform.tx;
+    matrix[4] = (2.0 * (xy + wz)) * transform.sx;
+    matrix[5] = (1.0 - 2.0 * (xx + zz)) * transform.sy;
+    matrix[6] = (2.0 * (yz - wx)) * transform.sz;
+    matrix[7] = transform.ty;
+    matrix[8] = (2.0 * (xz - wy)) * transform.sx;
+    matrix[9] = (2.0 * (yz + wx)) * transform.sy;
+    matrix[10] = (1.0 - 2.0 * (xx + yy)) * transform.sz;
+    matrix[11] = transform.tz;
+    return matrix;
+}
+
+inline Transform DecomposeMatrix(const Matrix4& matrix) {
+    Transform result;
+    result.tx = matrix[3];
+    result.ty = matrix[7];
+    result.tz = matrix[11];
+
+    double c0[3] = { matrix[0], matrix[4], matrix[8] };
+    double c1[3] = { matrix[1], matrix[5], matrix[9] };
+    double c2[3] = { matrix[2], matrix[6], matrix[10] };
+    auto length3 = [](const double value[3]) {
+        return std::sqrt(value[0] * value[0] +
+                         value[1] * value[1] +
+                         value[2] * value[2]);
+    };
+    result.sx = length3(c0);
+    result.sy = length3(c1);
+    result.sz = length3(c2);
+
+    const double determinant =
+        c0[0] * (c1[1] * c2[2] - c1[2] * c2[1]) -
+        c1[0] * (c0[1] * c2[2] - c0[2] * c2[1]) +
+        c2[0] * (c0[1] * c1[2] - c0[2] * c1[1]);
+    if (determinant < 0.0)
+        result.sx = -result.sx;
+
+    const double safe_x = std::abs(result.sx) > 1.0e-12 ? result.sx : 1.0;
+    const double safe_y = std::abs(result.sy) > 1.0e-12 ? result.sy : 1.0;
+    const double safe_z = std::abs(result.sz) > 1.0e-12 ? result.sz : 1.0;
+    const double r00 = matrix[0] / safe_x;
+    const double r10 = matrix[4] / safe_x;
+    const double r20 = matrix[8] / safe_x;
+    const double r01 = matrix[1] / safe_y;
+    const double r11 = matrix[5] / safe_y;
+    const double r21 = matrix[9] / safe_y;
+    const double r02 = matrix[2] / safe_z;
+    const double r12 = matrix[6] / safe_z;
+    const double r22 = matrix[10] / safe_z;
+
+    const double trace = r00 + r11 + r22;
+    if (trace > 0.0) {
+        const double s = std::sqrt(trace + 1.0) * 2.0;
+        result.qw = 0.25 * s;
+        result.qx = (r21 - r12) / s;
+        result.qy = (r02 - r20) / s;
+        result.qz = (r10 - r01) / s;
+    } else if (r00 > r11 && r00 > r22) {
+        const double s = std::sqrt(1.0 + r00 - r11 - r22) * 2.0;
+        result.qw = (r21 - r12) / s;
+        result.qx = 0.25 * s;
+        result.qy = (r01 + r10) / s;
+        result.qz = (r02 + r20) / s;
+    } else if (r11 > r22) {
+        const double s = std::sqrt(1.0 + r11 - r00 - r22) * 2.0;
+        result.qw = (r02 - r20) / s;
+        result.qx = (r01 + r10) / s;
+        result.qy = 0.25 * s;
+        result.qz = (r12 + r21) / s;
+    } else {
+        const double s = std::sqrt(1.0 + r22 - r00 - r11) * 2.0;
+        result.qw = (r10 - r01) / s;
+        result.qx = (r02 + r20) / s;
+        result.qy = (r12 + r21) / s;
+        result.qz = 0.25 * s;
+    }
+
+    const double q_length = std::sqrt(
+        result.qx * result.qx + result.qy * result.qy +
+        result.qz * result.qz + result.qw * result.qw);
+    if (q_length > 1.0e-12) {
+        result.qx /= q_length;
+        result.qy /= q_length;
+        result.qz /= q_length;
+        result.qw /= q_length;
+    } else {
+        result.qx = result.qy = result.qz = 0.0;
+        result.qw = 1.0;
+    }
+    return result;
+}
+
+inline Matrix4 ConjugateByScale(
+    Matrix4 matrix,
+    double scale_x,
+    double scale_y,
+    double scale_z) {
+    const double sx = scale_x == 0.0 ? 1.0 : scale_x;
+    const double sy = scale_y == 0.0 ? 1.0 : scale_y;
+    const double sz = scale_z == 0.0 ? 1.0 : scale_z;
+    const double row_scale[4] = { sx, sy, sz, 1.0 };
+    const double column_scale[4] = { 1.0 / sx, 1.0 / sy, 1.0 / sz, 1.0 };
+    for (int row = 0; row < 4; ++row)
+        for (int column = 0; column < 4; ++column)
+            matrix[row * 4 + column] *=
+                row_scale[row] * column_scale[column];
+    return matrix;
+}
+
+inline Matrix4 NodeMatrix(const tinygltf::Node& node) {
+    if (node.matrix.size() == 16) {
+        Matrix4 matrix{};
+        for (int row = 0; row < 4; ++row)
+            for (int column = 0; column < 4; ++column)
+                matrix[row * 4 + column] = node.matrix[column * 4 + row];
+        return matrix;
+    }
+
+    Transform transform;
+    if (node.translation.size() == 3) {
+        transform.tx = node.translation[0];
+        transform.ty = node.translation[1];
+        transform.tz = node.translation[2];
+    }
+    if (node.rotation.size() == 4) {
+        transform.qx = node.rotation[0];
+        transform.qy = node.rotation[1];
+        transform.qz = node.rotation[2];
+        transform.qw = node.rotation[3];
+    }
+    if (node.scale.size() == 3) {
+        transform.sx = node.scale[0];
+        transform.sy = node.scale[1];
+        transform.sz = node.scale[2];
+    }
+    return ComposeMatrix(transform);
+}
+
+inline Transform NodeTransform(const tinygltf::Node& node) {
+    return DecomposeMatrix(NodeMatrix(node));
+}
+
+inline std::vector<int> BuildNodeParents(const tinygltf::Model& model) {
+    std::vector<int> parents(model.nodes.size(), -1);
+    for (size_t parent = 0; parent < model.nodes.size(); ++parent) {
+        for (int child : model.nodes[parent].children) {
+            if (child >= 0 && child < static_cast<int>(model.nodes.size()))
+                parents[child] = static_cast<int>(parent);
+        }
+    }
+    return parents;
+}
+
+inline std::vector<Matrix4> ComputeNodeGlobals(
+    const tinygltf::Model& model,
+    const std::vector<int>& parents,
+    const std::vector<Transform>* override_transforms = nullptr) {
+    std::vector<Matrix4> globals(model.nodes.size(), IdentityMatrix());
+    std::vector<uint8_t> state(model.nodes.size(), 0);
+    std::function<void(int)> resolve = [&](int node_index) {
+        if (node_index < 0 || node_index >= static_cast<int>(model.nodes.size()))
+            return;
+        if (state[node_index] == 2)
+            return;
+        if (state[node_index] == 1) {
+            globals[node_index] = IdentityMatrix();
+            state[node_index] = 2;
+            return;
+        }
+        state[node_index] = 1;
+        Matrix4 local = override_transforms
+            ? ComposeMatrix((*override_transforms)[node_index])
+            : NodeMatrix(model.nodes[node_index]);
+        const int parent = parents[node_index];
+        if (parent >= 0) {
+            resolve(parent);
+            globals[node_index] = MultiplyMatrix(globals[parent], local);
+        } else {
+            globals[node_index] = local;
+        }
+        state[node_index] = 2;
+    };
+    for (size_t node = 0; node < model.nodes.size(); ++node)
+        resolve(static_cast<int>(node));
+    return globals;
+}
+
+inline Matrix4 ReadMatrix(
+    const std::vector<double>& values,
+    size_t offset) {
+    Matrix4 matrix = IdentityMatrix();
+    if (offset + 16 > values.size())
+        return matrix;
+    // glTF matrices are serialized column-major. Decode them into the
+    // shader's column-vector form; inverse binds are transposed to the
+    // System.Numerics CPU representation before they are serialized.
+    for (int row = 0; row < 4; ++row)
+        for (int column = 0; column < 4; ++column)
+            matrix[row * 4 + column] = values[offset + column * 4 + row];
     return matrix;
 }
 
@@ -282,39 +611,46 @@ inline SkeletonData BuildSkeleton(
         return result;
 
     std::map<int, int> node_to_bone;
-    for (size_t index = 0; index < result.joint_nodes.size(); ++index) {
-        int node_index = result.joint_nodes[index];
+    for (size_t bone = 0; bone < result.joint_nodes.size(); ++bone) {
+        const int node_index = result.joint_nodes[bone];
         if (node_index < 0 || node_index >= static_cast<int>(model.nodes.size()))
             return {};
-        node_to_bone[node_index] = static_cast<int>(index);
+        node_to_bone[node_index] = static_cast<int>(bone);
     }
+
+    const std::vector<int> node_parents = BuildNodeParents(model);
+    const std::vector<Matrix4> bind_globals =
+        ComputeNodeGlobals(model, node_parents);
+
     result.parent_indices.assign(result.joint_nodes.size(), -1);
-    result.reference_pose.reserve(result.joint_nodes.size());
-    for (size_t index = 0; index < result.joint_nodes.size(); ++index) {
-        int node_index = result.joint_nodes[index];
-        if (node_index < 0 || node_index >= static_cast<int>(model.nodes.size()))
-            continue;
-        const tinygltf::Node& node = model.nodes[node_index];
-        result.reference_pose.push_back(NodeTransform(node));
-        for (size_t candidate = 0; candidate < result.joint_nodes.size(); ++candidate) {
-            const tinygltf::Node& parent = model.nodes[result.joint_nodes[candidate]];
-            if (std::find(parent.children.begin(), parent.children.end(), node_index) != parent.children.end()) {
-                result.parent_indices[index] = static_cast<int>(candidate);
-                break;
-            }
+    result.reference_pose.resize(result.joint_nodes.size());
+    for (size_t bone = 0; bone < result.joint_nodes.size(); ++bone) {
+        const int node_index = result.joint_nodes[bone];
+        int ancestor = node_parents[node_index];
+        while (ancestor >= 0 && node_to_bone.count(ancestor) == 0)
+            ancestor = node_parents[ancestor];
+
+        Matrix4 local = bind_globals[node_index];
+        if (ancestor >= 0) {
+            result.parent_indices[bone] = node_to_bone[ancestor];
+            Matrix4 inverse_parent{};
+            if (!InvertMatrix(bind_globals[ancestor], inverse_parent))
+                return {};
+            local = MultiplyMatrix(inverse_parent, bind_globals[node_index]);
         }
+
+        local = ConjugateByScale(local, scale_x, scale_y, scale_z);
+        result.reference_pose[bone] = DecomposeMatrix(local);
     }
-    if (result.reference_pose.size() < result.joint_nodes.size())
-        result.reference_pose.resize(result.joint_nodes.size());
 
     const tinygltf::Skin& skin = model.skins[result.skin_index];
-    if (skin.skeleton >= 0 && node_to_bone.count(skin.skeleton) != 0)
+    if (skin.skeleton >= 0 && node_to_bone.count(skin.skeleton) != 0) {
         result.root_bone = node_to_bone[skin.skeleton];
-    else {
+    } else {
         result.root_bone = 0;
-        for (size_t index = 0; index < result.parent_indices.size(); ++index) {
-            if (result.parent_indices[index] < 0) {
-                result.root_bone = static_cast<int>(index);
+        for (size_t bone = 0; bone < result.parent_indices.size(); ++bone) {
+            if (result.parent_indices[bone] < 0) {
+                result.root_bone = static_cast<int>(bone);
                 break;
             }
         }
@@ -322,36 +658,20 @@ inline SkeletonData BuildSkeleton(
 
     result.inverse_bind.assign(result.joint_nodes.size(), IdentityMatrix());
     if (skin.inverseBindMatrices >= 0) {
-        std::vector<double> values = ReadAccessor(model, skin.inverseBindMatrices);
-        for (size_t index = 0; index < result.inverse_bind.size(); ++index)
-            result.inverse_bind[index] = ReadMatrix(values, index * 16);
-    }
-    if (scale_x != 1.0 || scale_y != 1.0 || scale_z != 1.0) {
-        for (Transform& pose : result.reference_pose) {
-            pose.tx *= scale_x;
-            pose.ty *= scale_y;
-            pose.tz *= scale_z;
-        }
-        // Conjugate inverse-bind by the scale so bind-pose skinning stays
-        // identity: skin = global' * inverseBind' with global' = S*global*S^-1
-        // and inverseBind' = S*inverseBind*S^-1 telescopes to S*S^-1 = I.
-        const double safe_scale_x = scale_x == 0.0 ? 1.0 : scale_x;
-        const double safe_scale_y = scale_y == 0.0 ? 1.0 : scale_y;
-        const double safe_scale_z = scale_z == 0.0 ? 1.0 : scale_z;
-        const double row_scale[4] = {
-            safe_scale_x, safe_scale_y, safe_scale_z, 1.0 };
-        const double col_scale[4] = {
-            1.0 / safe_scale_x, 1.0 / safe_scale_y,
-            1.0 / safe_scale_z, 1.0 };
-        for (auto& matrix : result.inverse_bind) {
-            for (int row = 0; row < 4; ++row) {
-                for (int column = 0; column < 4; ++column) {
-                    matrix[row * 4 + column] *=
-                        row_scale[row] * col_scale[column];
-                }
-            }
+        const std::vector<double> values =
+            ReadAccessor(model, skin.inverseBindMatrices);
+        const size_t matrix_count = values.size() / 16;
+        const size_t count = std::min(matrix_count, result.inverse_bind.size());
+        for (size_t bone = 0; bone < count; ++bone) {
+            result.inverse_bind[bone] = TransposeMatrix(
+                ConjugateByScale(
+                    ReadMatrix(values, bone * 16),
+                    scale_x,
+                    scale_y,
+                    scale_z));
         }
     }
+
     return result;
 }
 
@@ -442,7 +762,7 @@ inline Transform SampleChannel(
     std::vector<double> times = ReadAccessor(model, sampler.input);
     std::vector<double> values = ReadAccessor(model, sampler.output);
     int component_count = target_path == "rotation" ? 4 : 3;
-    if (times.empty() || values.size() < component_count)
+    if (times.empty() || values.size() < static_cast<size_t>(component_count))
         return base;
     size_t key = 0;
     while (key + 1 < times.size() && times[key + 1] <= time)
@@ -525,31 +845,51 @@ inline bool WriteAnimation(
         int frame_count = std::max(1, static_cast<int>(std::ceil(duration * sample_rate)) + 1);
         std::vector<std::vector<Transform>> frames(
             frame_count,
-            skeleton.reference_pose);
+            std::vector<Transform>(skeleton.joint_nodes.size()));
+        const std::vector<int> node_parents = BuildNodeParents(model);
+        std::map<int, int> node_to_bone;
+        for (size_t bone = 0; bone < skeleton.joint_nodes.size(); ++bone)
+            node_to_bone[skeleton.joint_nodes[bone]] = static_cast<int>(bone);
+
+        std::vector<Transform> reference_nodes(model.nodes.size());
+        for (size_t node = 0; node < model.nodes.size(); ++node)
+            reference_nodes[node] = NodeTransform(model.nodes[node]);
+
         for (int frame = 0; frame < frame_count; ++frame) {
-            double time = std::min(duration, frame / static_cast<double>(sample_rate));
+            const double time = std::min(
+                duration, frame / static_cast<double>(sample_rate));
+            std::vector<Transform> animated_nodes = reference_nodes;
+
             for (const tinygltf::AnimationChannel& channel : animation.channels) {
-                if (channel.target_node < 0)
-                    continue;
-                auto joint = std::find(
-                    skeleton.joint_nodes.begin(),
-                    skeleton.joint_nodes.end(),
-                    channel.target_node);
-                if (joint == skeleton.joint_nodes.end() ||
+                if (channel.target_node < 0 ||
+                    channel.target_node >= static_cast<int>(animated_nodes.size()) ||
                     channel.sampler < 0 ||
                     channel.sampler >= static_cast<int>(animation.samplers.size()))
                     continue;
-                size_t bone_index = static_cast<size_t>(
-                    joint - skeleton.joint_nodes.begin());
-                frames[frame][bone_index] = SampleChannel(
+                animated_nodes[channel.target_node] = SampleChannel(
                     model,
                     animation.samplers[channel.sampler],
                     channel.target_path,
                     time,
-                    frames[frame][bone_index],
-                    scale_x,
-                    scale_y,
-                    scale_z);
+                    animated_nodes[channel.target_node]);
+            }
+
+            const std::vector<Matrix4> globals =
+                ComputeNodeGlobals(model, node_parents, &animated_nodes);
+            for (size_t bone = 0; bone < skeleton.joint_nodes.size(); ++bone) {
+                const int joint_node = skeleton.joint_nodes[bone];
+                Matrix4 local = globals[joint_node];
+                const int parent_bone = skeleton.parent_indices[bone];
+                if (parent_bone >= 0 &&
+                    parent_bone < static_cast<int>(skeleton.joint_nodes.size())) {
+                    const int parent_node = skeleton.joint_nodes[parent_bone];
+                    Matrix4 inverse_parent{};
+                    if (InvertMatrix(globals[parent_node], inverse_parent))
+                        local = MultiplyMatrix(inverse_parent, globals[joint_node]);
+                }
+                local = ConjugateByScale(
+                    local, scale_x, scale_y, scale_z);
+                frames[frame][bone] = DecomposeMatrix(local);
             }
         }
         // Looping clips must wrap back to the first pose exactly at the clip

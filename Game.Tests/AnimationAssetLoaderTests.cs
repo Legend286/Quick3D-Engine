@@ -104,7 +104,7 @@ public sealed class AnimationAssetLoaderTests
           ],
           "inverse_bind_matrices": [
             [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+            [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1]
           ]
         }
         """);
@@ -138,6 +138,9 @@ public sealed class AnimationAssetLoaderTests
             Assert.NotEqual(0u, result.SkeletonId);
             Assert.Equal(2, result.Skeleton.Bones.Length);
             Assert.Equal(2, result.Skeleton.InverseBindMatrices.Length);
+            Assert.Equal(4.0f, result.Skeleton.InverseBindMatrices[1].M41);
+            Assert.Equal(5.0f, result.Skeleton.InverseBindMatrices[1].M42);
+            Assert.Equal(6.0f, result.Skeleton.InverseBindMatrices[1].M43);
             Assert.Equal(0, result.Skeleton.Bones[1].ParentIndex);
             Assert.Single(result.ClipIds);
             Assert.True(result.ClipIds.ContainsKey("walk"));

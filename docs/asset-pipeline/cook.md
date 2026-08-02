@@ -39,8 +39,10 @@ and mesh stay in the same space:
 - skinned source vertex positions in the `.msh` stream,
 - the skeleton reference pose and animation translation samples in `.skel`/
   `.anim` (`BuildSkeleton`/`SampleChannel` in `Cook/AnimationCook.h`),
-- the inverse-bind matrices, conjugated by the scale so bind-pose skinning
-  (`global' * inverseBind'`) remains identity.
+- the inverse-bind matrices, decoded from glTF, conjugated by the scale, and
+  transposed once into CPU/System.Numerics ordering before serialization; the
+  runtime uploads them unchanged so bind-pose skinning (`global' * inverseBind'`)
+  remains identity.
 
 Uniform scales (a single factor on all three axes, the common unit-conversion
 case) are exact. Non-uniform scales with rotated bones are an engine-wide

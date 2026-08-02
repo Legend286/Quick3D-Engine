@@ -138,6 +138,25 @@ public enum MeshDeformationKind : uint
     Deforming = 1,
 }
 
+/// <summary>Four unsigned joint indices in the MSH2 source-vertex ABI.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct GpuUInt4
+{
+    public uint X;
+    public uint Y;
+    public uint Z;
+    public uint W;
+
+    /// <summary>Creates one four-component unsigned integer vector.</summary>
+    public GpuUInt4(uint x, uint y, uint z, uint w)
+    {
+        X = x;
+        Y = y;
+        Z = z;
+        W = w;
+    }
+}
+
 /// <summary>Source vertex consumed by the compute-skinning contract.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct SkinSourceVertexGpu
@@ -146,7 +165,7 @@ public struct SkinSourceVertexGpu
     public Vector3 Normal;
     public Vector2 Texcoord;
     public Vector4 Tangent;
-    public Vector4 BoneIndices;
+    public GpuUInt4 BoneIndices;
     public Vector4 BoneWeights;
 }
 
@@ -183,7 +202,7 @@ public struct SkinWorkItemGpu
     public ulong OutputVertices;
     public ulong SkinMatrices;
     public uint VertexCount;
-    public uint Pad;
+    public uint BoneCount;
     public Vector3 OutputOffset;
     public uint OutputPad;
 }

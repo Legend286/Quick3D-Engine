@@ -30,13 +30,17 @@ struct Vertex {
 };
 
 struct SkinSourceVertex {
+    // Deliberately scalar/tightly packed: the matching Slang structure uses
+    // scalar fields too, giving an unambiguous 80-byte cross-API stride.
     float px, py, pz;
     float nx, ny, nz;
     float tu, tv;
     float tx, ty, tz, tw;
-    float bone_indices[4];
+    uint32_t bone_indices[4];
     float bone_weights[4];
 };
+static_assert(sizeof(SkinSourceVertex) == 80,
+              "SkinSourceVertex disk ABI must remain 80 bytes");
 
 struct MeshHeader {
     uint32_t magic;      // 'MSH1'
@@ -712,34 +716,42 @@ int main(int argc, char** argv) {
                     pdata.max_z = std::numeric_limits<float>::lowest();
                     pdata.material_idx = primitive.material;
 
-                    const tinygltf::Accessor& posAccessor = model.accessors[primitive.attributes.at("POSITION")];
-                    const tinygltf::BufferView& posView = model.bufferViews[posAccessor.bufferView];
-                    const tinygltf::Buffer& posBuffer = model.buffers[posView.buffer];
-                    const float* positions = reinterpret_cast<const float*>(&posBuffer.data[posView.byteOffset + posAccessor.byteOffset]);
-
-                    const float* normals = nullptr;
-                    if (primitive.attributes.count("NORMAL") > 0) {
-                        const tinygltf::Accessor& normAccessor = model.accessors[primitive.attributes.at("NORMAL")];
-                        const tinygltf::BufferView& normView = model.bufferViews[normAccessor.bufferView];
-                        const tinygltf::Buffer& normBuffer = model.buffers[normView.buffer];
-                        normals = reinterpret_cast<const float*>(&normBuffer.data[normView.byteOffset + normAccessor.byteOffset]);
+                    if (primitive.attributes.count("POSITION") == 0) {
+                        std::cerr << "WARN: primitive on node " << node_idx
+                                  << " has no POSITION accessor; skipping.\n";
+                        continue;
+                    }
+                    const int position_accessor = primitive.attributes.at("POSITION");
+                    const tinygltf::Accessor& posAccessor =
+                        model.accessors[position_accessor];
+                    const std::vector<double> positions =
+                        animation_cook::ReadAccessor(model, position_accessor);
+                    if (positions.size() != posAccessor.count * 3) {
+                        std::cerr << "WARN: primitive on node " << node_idx
+                                  << " has malformed POSITION data; skipping.\n";
+                        continue;
                     }
 
-                    const float* texcoords = nullptr;
-                    if (primitive.attributes.count("TEXCOORD_0") > 0) {
-                        const tinygltf::Accessor& uvAccessor = model.accessors[primitive.attributes.at("TEXCOORD_0")];
-                        const tinygltf::BufferView& uvView = model.bufferViews[uvAccessor.bufferView];
-                        const tinygltf::Buffer& uvBuffer = model.buffers[uvView.buffer];
-                        texcoords = reinterpret_cast<const float*>(&uvBuffer.data[uvView.byteOffset + uvAccessor.byteOffset]);
-                    }
+                    std::vector<double> normals;
+                    if (primitive.attributes.count("NORMAL") > 0)
+                        normals = animation_cook::ReadAccessor(
+                            model, primitive.attributes.at("NORMAL"));
+                    if (!normals.empty() && normals.size() != posAccessor.count * 3)
+                        normals.clear();
 
-                    const float* tangents = nullptr;
-                    if (primitive.attributes.count("TANGENT") > 0) {
-                        const tinygltf::Accessor& tanAccessor = model.accessors[primitive.attributes.at("TANGENT")];
-                        const tinygltf::BufferView& tanView = model.bufferViews[tanAccessor.bufferView];
-                        const tinygltf::Buffer& tanBuffer = model.buffers[tanView.buffer];
-                        tangents = reinterpret_cast<const float*>(&tanBuffer.data[tanView.byteOffset + tanAccessor.byteOffset]);
-                    }
+                    std::vector<double> texcoords;
+                    if (primitive.attributes.count("TEXCOORD_0") > 0)
+                        texcoords = animation_cook::ReadAccessor(
+                            model, primitive.attributes.at("TEXCOORD_0"));
+                    if (!texcoords.empty() && texcoords.size() != posAccessor.count * 2)
+                        texcoords.clear();
+
+                    std::vector<double> tangents;
+                    if (primitive.attributes.count("TANGENT") > 0)
+                        tangents = animation_cook::ReadAccessor(
+                            model, primitive.attributes.at("TANGENT"));
+                    if (!tangents.empty() && tangents.size() != posAccessor.count * 4)
+                        tangents.clear();
 
                     bool has_skin_attributes =
                         imported_skin_index >= 0 &&
@@ -766,12 +778,15 @@ int main(int argc, char** argv) {
                                 for (int influence = 0; influence < 4; ++influence) {
                                     double joint = joint_values[vertex_index * 4 + influence];
                                     double weight = weight_values[vertex_index * 4 + influence];
-                                    if (!std::isfinite(joint) ||
-                                        joint < 0.0 ||
-                                        joint >= static_cast<double>(imported_skeleton.joint_nodes.size()) ||
-                                        std::floor(joint) != joint ||
-                                        !std::isfinite(weight) ||
-                                        weight < 0.0) {
+                                    if (!std::isfinite(weight) || weight < 0.0) {
+                                        valid_influences = false;
+                                        break;
+                                    }
+                                    if (weight > 1.0e-8 &&
+                                        (!std::isfinite(joint) ||
+                                         joint < 0.0 ||
+                                         joint >= static_cast<double>(imported_skeleton.joint_nodes.size()) ||
+                                         std::floor(joint) != joint)) {
                                         valid_influences = false;
                                         break;
                                     }
@@ -785,7 +800,7 @@ int main(int argc, char** argv) {
                             std::cerr << "WARN: skinned primitive on node "
                                       << node_idx
                                       << " has invalid JOINTS_0/WEIGHTS_0 data; "
-                                         "writing it as static geometry.\\n";
+                                         "writing it as static geometry.\n";
                             has_skin_attributes = false;
                         }
                     }
@@ -793,9 +808,9 @@ int main(int argc, char** argv) {
 
                     for (size_t i = 0; i < posAccessor.count; ++i) {
                         Vertex v{};
-                        v.px = positions[i * 3 + 0];
-                        v.py = positions[i * 3 + 1];
-                        v.pz = positions[i * 3 + 2];
+                        v.px = static_cast<float>(positions[i * 3 + 0]);
+                        v.py = static_cast<float>(positions[i * 3 + 1]);
+                        v.pz = static_cast<float>(positions[i * 3 + 2]);
                         if (!has_skin_attributes) {
                             world_mat.transform(v.px, v.py, v.pz);
                         } else {
@@ -807,35 +822,47 @@ int main(int argc, char** argv) {
                             v.pz *= scale_z == 0.0f ? 1.0f : scale_z;
                         }
 
-                        pdata.min_x = std::min(pdata.min_x, v.px);
-                        pdata.min_y = std::min(pdata.min_y, v.py);
-                        pdata.min_z = std::min(pdata.min_z, v.pz);
-                        pdata.max_x = std::max(pdata.max_x, v.px);
-                        pdata.max_y = std::max(pdata.max_y, v.py);
-                        pdata.max_z = std::max(pdata.max_z, v.pz);
+                        float bounds_x = v.px;
+                        float bounds_y = v.py;
+                        float bounds_z = v.pz;
+                        if (has_skin_attributes) {
+                            // jointGlobal * inverseBind produces the mesh node's
+                            // bind-space/world-space position. Centre the part in
+                            // that same space, not in raw mesh-local space.
+                            bounds_x = static_cast<float>(positions[i * 3 + 0]);
+                            bounds_y = static_cast<float>(positions[i * 3 + 1]);
+                            bounds_z = static_cast<float>(positions[i * 3 + 2]);
+                            world_mat.transform(bounds_x, bounds_y, bounds_z);
+                        }
+                        pdata.min_x = std::min(pdata.min_x, bounds_x);
+                        pdata.min_y = std::min(pdata.min_y, bounds_y);
+                        pdata.min_z = std::min(pdata.min_z, bounds_z);
+                        pdata.max_x = std::max(pdata.max_x, bounds_x);
+                        pdata.max_y = std::max(pdata.max_y, bounds_y);
+                        pdata.max_z = std::max(pdata.max_z, bounds_z);
 
-                        if (normals) {
-                            v.nx = normals[i * 3 + 0];
-                            v.ny = normals[i * 3 + 1];
-                            v.nz = normals[i * 3 + 2];
+                        if (!normals.empty()) {
+                            v.nx = static_cast<float>(normals[i * 3 + 0]);
+                            v.ny = static_cast<float>(normals[i * 3 + 1]);
+                            v.nz = static_cast<float>(normals[i * 3 + 2]);
                             if (!has_skin_attributes)
                                 world_mat.transform_normal(v.nx, v.ny, v.nz);
                         } else {
                             v.nx = 0.0f; v.ny = 1.0f; v.nz = 0.0f;
                         }
 
-                        if (texcoords) {
-                            v.tu = texcoords[i * 2 + 0];
-                            v.tv = texcoords[i * 2 + 1];
+                        if (!texcoords.empty()) {
+                            v.tu = static_cast<float>(texcoords[i * 2 + 0]);
+                            v.tv = static_cast<float>(texcoords[i * 2 + 1]);
                         } else {
                             v.tu = 0.0f; v.tv = 0.0f;
                         }
 
-                        if (tangents) {
-                            v.tx = tangents[i * 4 + 0];
-                            v.ty = tangents[i * 4 + 1];
-                            v.tz = tangents[i * 4 + 2];
-                            v.tw = tangents[i * 4 + 3];
+                        if (!tangents.empty()) {
+                            v.tx = static_cast<float>(tangents[i * 4 + 0]);
+                            v.ty = static_cast<float>(tangents[i * 4 + 1]);
+                            v.tz = static_cast<float>(tangents[i * 4 + 2]);
+                            v.tw = static_cast<float>(tangents[i * 4 + 3]);
                             if (!has_skin_attributes)
                                 world_mat.transform_normal(v.tx, v.ty, v.tz);
                         } else {
@@ -857,28 +884,45 @@ int main(int argc, char** argv) {
                             source.ty = v.ty;
                             source.tz = v.tz;
                             source.tw = v.tw;
+                            double source_weight_sum = 0.0;
+                            for (int influence = 0; influence < 4; ++influence)
+                                source_weight_sum += std::max(
+                                    0.0, weight_values[i * 4 + influence]);
                             for (int influence = 0; influence < 4; ++influence) {
-                                source.bone_indices[influence] = static_cast<float>(
-                                    joint_values[i * 4 + influence]);
-                                source.bone_weights[influence] = static_cast<float>(
-                                    weight_values[i * 4 + influence]);
+                                const double weight = std::max(
+                                    0.0, weight_values[i * 4 + influence]);
+                                source.bone_weights[influence] =
+                                    source_weight_sum > 1.0e-12
+                                        ? static_cast<float>(weight / source_weight_sum)
+                                        : (influence == 0 ? 1.0f : 0.0f);
+                                source.bone_indices[influence] =
+                                    weight > 1.0e-8
+                                        ? static_cast<uint32_t>(
+                                            joint_values[i * 4 + influence])
+                                        : 0u;
                             }
                             pdata.skin_v.push_back(source);
                         }
                     }
 
                     if (primitive.indices >= 0) {
-                        const tinygltf::Accessor& indAccessor = model.accessors[primitive.indices];
-                        const tinygltf::BufferView& indView = model.bufferViews[indAccessor.bufferView];
-                        const tinygltf::Buffer& indBuffer = model.buffers[indView.buffer];
-                        
-                        if (indAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
-                            const uint16_t* ind = reinterpret_cast<const uint16_t*>(&indBuffer.data[indView.byteOffset + indAccessor.byteOffset]);
-                            for (size_t i = 0; i < indAccessor.count; ++i) pdata.i.push_back((uint32_t)ind[i]);
-                        } else if (indAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
-                            const uint32_t* ind = reinterpret_cast<const uint32_t*>(&indBuffer.data[indView.byteOffset + indAccessor.byteOffset]);
-                            for (size_t i = 0; i < indAccessor.count; ++i) pdata.i.push_back(ind[i]);
+                        const std::vector<double> index_values =
+                            animation_cook::ReadAccessor(model, primitive.indices);
+                        pdata.i.reserve(index_values.size());
+                        for (double index_value : index_values) {
+                            if (!std::isfinite(index_value) ||
+                                index_value < 0.0 ||
+                                std::floor(index_value) != index_value ||
+                                index_value >= static_cast<double>(posAccessor.count)) {
+                                pdata.i.clear();
+                                break;
+                            }
+                            pdata.i.push_back(static_cast<uint32_t>(index_value));
                         }
+                    } else {
+                        pdata.i.reserve(posAccessor.count);
+                        for (size_t vertex = 0; vertex < posAccessor.count; ++vertex)
+                            pdata.i.push_back(static_cast<uint32_t>(vertex));
                     }
 
                     total_min_x = std::min(total_min_x, pdata.min_x);
@@ -948,9 +992,9 @@ int main(int argc, char** argv) {
                         p.local_offset_z + pivot_z;
                     
                     if (p.skinned) {
-                        p.skinned_output_offset_x = -part_center_x;
-                        p.skinned_output_offset_y = -part_center_y;
-                        p.skinned_output_offset_z = -part_center_z;
+                        p.skinned_output_offset_x = -p.local_offset_x;
+                        p.skinned_output_offset_y = -p.local_offset_y;
+                        p.skinned_output_offset_z = -p.local_offset_z;
                     }
                     else {
                         for (Vertex& vertex : p.v) {
@@ -991,7 +1035,7 @@ int main(int argc, char** argv) {
                     
                     std::ofstream out_file(msh_path, std::ios::binary);
                     if (out_file) {
-                        uint32_t magic = p.skinned ? 0x3248534D : 0x3148534D;
+                        uint32_t magic = p.skinned ? 0x3348534D : 0x3148534D;
                         uint32_t v_count = (uint32_t)p.v.size();
                         uint32_t i_count = (uint32_t)p.i.size();
                         uint32_t index_format = 32;

@@ -63,13 +63,28 @@ public class Mesh : IDisposable
 
 public static class MeshLoader
 {
+    private const uint StaticMeshMagic = 0x3148534D;
+    private const uint LegacySkinnedMeshMagic = 0x3248534D;
+    private const uint IntegerSkinnedMeshMagic = 0x3348534D;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct MeshHeader
     {
-        public uint Magic;      // 'MSH1' -> 0x3148534D
+        public uint Magic;
         public uint VertexCount;
         public uint IndexCount;
         public uint IndexFormat;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LegacySkinSourceVertexGpu
+    {
+        public Vector3 Position;
+        public Vector3 Normal;
+        public Vector2 Texcoord;
+        public Vector4 Tangent;
+        public Vector4 BoneIndices;
+        public Vector4 BoneWeights;
     }
 
     private static readonly System.Collections.Generic.Dictionary<string, Mesh> _cache = new();
@@ -184,8 +199,10 @@ public static class MeshLoader
         fixed (byte* ptr = fileBytes)
         {
             MeshHeader* header = (MeshHeader*)ptr;
-            bool isSkinned = header->Magic == 0x3248534D;
-            if (!isSkinned && header->Magic != 0x3148534D)
+            bool isLegacySkinned = header->Magic == LegacySkinnedMeshMagic;
+            bool isSkinned = isLegacySkinned ||
+                header->Magic == IntegerSkinnedMeshMagic;
+            if (!isSkinned && header->Magic != StaticMeshMagic)
                 throw new InvalidDataException("Invalid .msh file magic.");
             if (header->VertexCount == 0 ||
                 header->IndexFormat is not (16u or 32u))
@@ -240,12 +257,60 @@ public static class MeshLoader
             {
                 vb.Upload(new IntPtr(ptr + 16), vSizeTarget);
             }
-            else if (isSkinned && stride == Marshal.SizeOf<SkinSourceVertexGpu>())
+            else if (isSkinned &&
+                     stride == Marshal.SizeOf<SkinSourceVertexGpu>())
             {
-                skinSourceBuffer!.Upload(new IntPtr(ptr + 16), skinSourceSize);
-                SkinSourceVertexGpu[] bindPose = new SkinSourceVertexGpu[header->VertexCount];
-                new ReadOnlySpan<byte>(ptr + 16, checked((int)skinSourceSize))
-                    .CopyTo(MemoryMarshal.AsBytes(bindPose.AsSpan()));
+                SkinSourceVertexGpu[] bindPose =
+                    new SkinSourceVertexGpu[header->VertexCount];
+                if (!isLegacySkinned)
+                {
+                    skinSourceBuffer!.Upload(new IntPtr(ptr + 16), skinSourceSize);
+                    new ReadOnlySpan<byte>(ptr + 16, checked((int)skinSourceSize))
+                        .CopyTo(MemoryMarshal.AsBytes(bindPose.AsSpan()));
+                }
+                else
+                {
+                    LegacySkinSourceVertexGpu[] legacy =
+                        new LegacySkinSourceVertexGpu[header->VertexCount];
+                    new ReadOnlySpan<byte>(ptr + 16, checked((int)skinSourceSize))
+                        .CopyTo(MemoryMarshal.AsBytes(legacy.AsSpan()));
+                    for (int index = 0; index < legacy.Length; ++index)
+                    {
+                        LegacySkinSourceVertexGpu source = legacy[index];
+                        Vector4 indices = source.BoneIndices;
+                        if (!float.IsFinite(indices.X) ||
+                            !float.IsFinite(indices.Y) ||
+                            !float.IsFinite(indices.Z) ||
+                            !float.IsFinite(indices.W) ||
+                            indices.X < 0.0f || indices.Y < 0.0f ||
+                            indices.Z < 0.0f || indices.W < 0.0f ||
+                            indices.X != MathF.Truncate(indices.X) ||
+                            indices.Y != MathF.Truncate(indices.Y) ||
+                            indices.Z != MathF.Truncate(indices.Z) ||
+                            indices.W != MathF.Truncate(indices.W))
+                        {
+                            skinSourceBuffer?.Dispose();
+                            vb.Dispose();
+                            ib.Dispose();
+                            throw new InvalidDataException(
+                                "Legacy MSH2 contains a non-integer joint index.");
+                        }
+                        bindPose[index] = new SkinSourceVertexGpu
+                        {
+                            Position = source.Position,
+                            Normal = source.Normal,
+                            Texcoord = source.Texcoord,
+                            Tangent = source.Tangent,
+                            BoneIndices = new GpuUInt4(
+                                checked((uint)indices.X),
+                                checked((uint)indices.Y),
+                                checked((uint)indices.Z),
+                                checked((uint)indices.W)),
+                            BoneWeights = source.BoneWeights,
+                        };
+                    }
+                    skinSourceBuffer!.Upload<SkinSourceVertexGpu>(bindPose.AsSpan());
+                }
                 Vertex[] output = new Vertex[header->VertexCount];
                 for (int index = 0; index < output.Length; ++index)
                 {
