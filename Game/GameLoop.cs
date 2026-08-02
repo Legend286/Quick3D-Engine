@@ -153,6 +153,9 @@ public sealed class GameLoop : IGameLoop
         BuildProceduralDemoIfPresent(contentRoot);
     }
 
+    public void NewScene(string contentRoot)
+        => _gameRenderer?.NewScene(contentRoot);
+
     /// <summary>If the freshly loaded scene carries a
     /// <c>ProceduralDemoDefinition</c> with <c>Enabled == true</c>,
     /// expand it into world entities via the procedural-demo builder.

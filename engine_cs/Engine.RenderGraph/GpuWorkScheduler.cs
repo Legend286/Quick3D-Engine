@@ -111,6 +111,33 @@ public sealed class GpuWorkScheduler
     private int _punctualHeadroomSamples;
     private int _punctualPressureSamples;
 
+    /// <summary>Restores initial estimates and counters for a new scene.</summary>
+    public void Reset()
+    {
+        ResetDomain(_domains[(int)GpuWorkDomain.Shadows], 2.0, 1.0, 1, 1);
+        ResetDomain(
+            _domains[(int)GpuWorkDomain.PunctualShadows],
+            6.0,
+            0.25,
+            24,
+            48);
+        ResetDomain(
+            _domains[(int)GpuWorkDomain.BackgroundCompute],
+            1.5,
+            0.25,
+            4,
+            4);
+        ResetDomain(
+            _domains[(int)GpuWorkDomain.Gi],
+            4.0,
+            0.125,
+            128,
+            128);
+        _frameNumber = -1;
+        _punctualHeadroomSamples = 0;
+        _punctualPressureSamples = 0;
+    }
+
     public void BeginFrame(long frameNumber)
     {
         if (_frameNumber == frameNumber)
@@ -297,4 +324,24 @@ public sealed class GpuWorkScheduler
         => state.AvailableMilliseconds > 0.0
             ? state.AvailableMilliseconds
             : state.BudgetMilliseconds + state.CarryMilliseconds;
+
+    private static void ResetDomain(
+        DomainState state,
+        double budgetMilliseconds,
+        double estimatedUnitMilliseconds,
+        int maximumUnits,
+        int burstMaximumUnits)
+    {
+        state.BudgetMilliseconds = budgetMilliseconds;
+        state.EstimatedUnitMilliseconds = estimatedUnitMilliseconds;
+        state.MaximumUnits = maximumUnits;
+        state.BurstMaximumUnits = burstMaximumUnits;
+        state.CarryMilliseconds = 0.0;
+        state.AvailableMilliseconds = 0.0;
+        state.AdmittedUnits = 0;
+        state.DeferredUnits = 0;
+        state.TotalAdmittedUnits = 0;
+        state.TotalDeferredUnits = 0;
+        state.AdmittedMilliseconds = 0.0;
+    }
 }

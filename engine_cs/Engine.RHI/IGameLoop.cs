@@ -118,6 +118,8 @@ public interface IGameLoop : IDisposable
 {
     void Init(IntPtr deviceHandle, IntPtr swapchainHandle, IEntityStore world, bool enableImGui = true);
     void LoadScene(string contentRoot, string sceneName);
+    /// <summary>Releases the loaded scene and creates an empty renderable scene.</summary>
+    void NewScene(string contentRoot);
     void Update(InputState input);
     void RenderFrame(RhiTexture backBuffer, uint width, uint height);
     void RenderThumbnail(string contentRoot, string assetPath, string assetType, RhiTexture target, uint width = 256, uint height = 256, float orbitRadians = 0.0f, int modelPartIndex = -1, RhiFence? syncFence = null, ulong waitValue = 0, ulong signalValue = 0);

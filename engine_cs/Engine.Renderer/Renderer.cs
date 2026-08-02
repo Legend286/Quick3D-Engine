@@ -561,18 +561,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _lastSceneName = sceneName;
         _loader = new SceneLoader(contentRoot);
         SceneGraph scene = _loader.Load(sceneName);
-
-        // Wait for all in-flight GPU commands to complete before destroying the old scene's resources
-        using (var cmd = new Engine.RHI.CommandRecorder(_device, Engine.CBindings.RhiNative.QueueType.Graphics))
-        {
-            cmd.SubmitAndWait();
-        }
-
-        _world.Clear();
-        MeshLoader.ClearCache();
-        MaterialLoader.ClearCache();
-        TextureLoader.ClearCache();
-        AssetRegistry.Clear();
+        ReleaseCurrentSceneResources();
 
         foreach (var modelRef in scene.Models)
         {
@@ -659,6 +648,60 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _renderGrid = true;
         _renderShadows = true;
         RebuildRenderPlan(scene, contentRoot);
+    }
+
+    /// <summary>
+    /// Releases the active scene and creates an empty renderable scene.
+    /// </summary>
+    public void NewScene(string contentRoot)
+    {
+        AssertRenderThread();
+        _contentRoot = contentRoot;
+        _lastSceneName = "New Scene";
+        _loader = null;
+        ReleaseCurrentSceneResources();
+
+        var scene = new SceneGraph { Name = "New Scene" };
+        scene.Passes.Add(new ScenePass());
+        _currentScene = scene;
+        _renderSky = true;
+        _renderGrid = true;
+        _renderShadows = true;
+        ActivateOrCompileRenderPlan(scene, contentRoot);
+    }
+
+    private void ReleaseCurrentSceneResources()
+    {
+        WaitForSceneGpuIdle();
+        DisposeRenderPlans();
+        _graphExecutor.ResetSceneResources();
+        _visibilityPicker.ResetAfterGpuIdle();
+        _boundDDGIHandles = null;
+        _currentScene = null;
+        _selectedEntity = 0;
+        _lastConsumedGpuTimingFrame = -1;
+        _renderedFrameCount = 0;
+        _gpuWorkScheduler.Reset();
+        _sharedBindlessHeap.ClearRegistrations();
+        _world.Clear();
+        MeshLoader.ClearCache();
+        MaterialLoader.ClearCache();
+        TextureLoader.ClearCache();
+        AssetRegistry.Clear();
+    }
+
+    private void WaitForSceneGpuIdle()
+    {
+        using (var graphics = new CommandRecorder(
+                   _device,
+                   Engine.CBindings.RhiNative.QueueType.Graphics))
+        {
+            graphics.SubmitAndWait();
+        }
+        using var compute = new CommandRecorder(
+            _device,
+            Engine.CBindings.RhiNative.QueueType.Compute);
+        compute.SubmitAndWait();
     }
 
     public void BuildThumbnailPlan(string contentRoot)

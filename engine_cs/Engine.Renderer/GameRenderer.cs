@@ -512,6 +512,16 @@ public sealed class GameRenderer : IDisposable
         _renderer.LoadScene(contentRoot, sceneName);
     }
 
+    /// <summary>Creates a new empty scene after releasing the active one.</summary>
+    public void NewScene(string contentRoot)
+    {
+        AssertRenderThread();
+        _sceneAnimationTime = 0.0f;
+        _selectionPickRequest = 0;
+        _pendingSubmeshMaterials.Clear();
+        _renderer.NewScene(contentRoot);
+    }
+
     public ulong AddPointLight(Vector3 position, Vector3 color, float intensity, float range, float sourceRadius, bool castShadows = true)
         => _renderer.AddPointLight(position, color, intensity, range, sourceRadius, castShadows);
 

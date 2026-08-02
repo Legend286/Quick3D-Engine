@@ -12,6 +12,7 @@
 // returning so the finalizer is a no-op.
 
 using System;
+using System.Collections.Generic;
 using Engine.CBindings;
 
 namespace Engine.RHI;
@@ -40,6 +41,7 @@ public sealed class RhiBindlessHeap : IDisposable
     public const uint InvalidSlot = uint.MaxValue;
 
     private readonly bool _owns;
+    private readonly HashSet<uint> _registeredSlots = new();
 
     /// <summary>
     /// Construct a bindless heap. <paramref name="capacity"/> = 0 requests the
@@ -67,11 +69,23 @@ public sealed class RhiBindlessHeap : IDisposable
         ArgumentNullException.ThrowIfNull(texture);
         int rc = RhiNative.RhiBindlessRegisterTexture(Handle, texture.Handle, out uint slot);
         if (rc != 0) throw new InvalidOperationException($"rhi_bindless_register_texture rc={rc}");
+        _registeredSlots.Add(slot);
         return slot;
     }
 
-    public void Release(uint slot) =>
+    public void Release(uint slot)
+    {
+        _registeredSlots.Remove(slot);
         RhiNative.RhiBindlessReleaseTexture(Handle, slot);
+    }
+
+    /// <summary>Releases every texture slot registered through this wrapper.</summary>
+    public void ClearRegistrations()
+    {
+        foreach (uint slot in _registeredSlots)
+            RhiNative.RhiBindlessReleaseTexture(Handle, slot);
+        _registeredSlots.Clear();
+    }
 
     public bool TryLookup(RhiTexture texture, out uint slot)
     {

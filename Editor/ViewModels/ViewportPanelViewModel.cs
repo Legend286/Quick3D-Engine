@@ -659,8 +659,12 @@ public sealed partial class ViewportPanelViewModel : ObservableObject, IDisposab
 
     public void NewScene()
     {
-        _world?.Clear();
-        _baseScene = new Engine.Scene.SceneGraph();
+        _gameLoop?.NewScene(_contentRoot);
+        _baseScene = new Engine.Scene.SceneGraph
+        {
+            Name = "New Scene"
+        };
+        _baseScene.Passes.Add(new Engine.Scene.ScenePass());
         AddDirectionalLight();
         CurrentSceneName = "New Scene";
         IsDirty = true;

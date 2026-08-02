@@ -758,6 +758,20 @@ public sealed class RenderGraphExecutor : ICommandSink, IDisposable
         _publishedTimingPlan = null;
     }
 
+    /// <summary>
+    /// Releases graph allocations and timing history retained across frames.
+    /// Call only after all queues using the previous scene are idle.
+    /// </summary>
+    public void ResetSceneResources()
+    {
+        DisposeTimestampPools();
+        _transientHeap?.Dispose();
+        _transientHeap = null;
+        _currentHeapSize = 0;
+        _ctx.Textures.Clear();
+        _ctx.Buffers.Clear();
+    }
+
     private void AllocateTransientResources(RenderPlan graph)
     {
         if (graph.Aliasing.TotalHeapSize <= 0)
