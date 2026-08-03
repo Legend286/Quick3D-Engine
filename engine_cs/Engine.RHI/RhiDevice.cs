@@ -15,6 +15,8 @@ public sealed class RhiDevice : IDisposable
 
     public bool IsInitialized => Handle != IntPtr.Zero;
 
+    public ShaderCompileCache ShaderCache { get; } = new ShaderCompileCache();
+
     private readonly bool _owns;
 
     public RhiDevice()
@@ -41,6 +43,7 @@ public sealed class RhiDevice : IDisposable
         {
             RhiNative.RhiShutdown(Handle);
         }
+        ShaderCache.Dispose();
         Handle = IntPtr.Zero;
         GC.SuppressFinalize(this);
     }

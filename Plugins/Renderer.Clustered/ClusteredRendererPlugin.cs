@@ -123,7 +123,6 @@ public sealed class ClusteredRendererPlugin :
                     context.RenderSky,
                     cliArgs,
                     includeDirs,
-                    context.SharedShaderCache,
                     ddgiProvider,
                     context.EnableVisibilityBuffer));
         }

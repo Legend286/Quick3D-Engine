@@ -23,8 +23,7 @@ internal sealed class VisibilityShadingPass : RenderPass, IDisposable
         string contentRoot,
         PbrPass owner,
         IReadOnlyList<string>? cliArgs,
-        IReadOnlyList<string>? includeDirs,
-        ShaderCompileCache? compileCache)
+        IReadOnlyList<string>? includeDirs)
     {
         _owner = owner;
         Name = "Visibility PBR Shading";
@@ -32,16 +31,17 @@ internal sealed class VisibilityShadingPass : RenderPass, IDisposable
         IReadOnlyList<string> resolvedIncludeDirs =
             includeDirs ??
             new[] { Path.Combine(contentRoot, "shaders") };
-        string source = VisibilityBufferPass.LoadShaderSource(
+        string source = Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(
             contentRoot,
             "visibility_shade.slang",
             resolvedIncludeDirs);
-        _shader = Compile(
+        _shader = RhiShader.Compile(
             device,
             source,
+            "computeMain",
+            RhiNative.ShaderStage.Compute,
             cliArgs,
-            resolvedIncludeDirs,
-            compileCache);
+            resolvedIncludeDirs);
         _pipeline = RhiPipeline.CreateCompute(device, _shader);
         _pipeline.SetDebugName(
             "Visibility 8x8 Tile PBR",
@@ -131,35 +131,5 @@ internal sealed class VisibilityShadingPass : RenderPass, IDisposable
     internal static bool IsComparisonView(ViewportDebugView view)
         => view == ViewportDebugView.VisibilityPbr;
 
-    private static RhiShader Compile(
-        RhiDevice device,
-        string source,
-        IReadOnlyList<string>? cliArgs,
-        IReadOnlyList<string>? includeDirs,
-        ShaderCompileCache? compileCache)
-    {
-        if (compileCache == null)
-        {
-            return RhiShader.FromSource(
-                device,
-                source,
-                "computeMain",
-                RhiNative.ShaderStage.Compute,
-                includeDirs,
-                cliArgs);
-        }
-        return (RhiShader)compileCache.GetOrCompileHash(
-            source,
-            "computeMain",
-            RhiNative.ShaderStage.Compute,
-            includeDirs,
-            cliArgs,
-            () => RhiShader.FromSource(
-                device,
-                source,
-                "computeMain",
-                RhiNative.ShaderStage.Compute,
-                includeDirs,
-                cliArgs));
-    }
+
 }

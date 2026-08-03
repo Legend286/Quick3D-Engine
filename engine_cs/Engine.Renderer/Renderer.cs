@@ -121,7 +121,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
     private bool _renderShadows = true;
     private float _animationDeltaTime = 1.0f / 60.0f;
     private RhiBindlessHeap _sharedBindlessHeap;
-    private ShaderCompileCache _compileCache = new();
+
 
     /// <summary>Process-wide shader compile cache. Plugins and
     /// passes thread shader compilations through this cache via
@@ -132,7 +132,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
     /// state recreation. See
     /// <c>docs/renderer/shader-cache.md</c> for the public API and
     /// perf characteristics.</summary>
-    public ShaderCompileCache ShaderCompileCache => _compileCache;
+    public ShaderCompileCache ShaderCompileCache => _device.ShaderCache;
     private IReadOnlyList<string>? _activeShaderCliArgs;
     private IReadOnlyList<string>? _activeShaderIncludeDirs;
 
@@ -140,22 +140,10 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
 
     public string LoadShaderSource(string relPath, string contentRoot)
     {
-        string full = Path.Combine(contentRoot, relPath);
-        if (File.Exists(full)) return File.ReadAllText(full);
-
-        if (_activeShaderIncludeDirs != null)
-        {
-            string fileName = Path.GetFileName(relPath);
-            foreach (var dir in _activeShaderIncludeDirs)
-            {
-                string fallback = Path.Combine(dir, fileName);
-                if (File.Exists(fallback)) return File.ReadAllText(fallback);
-
-                string parentFallback = Path.Combine(Path.GetDirectoryName(dir) ?? dir, relPath);
-                if (File.Exists(parentFallback)) return File.ReadAllText(parentFallback);
-            }
-        }
-        throw new FileNotFoundException(full);
+        return Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(
+            contentRoot,
+            Path.GetFileName(relPath),
+            _activeShaderIncludeDirs);
     }
 
     private RasterSceneGpuCache? _rasterSceneCache;
@@ -1051,8 +1039,8 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 _currentScene,
                 _contentRoot);
         }
-        _compileCache.BumpGeneration();
-        _compileCache.EvictOlderThan(2);
+        _device.ShaderCache.BumpGeneration();
+        _device.ShaderCache.EvictOlderThan(2);
     }
 
     private void ActivateOrCompileRenderPlan(
@@ -1114,7 +1102,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
                 EnableVisibilityBuffer = _enableVisibilityBuffer,
                 ShaderCliArgs = _activeShaderCliArgs,
                 ShaderIncludeDirs = _activeShaderIncludeDirs,
-                SharedShaderCache = _compileCache
+                SharedShaderCache = _device.ShaderCache
             };
         CachedRenderPlan? rasterBase = null;
         if (usePathTracer && _enableVisibilityBuffer)
@@ -1974,8 +1962,7 @@ public sealed class Renderer : IDisposable, IActiveCameraDataProvider
         _shadowAtlasPreviewRenderer = null;
         _sharedBindlessHeap?.Dispose();
         _sharedBindlessHeap = null!;
-        _compileCache?.Dispose();
-        _compileCache = null!;
+
         AnimationAssetRegistry.Clear();
         EditorShaderBridge.ActiveShaderContextChanged -= OnActiveShaderContextChanged;
         if (s_active == this)

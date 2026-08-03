@@ -48,7 +48,7 @@ public class PbrPass : RenderPass, IDisposable
     private readonly bool _renderSky;
     private readonly IReadOnlyList<string>? _cliArgs;
     private readonly IReadOnlyList<string>? _includeDirs;
-    private readonly ShaderCompileCache? _compileCache;
+
     private readonly IDDGIAtlasProvider? _ddgiAtlas;
     private readonly bool _useVisibilityOpaque;
 
@@ -95,7 +95,6 @@ public class PbrPass : RenderPass, IDisposable
         bool renderSky,
         IReadOnlyList<string>? cliArgs = null,
         IReadOnlyList<string>? includeDirs = null,
-        ShaderCompileCache? compileCache = null,
         IDDGIAtlasProvider? ddgiAtlas = null,
         bool useVisibilityOpaque = false)
     {
@@ -107,7 +106,7 @@ public class PbrPass : RenderPass, IDisposable
         _renderSky = renderSky;
         _cliArgs = cliArgs;
         _includeDirs = includeDirs;
-        _compileCache = compileCache;
+
         _ddgiAtlas = ddgiAtlas;
         _useVisibilityOpaque = useVisibilityOpaque;
         Name = _useVisibilityOpaque
@@ -119,15 +118,9 @@ public class PbrPass : RenderPass, IDisposable
 
         if (!_useVisibilityOpaque)
         {
-            string src = LoadShaderSource("shaders/pbr.slang");
-            RhiShader vertexShader = CompileCached(
-                src,
-                "vertexMain",
-                RhiNative.ShaderStage.Vertex);
-            RhiShader fragmentShader = CompileCached(
-                src,
-                "fragmentMain",
-                RhiNative.ShaderStage.Fragment);
+            string src = Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(_contentRoot, "pbr.slang", _includeDirs);
+            RhiShader vertexShader = CompileWithFallback(src, "vertexMain", RhiNative.ShaderStage.Vertex);
+            RhiShader fragmentShader = CompileWithFallback(src, "fragmentMain", RhiNative.ShaderStage.Fragment);
             _vs = vertexShader;
             _fs = fragmentShader;
             _pipeline = RhiPipeline.CreateGraphics(
@@ -138,25 +131,19 @@ public class PbrPass : RenderPass, IDisposable
                 enableDepth: true);
         }
 
-        string cullSrc = LoadShaderSource("shaders/cull.slang");
-        _cullCs = CompileCached(cullSrc, "computeMain", RhiNative.ShaderStage.Compute);
+        string cullSrc = Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(_contentRoot, "cull.slang", _includeDirs);
+        _cullCs = RhiShader.Compile(_device, cullSrc, "computeMain", RhiNative.ShaderStage.Compute, _cliArgs, _includeDirs);
         _cullPipeline = RhiPipeline.CreateCompute(_device, _cullCs);
 
-        string clusterSrc = LoadShaderSource("shaders/cluster_lights.slang");
-        _clusterCs = CompileCached(clusterSrc, "computeMain", RhiNative.ShaderStage.Compute);
+        string clusterSrc = Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(_contentRoot, "cluster_lights.slang", _includeDirs);
+        _clusterCs = RhiShader.Compile(_device, clusterSrc, "computeMain", RhiNative.ShaderStage.Compute, _cliArgs, _includeDirs);
         _clusterPipeline = RhiPipeline.CreateCompute(_device, _clusterCs);
 
         if (!_useVisibilityOpaque)
         {
-            string skySrc = LoadShaderSource("shaders/pbr_sky.slang");
-            RhiShader skyVertexShader = CompileCached(
-                skySrc,
-                "vertexMain",
-                RhiNative.ShaderStage.Vertex);
-            RhiShader skyFragmentShader = CompileCached(
-                skySrc,
-                "fragmentMain",
-                RhiNative.ShaderStage.Fragment);
+            string skySrc = Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(_contentRoot, "pbr_sky.slang", _includeDirs);
+            RhiShader skyVertexShader = CompileWithFallback(skySrc, "vertexMain", RhiNative.ShaderStage.Vertex);
+            RhiShader skyFragmentShader = CompileWithFallback(skySrc, "fragmentMain", RhiNative.ShaderStage.Fragment);
             _skyVs = skyVertexShader;
             _skyFs = skyFragmentShader;
             _skyPipeline = RhiPipeline.CreateGraphics(
@@ -164,7 +151,7 @@ public class PbrPass : RenderPass, IDisposable
                 skyVertexShader,
                 skyFragmentShader,
                 RhiNative.TextureFormat.Bgra8Unorm,
-                enableDepth: true);
+                enableDepth: false);
         }
 
         _sampler = RhiSampler.Create(_device);
@@ -258,8 +245,7 @@ public class PbrPass : RenderPass, IDisposable
             _sceneCache,
             this,
             _cliArgs,
-            _includeDirs,
-            _compileCache);
+            _includeDirs);
 
     internal RenderPass CreateVisibilityReconstructionPass()
         => new VisibilityReconstructionPass(
@@ -268,8 +254,7 @@ public class PbrPass : RenderPass, IDisposable
             _sceneCache,
             this,
             _cliArgs,
-            _includeDirs,
-            _compileCache);
+            _includeDirs);
 
     internal RenderPass CreateVisibilityReferencePass()
         => new VisibilityReferencePass(
@@ -278,8 +263,7 @@ public class PbrPass : RenderPass, IDisposable
             _sceneCache,
             this,
             _cliArgs,
-            _includeDirs,
-            _compileCache);
+            _includeDirs);
 
     internal RenderPass CreateVisibilityShadingPass()
         => new VisibilityShadingPass(
@@ -287,8 +271,7 @@ public class PbrPass : RenderPass, IDisposable
             _contentRoot,
             this,
             _cliArgs,
-            _includeDirs,
-            _compileCache);
+            _includeDirs);
 
     internal ResourceHandle DrawCommandsHandle => _drawCommandsHandle;
     internal RhiBuffer DrawCommandBuffer => _drawCmdBuffer;
@@ -649,27 +632,7 @@ public class PbrPass : RenderPass, IDisposable
     private static ResourceHandle NextGraphResourceHandle()
         => new(unchecked((uint)Interlocked.Increment(ref _nextGraphResourceId)));
 
-    private string LoadShaderSource(string relPath)
-    {
-        string full = Path.Combine(_contentRoot, relPath);
-        if (File.Exists(full)) return File.ReadAllText(full);
 
-        if (_includeDirs != null)
-        {
-            string fileName = Path.GetFileName(relPath);
-            foreach (var dir in _includeDirs)
-            {
-                string fallback = Path.Combine(dir, fileName);
-                if (File.Exists(fallback)) return File.ReadAllText(fallback);
-                
-                // Also check if relPath exists exactly inside the include dir's parent
-                string parentFallback = Path.Combine(Path.GetDirectoryName(dir) ?? dir, relPath);
-                if (File.Exists(parentFallback)) return File.ReadAllText(parentFallback);
-            }
-        }
-
-        throw new FileNotFoundException(full);
-    }
 
     private static readonly string FallbackShaderSource = @"
 #include ""scene_data.slang""
@@ -700,20 +663,15 @@ float4 fragmentMain() : SV_Target
 {
     return float4(1.0, 0.0, 1.0, 1.0);
 }
+}
 ";
-
-    private RhiShader CompileCached(
-        string source, string entry, RhiNative.ShaderStage stage)
+    private RhiShader CompileWithFallback(string source, string entry, RhiNative.ShaderStage stage)
     {
         string shaderDir = Path.Combine(_contentRoot, "shaders");
         IReadOnlyList<string>? dirs = _includeDirs ?? new[] { shaderDir };
         try
         {
-            if (_compileCache == null)
-                return RhiShader.FromSource(_device, source, entry, stage, dirs, _cliArgs);
-            return (RhiShader)_compileCache.GetOrCompileHash(
-                source, entry, stage, dirs, _cliArgs,
-                () => RhiShader.FromSource(_device, source, entry, stage, dirs, _cliArgs));
+            return RhiShader.Compile(_device, source, entry, stage, _cliArgs, dirs);
         }
         catch (Exception exception)
         {

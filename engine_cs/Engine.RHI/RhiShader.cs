@@ -42,6 +42,22 @@ public sealed class RhiShader : IDisposable
         => CreateFromSourceCore(device, source, entry, stage, includePath, cliArgs: null);
 
     /// <summary>
+    /// Compiles a shader utilizing the RhiDevice's ShaderCache automatically.
+    /// </summary>
+    public static RhiShader Compile(
+        RhiDevice device,
+        string source,
+        string entryPoint,
+        RhiNative.ShaderStage stage,
+        IReadOnlyList<string>? cliArgs,
+        IReadOnlyList<string>? includeDirs)
+    {
+        return (RhiShader)device.ShaderCache.GetOrCompileHash(
+            source, entryPoint, stage, includeDirs, cliArgs,
+            () => FromSource(device, source, entryPoint, stage, includeDirs, cliArgs));
+    }
+
+    /// <summary>
     /// Compiles a shader from in-memory Slang source with an ordered list of
     /// include directories and an ordered list of raw Slang CLI arguments
     /// appended after the engine's positional tokens.

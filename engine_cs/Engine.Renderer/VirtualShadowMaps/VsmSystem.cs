@@ -54,8 +54,7 @@ public sealed class VsmSystem : IDisposable
     public VsmSystem(
         RhiDevice device, 
         string contentRoot, 
-        RhiBindlessHeap bindlessHeap,
-        ShaderCompileCache? compileCache = null)
+        RhiBindlessHeap bindlessHeap)
     {
         _device = device;
         _bindlessHeap = bindlessHeap;
@@ -91,12 +90,12 @@ public sealed class VsmSystem : IDisposable
 
         var includes = new[] { Path.Combine(contentRoot, "shaders") };
 
-        string reqSource = LoadShaderSource(contentRoot, "vsm_request.slang", includes);
-        _requestShader = Compile(device, reqSource, "main", RhiNative.ShaderStage.Compute, null, includes, compileCache);
+        string reqSource = Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(contentRoot, "vsm_request.slang", includes);
+        _requestShader = RhiShader.Compile(device, reqSource, "main", RhiNative.ShaderStage.Compute, null, includes);
         _requestPipeline = RhiPipeline.CreateCompute(device, _requestShader);
         
-        string allocSource = LoadShaderSource(contentRoot, "vsm_allocate.slang", includes);
-        _allocateShader = Compile(device, allocSource, "main", RhiNative.ShaderStage.Compute, null, includes, compileCache);
+        string allocSource = Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(contentRoot, "vsm_allocate.slang", includes);
+        _allocateShader = RhiShader.Compile(device, allocSource, "main", RhiNative.ShaderStage.Compute, null, includes);
         _allocatePipeline = RhiPipeline.CreateCompute(device, _allocateShader);
     }
 
@@ -172,29 +171,5 @@ public sealed class VsmSystem : IDisposable
             
         VirtualShadowTexture.Dispose();
         Allocator.Dispose();
-    }
-
-    private static string LoadShaderSource(string contentRoot, string fileName, IReadOnlyList<string> includeDirs)
-    {
-        string projectPath = Path.Combine(contentRoot, "shaders", fileName);
-        if (File.Exists(projectPath)) return File.ReadAllText(projectPath);
-        foreach (string includeDir in includeDirs)
-        {
-            string includePath = Path.Combine(includeDir, fileName);
-            if (File.Exists(includePath)) return File.ReadAllText(includePath);
-        }
-        throw new FileNotFoundException($"Shader '{fileName}' was not found.", projectPath);
-    }
-
-    private static RhiShader Compile(
-        RhiDevice device, string source, string entryPoint, RhiNative.ShaderStage stage,
-        IReadOnlyList<string>? cliArgs, IReadOnlyList<string>? includeDirs, ShaderCompileCache? compileCache)
-    {
-        if (compileCache == null)
-            return RhiShader.FromSource(device, source, entryPoint, stage, includeDirs, cliArgs);
-        
-        return (RhiShader)compileCache.GetOrCompileHash(
-            source, entryPoint, stage, includeDirs, cliArgs,
-            () => RhiShader.FromSource(device, source, entryPoint, stage, includeDirs, cliArgs));
     }
 }

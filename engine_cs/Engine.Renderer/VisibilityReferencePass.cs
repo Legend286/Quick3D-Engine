@@ -33,8 +33,7 @@ internal sealed class VisibilityReferencePass : RenderPass, IDisposable
         RasterSceneGpuCache sceneCache,
         PbrPass owner,
         IReadOnlyList<string>? cliArgs,
-        IReadOnlyList<string>? includeDirs,
-        ShaderCompileCache? compileCache)
+        IReadOnlyList<string>? includeDirs)
     {
         _sceneCache = sceneCache;
         _owner = owner;
@@ -42,26 +41,24 @@ internal sealed class VisibilityReferencePass : RenderPass, IDisposable
         IReadOnlyList<string> resolvedIncludeDirs =
             includeDirs ??
             new[] { Path.Combine(contentRoot, "shaders") };
-        string source = VisibilityBufferPass.LoadShaderSource(
+        string source = Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(
             contentRoot,
             "visibility_reference.slang",
             resolvedIncludeDirs);
-        _vertexShader = Compile(
+        _vertexShader = RhiShader.Compile(
             device,
             source,
             "vertexMain",
             RhiNative.ShaderStage.Vertex,
             cliArgs,
-            resolvedIncludeDirs,
-            compileCache);
-        _fragmentShader = Compile(
+            resolvedIncludeDirs);
+        _fragmentShader = RhiShader.Compile(
             device,
             source,
             "fragmentMain",
             RhiNative.ShaderStage.Fragment,
             cliArgs,
-            resolvedIncludeDirs,
-            compileCache);
+            resolvedIncludeDirs);
         _pipeline = RhiPipeline.CreateGraphics(
             device,
             _vertexShader,
@@ -75,26 +72,24 @@ internal sealed class VisibilityReferencePass : RenderPass, IDisposable
             "Visibility Buffer");
 
         string pbrSource = "#define VISIBILITY_REFERENCE 1\n" +
-            VisibilityBufferPass.LoadShaderSource(
+            Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(
                 contentRoot,
                 "pbr.slang",
                 resolvedIncludeDirs);
-        _pbrVertexShader = Compile(
+        _pbrVertexShader = RhiShader.Compile(
             device,
             pbrSource,
             "vertexMain",
             RhiNative.ShaderStage.Vertex,
             cliArgs,
-            resolvedIncludeDirs,
-            compileCache);
-        _pbrFragmentShader = Compile(
+            resolvedIncludeDirs);
+        _pbrFragmentShader = RhiShader.Compile(
             device,
             pbrSource,
             "fragmentMain",
             RhiNative.ShaderStage.Fragment,
             cliArgs,
-            resolvedIncludeDirs,
-            compileCache);
+            resolvedIncludeDirs);
         _pbrPipeline = RhiPipeline.CreateGraphics(
             device,
             _pbrVertexShader,
@@ -107,26 +102,24 @@ internal sealed class VisibilityReferencePass : RenderPass, IDisposable
             "Visibility Buffer");
 
         string skySource = "#define VISIBILITY_REFERENCE 1\n" +
-            VisibilityBufferPass.LoadShaderSource(
+            Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(
                 contentRoot,
                 "pbr_sky.slang",
                 resolvedIncludeDirs);
-        _skyVertexShader = Compile(
+        _skyVertexShader = RhiShader.Compile(
             device,
             skySource,
             "vertexMain",
             RhiNative.ShaderStage.Vertex,
             cliArgs,
-            resolvedIncludeDirs,
-            compileCache);
-        _skyFragmentShader = Compile(
+            resolvedIncludeDirs);
+        _skyFragmentShader = RhiShader.Compile(
             device,
             skySource,
             "fragmentMain",
             RhiNative.ShaderStage.Fragment,
             cliArgs,
-            resolvedIncludeDirs,
-            compileCache);
+            resolvedIncludeDirs);
         _skyPipeline = RhiPipeline.CreateGraphics(
             device,
             _skyVertexShader,
@@ -242,37 +235,5 @@ internal sealed class VisibilityReferencePass : RenderPass, IDisposable
         _vertexShader.Dispose();
     }
 
-    private static RhiShader Compile(
-        RhiDevice device,
-        string source,
-        string entryPoint,
-        RhiNative.ShaderStage stage,
-        IReadOnlyList<string>? cliArgs,
-        IReadOnlyList<string>? includeDirs,
-        ShaderCompileCache? compileCache)
-    {
-        if (compileCache == null)
-        {
-            return RhiShader.FromSource(
-                device,
-                source,
-                entryPoint,
-                stage,
-                includeDirs,
-                cliArgs);
-        }
-        return (RhiShader)compileCache.GetOrCompileHash(
-            source,
-            entryPoint,
-            stage,
-            includeDirs,
-            cliArgs,
-            () => RhiShader.FromSource(
-                device,
-                source,
-                entryPoint,
-                stage,
-                includeDirs,
-                cliArgs));
-    }
+
 }

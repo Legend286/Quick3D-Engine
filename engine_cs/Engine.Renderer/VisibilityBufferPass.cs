@@ -25,8 +25,7 @@ internal sealed class VisibilityBufferPass : RenderPass, IDisposable
         RasterSceneGpuCache sceneCache,
         PbrPass owner,
         IReadOnlyList<string>? cliArgs,
-        IReadOnlyList<string>? includeDirs,
-        ShaderCompileCache? compileCache)
+        IReadOnlyList<string>? includeDirs)
     {
         _sceneCache = sceneCache;
         _owner = owner;
@@ -35,26 +34,24 @@ internal sealed class VisibilityBufferPass : RenderPass, IDisposable
             includeDirs ??
             new[] { Path.Combine(contentRoot, "shaders") };
 
-        string source = LoadShaderSource(
+        string source = Engine.RenderGraph.Shaders.ShaderIncludeResolver.LoadSource(
             contentRoot,
             "visibility_buffer.slang",
             resolvedIncludeDirs);
-        _vertexShader = Compile(
+        _vertexShader = RhiShader.Compile(
             device,
             source,
             "vertexMain",
             RhiNative.ShaderStage.Vertex,
             cliArgs,
-            resolvedIncludeDirs,
-            compileCache);
-        _fragmentShader = Compile(
+            resolvedIncludeDirs);
+        _fragmentShader = RhiShader.Compile(
             device,
             source,
             "fragmentMain",
             RhiNative.ShaderStage.Fragment,
             cliArgs,
-            resolvedIncludeDirs,
-            compileCache);
+            resolvedIncludeDirs);
         _pipeline = RhiPipeline.CreateGraphicsMrt(
             device,
             _vertexShader,
@@ -146,61 +143,7 @@ internal sealed class VisibilityBufferPass : RenderPass, IDisposable
         _vertexShader.Dispose();
     }
 
-    internal static string LoadShaderSource(
-        string contentRoot,
-        string fileName,
-        IReadOnlyList<string> includeDirs)
-    {
-        string projectPath = Path.Combine(
-            contentRoot,
-            "shaders",
-            fileName);
-        if (File.Exists(projectPath))
-            return File.ReadAllText(projectPath);
 
-        foreach (string includeDir in includeDirs)
-        {
-            string includePath = Path.Combine(includeDir, fileName);
-            if (File.Exists(includePath))
-                return File.ReadAllText(includePath);
-        }
 
-        throw new FileNotFoundException(
-            $"Shader '{fileName}' was not found in the project or active engine/plugin include paths.",
-            projectPath);
-    }
 
-    private static RhiShader Compile(
-        RhiDevice device,
-        string source,
-        string entryPoint,
-        RhiNative.ShaderStage stage,
-        IReadOnlyList<string>? cliArgs,
-        IReadOnlyList<string>? includeDirs,
-        ShaderCompileCache? compileCache)
-    {
-        if (compileCache == null)
-        {
-            return RhiShader.FromSource(
-                device,
-                source,
-                entryPoint,
-                stage,
-                includeDirs,
-                cliArgs);
-        }
-        return (RhiShader)compileCache.GetOrCompileHash(
-            source,
-            entryPoint,
-            stage,
-            includeDirs,
-            cliArgs,
-            () => RhiShader.FromSource(
-                device,
-                source,
-                entryPoint,
-                stage,
-                includeDirs,
-                cliArgs));
-    }
 }

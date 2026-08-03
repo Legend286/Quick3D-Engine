@@ -115,6 +115,41 @@ public static class ShaderIncludeResolver
         return resolved;
     }
 
+    /// <summary>
+    /// Loads a shader's source text from the project's content root or active include paths.
+    /// First checks <c>contentRoot/shaders/fileName</c>, then probes each provided include directory.
+    /// </summary>
+    public static string LoadSource(
+        string contentRoot,
+        string fileName,
+        IReadOnlyList<string>? includeDirs = null)
+    {
+        ArgumentNullException.ThrowIfNull(contentRoot);
+        ArgumentNullException.ThrowIfNull(fileName);
+
+        string projectPath = Path.Combine(
+            contentRoot,
+            "shaders",
+            fileName);
+            
+        if (File.Exists(projectPath))
+            return File.ReadAllText(projectPath);
+
+        if (includeDirs != null)
+        {
+            foreach (string includeDir in includeDirs)
+            {
+                string includePath = Path.Combine(includeDir, fileName);
+                if (File.Exists(includePath))
+                    return File.ReadAllText(includePath);
+            }
+        }
+
+        throw new FileNotFoundException(
+            $"Shader '{fileName}' was not found in the project or active engine/plugin include paths.",
+            projectPath);
+    }
+
     private static string? SafeDirectoryName(string manifestPath)
     {
         if (string.IsNullOrEmpty(manifestPath))
