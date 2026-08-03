@@ -29,7 +29,7 @@ extern "C" {
 #  endif
 #endif
 
-#define ENGINE_ABI_VERSION_RHI 12
+#define ENGINE_ABI_VERSION_RHI 13
 
 typedef struct RhiDevice         RhiDevice;
 typedef struct RhiSwapchain      RhiSwapchain;
@@ -140,6 +140,7 @@ typedef struct RhiTextureDesc {
 #define RHI_TEXTURE_COPY_DST       (1u << 3)
 #define RHI_TEXTURE_STORAGE        (1u << 4)
 #define RHI_TEXTURE_EXTERNAL_IMAGE (1u << 5)
+#define RHI_TEXTURE_SPARSE         (1u << 6)
 
 typedef struct RhiBufferDesc {
     uint32_t abi;
@@ -198,6 +199,19 @@ typedef struct RhiBindlessHeapDesc {
     uint32_t capacity;
 } RhiBindlessHeapDesc;
 
+typedef struct RhiSparseBindRegion {
+    uint32_t mip_level;
+    uint32_t array_layer;
+    uint32_t x_offset;
+    uint32_t y_offset;
+    uint32_t z_offset;
+    uint32_t width;
+    uint32_t height;
+    uint32_t depth;
+    RhiHeap* memory_heap;
+    uint64_t heap_offset;
+} RhiSparseBindRegion;
+
 typedef enum RhiAccelStructType {
     RHI_ACCEL_STRUCT_TYPE_BLAS = 0,
     RHI_ACCEL_STRUCT_TYPE_TLAS = 1,
@@ -247,6 +261,7 @@ typedef struct RhiAccelStructDesc {
 #define RHI_HEAP_USAGE_RENDER_TARGET (1u << 0)
 #define RHI_HEAP_USAGE_SHADER_READ    (1u << 1)
 #define RHI_HEAP_USAGE_STORAGE        (1u << 2)
+#define RHI_HEAP_USAGE_SPARSE         (1u << 3)
 
 /**
  * Sentinel used by the host to pack multiple Slang `-I` include directories
@@ -400,6 +415,11 @@ ENGINE_API int32_t  rhi_create_buffer_from_heap(RhiDevice* device,
                                                 const RhiBufferDesc* desc,
                                                 uint64_t offset,
                                                 RhiBuffer** out_buf);
+
+ENGINE_API void rhi_bind_sparse_texture_memory(RhiDevice* device,
+                                               RhiTexture* texture,
+                                               const RhiSparseBindRegion* binds,
+                                               uint32_t bind_count);
 
 ENGINE_API RhiSampler* rhi_create_sampler(RhiDevice* dev);
 ENGINE_API void rhi_destroy_sampler(RhiSampler* samp);

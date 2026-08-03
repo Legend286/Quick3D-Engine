@@ -22,27 +22,27 @@
 // drawables onto the screen. Autoresizing masks keep the sublayer bound to
 // the view's bounds; destroy_swapchain removes the sublayer.
 
+#import <AppKit/AppKit.h>
+#import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
+#import <IOSurface/IOSurface.h>
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
-#import <IOSurface/IOSurface.h>
-#import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/CAMetalLayer.h>
-#import <AppKit/AppKit.h>
 
+#include "../engine_log.h"
 #include "rhi.h"
 #include "rhi_backend.h"
-#include "../engine_log.h"
 
-#include <slang.h>
 #include <slang-com-ptr.h>
+#include <slang.h>
 
 #include <cstring>
+#include <errno.h>
+#include <sys/stat.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <sys/stat.h>
-#include <errno.h>
 
 @interface RhiMetalView : NSView
 - (void)syncLayerSize;
@@ -57,55 +57,55 @@ static constexpr uint8_t kTimingSampleEnd = 2;
 // the impl is freed.
 
 struct RhiDeviceImpl {
-    __strong id<MTLDevice>        device;
-    __strong id<MTLCommandQueue>  queue_graphics;
-    __strong id<MTLCommandQueue>  queue_compute;
+  __strong id<MTLDevice> device;
+  __strong id<MTLCommandQueue> queue_graphics;
+  __strong id<MTLCommandQueue> queue_compute;
 };
 
 struct RhiSwapchainImpl {
-    __strong CAMetalLayer*        layer;
-    __strong id<CAMetalDrawable>  drawable;     /* current image */
-    __strong id<MTLTexture>       color_image;  /* = drawable.texture shortcut */
-    __weak NSView*                view;
-    uint32_t                      width;
-    uint32_t                      height;
+  __strong CAMetalLayer *layer;
+  __strong id<CAMetalDrawable> drawable; /* current image */
+  __strong id<MTLTexture> color_image;   /* = drawable.texture shortcut */
+  __weak NSView *view;
+  uint32_t width;
+  uint32_t height;
 };
 
 struct RhiBufferImpl {
-    __strong id<MTLBuffer> buf;
-    __strong id<MTLCommandQueue> readback_queue;
+  __strong id<MTLBuffer> buf;
+  __strong id<MTLCommandQueue> readback_queue;
 };
 
 struct RhiHeapImpl {
-    __strong id<MTLHeap> heap;
+  __strong id<MTLHeap> heap;
 };
 
 struct RhiFenceImpl {
-    __strong id<MTLSharedEvent> event;
+  __strong id<MTLSharedEvent> event;
 };
 
 struct RhiTimestampQueryPoolImpl {
-    __strong id<MTLCounterSampleBuffer> samples;
-    __strong id<MTLBuffer> results;
-    __strong id<MTLCommandBuffer> pending;
-    std::vector<uint8_t> sampled;
-    std::vector<uint8_t> sample_roles;
-    uint32_t sample_count;
-    uint32_t samples_per_duration;
-    uint32_t resolved_count;
-    bool supports_stage_sampling;
-    bool supports_draw_sampling;
-    bool supports_dispatch_sampling;
-    MTLTimestamp cpu_reference_start;
-    MTLTimestamp gpu_reference_start;
+  __strong id<MTLCounterSampleBuffer> samples;
+  __strong id<MTLBuffer> results;
+  __strong id<MTLCommandBuffer> pending;
+  std::vector<uint8_t> sampled;
+  std::vector<uint8_t> sample_roles;
+  uint32_t sample_count;
+  uint32_t samples_per_duration;
+  uint32_t resolved_count;
+  bool supports_stage_sampling;
+  bool supports_draw_sampling;
+  bool supports_dispatch_sampling;
+  MTLTimestamp cpu_reference_start;
+  MTLTimestamp gpu_reference_start;
 };
 
 struct RhiTextureImpl {
-    __strong id<MTLTexture> tex;
-    __strong id<CAMetalDrawable> drawable;
-    __strong id<MTLCommandQueue> queue;
-    IOSurfaceRef iosurface;
-    RhiTextureFormat format;
+  __strong id<MTLTexture> tex;
+  __strong id<CAMetalDrawable> drawable;
+  __strong id<MTLCommandQueue> queue;
+  IOSurfaceRef iosurface;
+  RhiTextureFormat format;
 };
 
 // Runtime-sized bindless heap. Backed by a Metal Tier-2 argument buffer with
@@ -118,151 +118,173 @@ struct RhiTextureImpl {
 // `texture* -> slot` (for stable re-registers and lookups) and reverse
 // `slot -> texture*` (for O(1) release).
 struct RhiBindlessHeapImpl {
-    __strong id<MTLBuffer>              arg_buffer;
-    __strong id<MTLArgumentEncoder>     arg_encoder;
-    uint32_t                            capacity;
-    std::vector<__strong id<MTLResource>> slot_to_resource;
-    std::vector<RhiTexture*>            slot_to_texture;     // reverse by-slot index for O(1) erase
-    std::vector<uint32_t>               free_list;
-    uint32_t                            next_unalloc = 0;
-    std::unordered_map<RhiTexture*, uint32_t> texture_to_slot; // forward lookup
-    
-    std::vector<__unsafe_unretained id<MTLResource>> resident_cache;
-    bool resident_cache_dirty = true;
-    std::mutex mutex;
+  __strong id<MTLBuffer> arg_buffer;
+  __strong id<MTLArgumentEncoder> arg_encoder;
+  uint32_t capacity;
+  std::vector<__strong id<MTLResource>> slot_to_resource;
+  std::vector<RhiTexture *>
+      slot_to_texture; // reverse by-slot index for O(1) erase
+  std::vector<uint32_t> free_list;
+  uint32_t next_unalloc = 0;
+  std::unordered_map<RhiTexture *, uint32_t> texture_to_slot; // forward lookup
+
+  std::vector<__unsafe_unretained id<MTLResource>> resident_cache;
+  bool resident_cache_dirty = true;
+  std::mutex mutex;
 };
 
 static std::mutex g_bindless_mutex;
-static std::vector<RhiBindlessHeapImpl*> g_bindless_heaps;
+static std::vector<RhiBindlessHeapImpl *> g_bindless_heaps;
 
 struct RhiAccelStructImpl {
-    API_AVAILABLE(macos(11.0), ios(14.0))
-    __strong id<MTLAccelerationStructure> as;
-    API_AVAILABLE(macos(11.0), ios(14.0))
-    __strong MTLAccelerationStructureDescriptor* descriptor;
-    __strong id<MTLBuffer> scratch_buffer;
-    __strong id<MTLBuffer> instance_buffer;
-    std::vector<__unsafe_unretained id<MTLResource>> resident_resources;
+  API_AVAILABLE(macos(11.0), ios(14.0))
+  __strong id<MTLAccelerationStructure> as;
+  API_AVAILABLE(macos(11.0), ios(14.0))
+  __strong MTLAccelerationStructureDescriptor *descriptor;
+  __strong id<MTLBuffer> scratch_buffer;
+  __strong id<MTLBuffer> instance_buffer;
+  std::vector<__unsafe_unretained id<MTLResource>> resident_resources;
 };
 
 struct RhiShaderImpl {
-    __strong id<MTLLibrary> lib;
-    __strong id<MTLFunction> fn;
+  __strong id<MTLLibrary> lib;
+  __strong id<MTLFunction> fn;
 };
 
 struct RhiPipelineImpl {
-    __strong id<MTLRenderPipelineState> g;
-    __strong id<MTLComputePipelineState> c;
-    __strong id<MTLDepthStencilState> depth_stencil;
-    MTLPrimitiveType primitive_type;
+  __strong id<MTLRenderPipelineState> g;
+  __strong id<MTLComputePipelineState> c;
+  __strong id<MTLDepthStencilState> depth_stencil;
+  MTLPrimitiveType primitive_type;
 };
 
 struct RhiCommandListImpl {
-    __strong id<MTLCommandBuffer> buf;
-    __strong id<CAMetalDrawable> drawable_to_present;
-    RhiTimestampQueryPoolImpl* timing_pool;
-    uint32_t timing_next_sample_index;
-    uint32_t timing_scope_end_index;
-    bool timing_end_requested;
+  __strong id<MTLCommandBuffer> buf;
+  __strong id<CAMetalDrawable> drawable_to_present;
+  RhiTimestampQueryPoolImpl *timing_pool;
+  uint32_t timing_next_sample_index;
+  uint32_t timing_scope_end_index;
+  bool timing_end_requested;
 };
 
 struct RhiEncoderImpl {
-    __strong id<MTLRenderCommandEncoder>  render;
-    __strong id<MTLComputeCommandEncoder> compute;
-    bool is_compute;
-    MTLPrimitiveType current_primitive_type;
-    
-    // Index buffer state for indexed draws
-    __strong id<MTLBuffer> active_index_buffer;
-    uint64_t active_index_buffer_offset;
-    bool active_index_buffer_is_32bit;
-    RhiCommandListImpl* command_list;
-    uint32_t timing_end_sample_index;
+  __strong id<MTLRenderCommandEncoder> render;
+  __strong id<MTLComputeCommandEncoder> compute;
+  bool is_compute;
+  MTLPrimitiveType current_primitive_type;
+
+  // Index buffer state for indexed draws
+  __strong id<MTLBuffer> active_index_buffer;
+  uint64_t active_index_buffer_offset;
+  bool active_index_buffer_is_32bit;
+  RhiCommandListImpl *command_list;
+  uint32_t timing_end_sample_index;
 };
 
 // ----- trampolines (no overloads; all explicit argument lists) -----
 
-static int32_t  metal_init(RhiDevice** out_device);
-static void     metal_shutdown(RhiDevice* device);
-static int32_t  metal_create_swapchain(RhiDevice* d, void* os_win,
-                                        uint32_t w, uint32_t h,
-                                        RhiSwapchain** out_sc);
-static void     metal_destroy_swapchain(RhiSwapchain* sc);
-static uint32_t metal_acquire_next_image(RhiSwapchain* sc, RhiTexture** out_image);
-static int32_t  metal_present(RhiSwapchain* sc);
-static void     metal_swapchain_get_size(RhiSwapchain* sc, uint32_t* width, uint32_t* height);
+static int32_t metal_init(RhiDevice **out_device);
+static void metal_shutdown(RhiDevice *device);
+static int32_t metal_create_swapchain(RhiDevice *d, void *os_win, uint32_t w,
+                                      uint32_t h, RhiSwapchain **out_sc);
+static void metal_destroy_swapchain(RhiSwapchain *sc);
+static uint32_t metal_acquire_next_image(RhiSwapchain *sc,
+                                         RhiTexture **out_image);
+static int32_t metal_present(RhiSwapchain *sc);
+static void metal_swapchain_get_size(RhiSwapchain *sc, uint32_t *width,
+                                     uint32_t *height);
 
-static int32_t  metal_create_buffer(RhiDevice* d, const RhiBufferDesc* desc, RhiBuffer** out);
-static int32_t  metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, RhiTexture** out);
-static int32_t  metal_create_shader(RhiDevice* d, const RhiShaderDesc* desc, RhiShader** out);
-static int32_t  metal_create_graphics_pipeline(RhiDevice* d,
-                                                const RhiGraphicsPipelineDesc* desc,
-                                                RhiPipeline** out);
-static int32_t  metal_create_compute_pipeline(RhiDevice* d,
-                                               const RhiComputePipelineDesc* desc,
-                                               RhiPipeline** out);
-static int32_t  metal_create_heap(RhiDevice* d, const RhiHeapDesc* desc, RhiHeap** out);
-static int32_t  metal_create_texture_from_heap(RhiDevice* d, RhiHeap* h, const RhiTextureDesc* desc, uint64_t offset, RhiTexture** out);
-static int32_t  metal_create_buffer_from_heap(RhiDevice* d, RhiHeap* h, const RhiBufferDesc* desc, uint64_t offset, RhiBuffer** out);
-static int32_t  metal_create_fence(RhiDevice* d, RhiFence** out);
-static int32_t  metal_create_timestamp_query_pool(
-    RhiDevice* d, uint32_t sample_count, RhiTimestampQueryPool** out);
-static int32_t  metal_timestamp_query_pool_set_samples_per_duration(
-    RhiTimestampQueryPool* pool, uint32_t sample_count);
+static int32_t metal_create_buffer(RhiDevice *d, const RhiBufferDesc *desc,
+                                   RhiBuffer **out);
+static int32_t metal_create_texture(RhiDevice *d, const RhiTextureDesc *desc,
+                                    RhiTexture **out);
+static int32_t metal_create_shader(RhiDevice *d, const RhiShaderDesc *desc,
+                                   RhiShader **out);
+static int32_t metal_create_graphics_pipeline(
+    RhiDevice *d, const RhiGraphicsPipelineDesc *desc, RhiPipeline **out);
+static int32_t metal_create_compute_pipeline(RhiDevice *d,
+                                             const RhiComputePipelineDesc *desc,
+                                             RhiPipeline **out);
+static int32_t metal_create_heap(RhiDevice *d, const RhiHeapDesc *desc,
+                                 RhiHeap **out);
+static int32_t metal_create_texture_from_heap(RhiDevice *d, RhiHeap *h,
+                                              const RhiTextureDesc *desc,
+                                              uint64_t offset,
+                                              RhiTexture **out);
+static int32_t metal_create_buffer_from_heap(RhiDevice *d, RhiHeap *h,
+                                             const RhiBufferDesc *desc,
+                                             uint64_t offset, RhiBuffer **out);
+static int32_t metal_create_fence(RhiDevice *d, RhiFence **out);
+static int32_t metal_create_timestamp_query_pool(RhiDevice *d,
+                                                 uint32_t sample_count,
+                                                 RhiTimestampQueryPool **out);
+static int32_t
+metal_timestamp_query_pool_set_samples_per_duration(RhiTimestampQueryPool *pool,
+                                                    uint32_t sample_count);
 
-static void  metal_destroy_buffer(RhiBuffer* b);
-static void  metal_destroy_texture(RhiTexture* t);
-static void  metal_destroy_shader(RhiShader* s);
-static void  metal_destroy_pipeline(RhiPipeline* p);
-static void  metal_destroy_heap(RhiHeap* h);
-static void  metal_destroy_fence(RhiFence* f);static int32_t metal_buffer_upload(RhiBuffer* b, const void* data, uint64_t size);
-static void  metal_destroy_timestamp_query_pool(RhiTimestampQueryPool* pool);
-static int32_t metal_buffer_readback(RhiBuffer* buf, uint64_t offset_bytes,
-                                      void* out_bytes, uint64_t out_size);
-static int32_t metal_buffer_read_mapped(RhiBuffer* buf, uint64_t offset_bytes,
-                                         void* out_bytes, uint64_t out_size);
-static int32_t metal_texture_readback(RhiTexture* t, void* out, uint64_t out_size, uint32_t stride);
-static int32_t metal_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride);
-static int32_t metal_texture_upload_mip(RhiTexture* t, uint32_t mip_level,
-                                          const void* data, uint64_t size, uint32_t stride);
-static int32_t metal_texture_export_external_image(RhiTexture* t, void** out_handle,
-                                                   uint32_t* out_width, uint32_t* out_height,
-                                                   RhiTextureFormat* out_format);
-static void    metal_release_external_image_handle(void* handle);
-static int32_t metal_fence_export_external_handle(RhiFence* f, void** out_handle);
-static void    metal_release_external_semaphore_handle(void* handle);
-static void     metal_format_block_info(RhiTextureFormat fmt,
-                                          uint32_t* out_block_w, uint32_t* out_block_h,
-                                          uint32_t* out_bytes_per_block);
+static void metal_destroy_buffer(RhiBuffer *b);
+static void metal_destroy_texture(RhiTexture *t);
+static void metal_destroy_shader(RhiShader *s);
+static void metal_destroy_pipeline(RhiPipeline *p);
+static void metal_destroy_heap(RhiHeap *h);
+static void metal_destroy_fence(RhiFence *f);
+static int32_t metal_buffer_upload(RhiBuffer *b, const void *data,
+                                   uint64_t size);
+static void metal_destroy_timestamp_query_pool(RhiTimestampQueryPool *pool);
+static int32_t metal_buffer_readback(RhiBuffer *buf, uint64_t offset_bytes,
+                                     void *out_bytes, uint64_t out_size);
+static int32_t metal_buffer_read_mapped(RhiBuffer *buf, uint64_t offset_bytes,
+                                        void *out_bytes, uint64_t out_size);
+static int32_t metal_texture_readback(RhiTexture *t, void *out,
+                                      uint64_t out_size, uint32_t stride);
+static int32_t metal_texture_upload(RhiTexture *t, const void *data,
+                                    uint64_t size, uint32_t stride);
+static int32_t metal_texture_upload_mip(RhiTexture *t, uint32_t mip_level,
+                                        const void *data, uint64_t size,
+                                        uint32_t stride);
+static int32_t
+metal_texture_export_external_image(RhiTexture *t, void **out_handle,
+                                    uint32_t *out_width, uint32_t *out_height,
+                                    RhiTextureFormat *out_format);
+static void metal_release_external_image_handle(void *handle);
+static int32_t metal_fence_export_external_handle(RhiFence *f,
+                                                  void **out_handle);
+static void metal_release_external_semaphore_handle(void *handle);
+static void metal_format_block_info(RhiTextureFormat fmt, uint32_t *out_block_w,
+                                    uint32_t *out_block_h,
+                                    uint32_t *out_bytes_per_block);
 
-static RhiCommandList* metal_begin_cmdlist(RhiDevice* d, RhiQueueType queue);
-static int32_t         metal_submit(RhiDevice* d, RhiCommandList* cl);
-static void            metal_cmd_pipeline_barrier(RhiCommandList* cl,
-                                                   uint32_t count,
-                                                   const RhiBarrier* barriers);
-static void            metal_cmd_signal_fence(RhiCommandList* cl, RhiFence* f, uint64_t value);
-static void            metal_cmd_wait_fence(RhiCommandList* cl, RhiFence* f, uint64_t value);
-static uint64_t        metal_fence_get_completed_value(RhiFence* f);
-static int32_t         metal_cmd_copy_texture_to_buffer(
-    RhiCommandList* cl, RhiTexture* source,
-    uint32_t source_x, uint32_t source_y,
-    uint32_t width, uint32_t height,
-    uint32_t source_mip_level, RhiBuffer* destination,
+static RhiCommandList *metal_begin_cmdlist(RhiDevice *d, RhiQueueType queue);
+static int32_t metal_submit(RhiDevice *d, RhiCommandList *cl);
+static void metal_cmd_pipeline_barrier(RhiCommandList *cl, uint32_t count,
+                                       const RhiBarrier *barriers);
+static void metal_cmd_signal_fence(RhiCommandList *cl, RhiFence *f,
+                                   uint64_t value);
+static void metal_cmd_wait_fence(RhiCommandList *cl, RhiFence *f,
+                                 uint64_t value);
+static uint64_t metal_fence_get_completed_value(RhiFence *f);
+static int32_t metal_cmd_copy_texture_to_buffer(
+    RhiCommandList *cl, RhiTexture *source, uint32_t source_x,
+    uint32_t source_y, uint32_t width, uint32_t height,
+    uint32_t source_mip_level, RhiBuffer *destination,
     uint64_t destination_offset, uint32_t destination_bytes_per_row);
-static int32_t         metal_cmd_write_timestamp(
-    RhiCommandList* cl, RhiTimestampQueryPool* pool, uint32_t sample_index);
-static int32_t         metal_cmd_resolve_timestamps(
-    RhiCommandList* cl, RhiTimestampQueryPool* pool, uint32_t sample_count);
-static int32_t         metal_timestamp_query_pool_read_durations(
-    RhiTimestampQueryPool* pool, uint32_t duration_count,
-    uint64_t* out_duration_nanoseconds);
-static int32_t         metal_timestamp_query_pool_read_frame_duration(
-    RhiTimestampQueryPool* pool, uint64_t* out_duration_nanoseconds);
-static RhiEncoder*     metal_begin_render_pass(RhiCommandList* cl,
-                                                const RhiPassDesc* desc);
-static RhiEncoder*     metal_begin_compute_pass(RhiCommandList* cl,
-                                                 const char* debug_name);
-static void            metal_end_pass(RhiEncoder* enc);
+static int32_t metal_cmd_write_timestamp(RhiCommandList *cl,
+                                         RhiTimestampQueryPool *pool,
+                                         uint32_t sample_index);
+static int32_t metal_cmd_resolve_timestamps(RhiCommandList *cl,
+                                            RhiTimestampQueryPool *pool,
+                                            uint32_t sample_count);
+static int32_t
+metal_timestamp_query_pool_read_durations(RhiTimestampQueryPool *pool,
+                                          uint32_t duration_count,
+                                          uint64_t *out_duration_nanoseconds);
+static int32_t metal_timestamp_query_pool_read_frame_duration(
+    RhiTimestampQueryPool *pool, uint64_t *out_duration_nanoseconds);
+static RhiEncoder *metal_begin_render_pass(RhiCommandList *cl,
+                                           const RhiPassDesc *desc);
+static RhiEncoder *metal_begin_compute_pass(RhiCommandList *cl,
+                                            const char *debug_name);
+static void metal_end_pass(RhiEncoder *enc);
 
 // ----- impl -----
 // MARK: rhi_metal.mm uses no internal forward declarations of backend
@@ -273,366 +295,425 @@ static void            metal_end_pass(RhiEncoder* enc);
 // (decl, impl) as an overload set, producing 20 errors at the dispatch
 // assignments.
 
-static int32_t metal_init(RhiDevice** out_device) {
-    @autoreleasepool {
-        id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
-        if (!dev) {
-            ENGINE_LOG_ERROR("rhi_metal", "MTLCreateSystemDefaultDevice returned nil");
-            return -1;
-        }
-        id<MTLCommandQueue> qg = [dev newCommandQueue];
-        id<MTLCommandQueue> qc = [dev newCommandQueue];
-        if (!qg || !qc) return -2;
-        RhiDeviceImpl* di = new RhiDeviceImpl();
-        di->device = dev;
-        di->queue_graphics = qg;
-        di->queue_compute  = qc;
-        *out_device = reinterpret_cast<RhiDevice*>(di);
-        ENGINE_LOG_INFO("rhi_metal", "device=%s queue ready",
-                        [[dev name] UTF8String]);
-
-        // MARK: Counter support audit. Lands in the engine log on every
-        // startup so a developer can rule out hardware/driver mismatch
-        // before chasing per-pass timing bugs downstream. Stage-boundary
-        // sampling on M-series GPUs is officially supported since macOS
-        // 11; if any of these come back false, M1 Pro is on an
-        // unsupported SDK/runtime and the timing UI will show identical
-        // GPU ms across every pass (the "garbage values" symptom).
-        if (@available(macOS 11.0, iOS 14.0, *)) {
-            bool supports_stage =
-                [dev supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary];
-            bool supports_draw =
-                [dev supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
-            bool supports_dispatch =
-                [dev supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
-            bool supports_blit =
-                [dev supportsCounterSampling:MTLCounterSamplingPointAtBlitBoundary];
-            ENGINE_LOG_INFO(
-                "rhi_metal",
-                "counter-sampling support: stage=%s draw=%s dispatch=%s blit=%s",
-                supports_stage ? "yes" : "no",
-                supports_draw ? "yes" : "no",
-                supports_dispatch ? "yes" : "no",
-                supports_blit ? "yes" : "no");
-            id<MTLCounterSet> timestamp_set = nil;
-            for (id<MTLCounterSet> cs in dev.counterSets) {
-                if ([cs.name isEqualToString:MTLCommonCounterSetTimestamp]) {
-                    timestamp_set = cs;
-                    break;
-                }
-            }
-            ENGINE_LOG_INFO(
-                "rhi_metal",
-                "MTLCounterSetTimestamp present=%s",
-                timestamp_set ? "yes" : "no");
-        }
-        return 0;
+static int32_t metal_init(RhiDevice **out_device) {
+  @autoreleasepool {
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) {
+      ENGINE_LOG_ERROR("rhi_metal",
+                       "MTLCreateSystemDefaultDevice returned nil");
+      return -1;
     }
-}
+    id<MTLCommandQueue> qg = [dev newCommandQueue];
+    id<MTLCommandQueue> qc = [dev newCommandQueue];
+    if (!qg || !qc)
+      return -2;
+    RhiDeviceImpl *di = new RhiDeviceImpl();
+    di->device = dev;
+    di->queue_graphics = qg;
+    di->queue_compute = qc;
+    *out_device = reinterpret_cast<RhiDevice *>(di);
+    ENGINE_LOG_INFO("rhi_metal", "device=%s queue ready",
+                    [[dev name] UTF8String]);
 
-static void metal_shutdown(RhiDevice* device) {
-    if (!device) return;
-    RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(device);
-    delete di;  // ARC zeroes the ivars -> releases device and queue
-}
-
-static int32_t metal_create_swapchain(RhiDevice* d, void* os_view_handle,
-                                       uint32_t w, uint32_t h, RhiSwapchain** out) {
-    @autoreleasepool {
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        NSView* view = (__bridge NSView*)os_view_handle;
-        if (!view) {
-            ENGINE_LOG_ERROR("rhi_metal", "swapchain needs an NSView*");
-            return -1;
+    // MARK: Counter support audit. Lands in the engine log on every
+    // startup so a developer can rule out hardware/driver mismatch
+    // before chasing per-pass timing bugs downstream. Stage-boundary
+    // sampling on M-series GPUs is officially supported since macOS
+    // 11; if any of these come back false, M1 Pro is on an
+    // unsupported SDK/runtime and the timing UI will show identical
+    // GPU ms across every pass (the "garbage values" symptom).
+    if (@available(macOS 11.0, iOS 14.0, *)) {
+      bool supports_stage =
+          [dev supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary];
+      bool supports_draw =
+          [dev supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
+      bool supports_dispatch = [dev
+          supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
+      bool supports_blit =
+          [dev supportsCounterSampling:MTLCounterSamplingPointAtBlitBoundary];
+      ENGINE_LOG_INFO(
+          "rhi_metal",
+          "counter-sampling support: stage=%s draw=%s dispatch=%s blit=%s",
+          supports_stage ? "yes" : "no", supports_draw ? "yes" : "no",
+          supports_dispatch ? "yes" : "no", supports_blit ? "yes" : "no");
+      id<MTLCounterSet> timestamp_set = nil;
+      for (id<MTLCounterSet> cs in dev.counterSets) {
+        if ([cs.name isEqualToString:MTLCommonCounterSetTimestamp]) {
+          timestamp_set = cs;
+          break;
         }
-        view.wantsLayer = YES;
-        CAMetalLayer* layer = nil;
-        if ([view isKindOfClass:[RhiMetalView class]]) {
-            layer = (CAMetalLayer*)view.layer;
-            [(RhiMetalView*)view syncLayerSize];
-        } else {
-            // Fallback for generic NSView, e.g. standalone game window
-            if (view.layer == nil) {
-                view.layer = [CALayer layer];
-            }
-            for (CALayer* sub in view.layer.sublayers) {
-                if ([sub isKindOfClass:[CAMetalLayer class]]) {
-                    layer = (CAMetalLayer*)sub;
-                    break;
-                }
-            }
-            if (layer == nil) {
-                layer = [CAMetalLayer layer];
-                layer.frame = view.bounds;
-                layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
-                [view.layer addSublayer:layer];
-            }
-        }
-        uint32_t final_w = w;
-        uint32_t final_h = h;
-        double scale = 1.0;
-        if (view) {
-            if ([view isKindOfClass:[RhiMetalView class]]) {
-                final_w = (uint32_t)layer.drawableSize.width;
-                final_h = (uint32_t)layer.drawableSize.height;
-                scale = layer.contentsScale;
-                if (final_w < 10 || final_h < 10) {
-                    CGRect backingBounds = [view convertRectToBacking:view.bounds];
-                    final_w = (uint32_t)backingBounds.size.width;
-                    final_h = (uint32_t)backingBounds.size.height;
-                    if (final_w < 10) final_w = w;
-                    if (final_h < 10) final_h = h;
-                    if (view.window) {
-                        scale = view.window.backingScaleFactor;
-                    } else if ([NSScreen mainScreen]) {
-                        scale = [NSScreen mainScreen].backingScaleFactor;
-                    }
-                }
-            } else {
-                CGRect backingBounds = [view convertRectToBacking:view.bounds];
-                final_w = (uint32_t)backingBounds.size.width;
-                final_h = (uint32_t)backingBounds.size.height;
-                if (final_w < 10) final_w = w;
-                if (final_h < 10) final_h = h;
-
-                if (view.window) {
-                    scale = view.window.backingScaleFactor;
-                } else if ([NSScreen mainScreen]) {
-                    scale = [NSScreen mainScreen].backingScaleFactor;
-                }
-            }
-        }
-
-        layer.device      = di->device;
-        layer.drawableSize = CGSizeMake((CGFloat)final_w, (CGFloat)final_h);
-        layer.contentsScale = scale;
-        layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        layer.framebufferOnly = YES;  // hi-perf path
- 
-        RhiSwapchainImpl* sc = new RhiSwapchainImpl();
-        sc->layer       = layer;
-        sc->drawable    = nil;
-        sc->color_image = nil;
-        sc->view        = view;
-        sc->width       = final_w;
-        sc->height      = final_h;
-        *out = reinterpret_cast<RhiSwapchain*>(sc);
-        return 0;
+      }
+      ENGINE_LOG_INFO("rhi_metal", "MTLCounterSetTimestamp present=%s",
+                      timestamp_set ? "yes" : "no");
     }
+    return 0;
+  }
 }
 
-static void metal_destroy_swapchain(RhiSwapchain* p) {
-    if (!p) return;
-    RhiSwapchainImpl* sc = reinterpret_cast<RhiSwapchainImpl*>(p);
-    @autoreleasepool {
-        id delegate = sc->layer.delegate;
-        if (delegate && [delegate isKindOfClass:[NSView class]]) {
-            NSView* v = (NSView*)delegate;
-            if (sc->layer != v.layer) {
-                [sc->layer removeFromSuperlayer];
-            }
-        } else {
-            [sc->layer removeFromSuperlayer];
-        }
+static void metal_shutdown(RhiDevice *device) {
+  if (!device)
+    return;
+  RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(device);
+  delete di; // ARC zeroes the ivars -> releases device and queue
+}
+
+static int32_t metal_create_swapchain(RhiDevice *d, void *os_view_handle,
+                                      uint32_t w, uint32_t h,
+                                      RhiSwapchain **out) {
+  @autoreleasepool {
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+    NSView *view = (__bridge NSView *)os_view_handle;
+    if (!view) {
+      ENGINE_LOG_ERROR("rhi_metal", "swapchain needs an NSView*");
+      return -1;
     }
-    delete sc;
+    view.wantsLayer = YES;
+    CAMetalLayer *layer = nil;
+    if ([view isKindOfClass:[RhiMetalView class]]) {
+      layer = (CAMetalLayer *)view.layer;
+      [(RhiMetalView *)view syncLayerSize];
+    } else {
+      // Fallback for generic NSView, e.g. standalone game window
+      if (view.layer == nil) {
+        view.layer = [CALayer layer];
+      }
+      for (CALayer *sub in view.layer.sublayers) {
+        if ([sub isKindOfClass:[CAMetalLayer class]]) {
+          layer = (CAMetalLayer *)sub;
+          break;
+        }
+      }
+      if (layer == nil) {
+        layer = [CAMetalLayer layer];
+        layer.frame = view.bounds;
+        layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+        [view.layer addSublayer:layer];
+      }
+    }
+    uint32_t final_w = w;
+    uint32_t final_h = h;
+    double scale = 1.0;
+    if (view) {
+      if ([view isKindOfClass:[RhiMetalView class]]) {
+        final_w = (uint32_t)layer.drawableSize.width;
+        final_h = (uint32_t)layer.drawableSize.height;
+        scale = layer.contentsScale;
+        if (final_w < 10 || final_h < 10) {
+          CGRect backingBounds = [view convertRectToBacking:view.bounds];
+          final_w = (uint32_t)backingBounds.size.width;
+          final_h = (uint32_t)backingBounds.size.height;
+          if (final_w < 10)
+            final_w = w;
+          if (final_h < 10)
+            final_h = h;
+          if (view.window) {
+            scale = view.window.backingScaleFactor;
+          } else if ([NSScreen mainScreen]) {
+            scale = [NSScreen mainScreen].backingScaleFactor;
+          }
+        }
+      } else {
+        CGRect backingBounds = [view convertRectToBacking:view.bounds];
+        final_w = (uint32_t)backingBounds.size.width;
+        final_h = (uint32_t)backingBounds.size.height;
+        if (final_w < 10)
+          final_w = w;
+        if (final_h < 10)
+          final_h = h;
+
+        if (view.window) {
+          scale = view.window.backingScaleFactor;
+        } else if ([NSScreen mainScreen]) {
+          scale = [NSScreen mainScreen].backingScaleFactor;
+        }
+      }
+    }
+
+    layer.device = di->device;
+    layer.drawableSize = CGSizeMake((CGFloat)final_w, (CGFloat)final_h);
+    layer.contentsScale = scale;
+    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    layer.framebufferOnly = YES; // hi-perf path
+
+    RhiSwapchainImpl *sc = new RhiSwapchainImpl();
+    sc->layer = layer;
+    sc->drawable = nil;
+    sc->color_image = nil;
+    sc->view = view;
+    sc->width = final_w;
+    sc->height = final_h;
+    *out = reinterpret_cast<RhiSwapchain *>(sc);
+    return 0;
+  }
 }
 
-static uint32_t metal_acquire_next_image(RhiSwapchain* p, RhiTexture** out_image) {
-    @autoreleasepool {
-        RhiSwapchainImpl* sc = reinterpret_cast<RhiSwapchainImpl*>(p);
-        NSView* view = sc->view;
-        if (view) {
-            if ([view isKindOfClass:[RhiMetalView class]]) {
-                [(RhiMetalView*)view syncLayerSize];
-                if (sc->layer.drawableSize.width < 10.0 || sc->layer.drawableSize.height < 10.0) {
-                    CGRect backingBounds = [view convertRectToBacking:view.bounds];
-                    if (backingBounds.size.width >= 10.0 && backingBounds.size.height >= 10.0) {
-                        [(RhiMetalView*)view syncLayerSize];
-                    } else {
-                        return 0;
-                    }
-                }
-                sc->width = (uint32_t)sc->layer.drawableSize.width;
-                sc->height = (uint32_t)sc->layer.drawableSize.height;
-            } else {
-                CGRect backingBounds = [view convertRectToBacking:view.bounds];
-                uint32_t w = (uint32_t)backingBounds.size.width;
-                uint32_t h = (uint32_t)backingBounds.size.height;
-                if (w < 10 || h < 10) {
-                    return 0;
-                }
+static void metal_destroy_swapchain(RhiSwapchain *p) {
+  if (!p)
+    return;
+  RhiSwapchainImpl *sc = reinterpret_cast<RhiSwapchainImpl *>(p);
+  @autoreleasepool {
+    id delegate = sc->layer.delegate;
+    if (delegate && [delegate isKindOfClass:[NSView class]]) {
+      NSView *v = (NSView *)delegate;
+      if (sc->layer != v.layer) {
+        [sc->layer removeFromSuperlayer];
+      }
+    } else {
+      [sc->layer removeFromSuperlayer];
+    }
+  }
+  delete sc;
+}
 
-                double scale = 1.0;
-                if (view.window) {
-                    scale = view.window.backingScaleFactor;
-                } else if ([NSScreen mainScreen]) {
-                    scale = [NSScreen mainScreen].backingScaleFactor;
-                }
-
-                if (sc->layer.contentsScale != scale) {
-                    sc->layer.contentsScale = scale;
-                }
-
-                if (sc->width != w || sc->height != h) {
-                    sc->width = w;
-                    sc->height = h;
-                    sc->layer.drawableSize = CGSizeMake((CGFloat)w, (CGFloat)h);
-                }
-            }
-        }
-        id<CAMetalDrawable> drawable = [sc->layer nextDrawable];
-        if (!drawable) {
-            ENGINE_LOG_ERROR("rhi_metal", "nextDrawable nil (window hidden?)");
+static uint32_t metal_acquire_next_image(RhiSwapchain *p,
+                                         RhiTexture **out_image) {
+  @autoreleasepool {
+    RhiSwapchainImpl *sc = reinterpret_cast<RhiSwapchainImpl *>(p);
+    NSView *view = sc->view;
+    if (view) {
+      if ([view isKindOfClass:[RhiMetalView class]]) {
+        [(RhiMetalView *)view syncLayerSize];
+        if (sc->layer.drawableSize.width < 10.0 ||
+            sc->layer.drawableSize.height < 10.0) {
+          CGRect backingBounds = [view convertRectToBacking:view.bounds];
+          if (backingBounds.size.width >= 10.0 &&
+              backingBounds.size.height >= 10.0) {
+            [(RhiMetalView *)view syncLayerSize];
+          } else {
             return 0;
+          }
         }
-        sc->drawable    = drawable;
-        sc->color_image = drawable.texture;
-        RhiTextureImpl* ti = new RhiTextureImpl();
-        ti->tex = drawable.texture;
-        ti->drawable = drawable;
-        ti->queue = nullptr;
-        ti->iosurface = nullptr;
-        ti->format = RHI_FORMAT_BGRA8_UNORM;
-        *out_image = reinterpret_cast<RhiTexture*>(ti);
-        return 1;
-    }
-}
-
-static int32_t metal_present(RhiSwapchain* p) {
-    if (!p) return -1;
-    RhiSwapchainImpl* sc = reinterpret_cast<RhiSwapchainImpl*>(p);
-    if (!sc->drawable) return -2;
-    // The drawable is presented when its command buffer (created via
-    // rhi_begin_cmdlist with texture) commits. markPresented is implicit.
-    return 0;
-}
-
-static void metal_swapchain_get_size(RhiSwapchain* p, uint32_t* width, uint32_t* height) {
-    if (!p) return;
-    RhiSwapchainImpl* sc = reinterpret_cast<RhiSwapchainImpl*>(p);
-    if (width) *width = sc->width;
-    if (height) *height = sc->height;
-}
-
-static int32_t metal_create_buffer(RhiDevice* d, const RhiBufferDesc* desc, RhiBuffer** out) {
-    @autoreleasepool {
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        id<MTLBuffer> buf = [di->device newBufferWithLength:desc->size
-                                                    options:MTLResourceStorageModeShared];
-        if (!buf) return -1;
-        RhiBufferImpl* bi = new RhiBufferImpl();
-        bi->buf = buf;
-        bi->readback_queue = di->queue_graphics;
-        *out = reinterpret_cast<RhiBuffer*>(bi);
-        return 0;
-    }
-}
-
-static uint64_t metal_get_buffer_device_address(RhiBuffer* buf) {
-    if (!buf) return 0;
-    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
-    if (!bi->buf) return 0;
-    if (@available(macOS 13.0, iOS 16.0, *)) {
-        return bi->buf.gpuAddress;
-    }
-    return 0;
-}
-
-static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, RhiTexture** out) {
-    @autoreleasepool {
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        MTLPixelFormat fmt = MTLPixelFormatBGRA8Unorm;
-        switch (desc->format) {
-            case RHI_FORMAT_RGBA8_UNORM:             fmt = MTLPixelFormatRGBA8Unorm; break;
-            case RHI_FORMAT_RGBA8_SRGB:              fmt = MTLPixelFormatRGBA8Unorm_sRGB; break;
-            case RHI_FORMAT_RGBA16_FLOAT:            fmt = MTLPixelFormatRGBA16Float; break;
-            case RHI_FORMAT_BGRA8_UNORM:             fmt = MTLPixelFormatBGRA8Unorm; break;
-            case RHI_FORMAT_DEPTH32_FLOAT:           fmt = MTLPixelFormatDepth32Float; break;
-            case RHI_FORMAT_DEPTH24_STENCIL8:        fmt = MTLPixelFormatDepth24Unorm_Stencil8; break;
-            case RHI_FORMAT_RG16_UNORM:              fmt = MTLPixelFormatRG16Unorm; break;
-            case RHI_FORMAT_RG32_UINT:               fmt = MTLPixelFormatRG32Uint; break;
-            case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:     fmt = MTLPixelFormatBC1_RGBA; break;
-            case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:    fmt = MTLPixelFormatBC1_RGBA; break;
-            case RHI_FORMAT_BC3_UNORM_BLOCK:         fmt = MTLPixelFormatBC3_RGBA; break;
-            case RHI_FORMAT_BC5_UNORM_BLOCK:         fmt = MTLPixelFormatBC5_RGUnorm; break;
-            case RHI_FORMAT_BC7_UNORM_BLOCK:         fmt = MTLPixelFormatBC7_RGBAUnorm; break;
-            case RHI_FORMAT_ETC2_RGB8_UNORM_BLOCK:   fmt = MTLPixelFormatETC2_RGB8; break;
-            case RHI_FORMAT_ASTC_4x4_UNORM_BLOCK:    fmt = MTLPixelFormatASTC_4x4_LDR; break;
-            default: break;
+        sc->width = (uint32_t)sc->layer.drawableSize.width;
+        sc->height = (uint32_t)sc->layer.drawableSize.height;
+      } else {
+        CGRect backingBounds = [view convertRectToBacking:view.bounds];
+        uint32_t w = (uint32_t)backingBounds.size.width;
+        uint32_t h = (uint32_t)backingBounds.size.height;
+        if (w < 10 || h < 10) {
+          return 0;
         }
-        NSUInteger mip_count = desc->mip_levels > 0 ? desc->mip_levels : 1;
-        MTLTextureDescriptor* td =
-            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt
-                                                              width:desc->width
-                                                             height:desc->height
-                                                          mipmapped:(mip_count > 1)];
-        td.mipmapLevelCount = mip_count;
-        td.usage = 0;
-        if (desc->usage_flags & RHI_TEXTURE_RENDER_TARGET) td.usage |= MTLTextureUsageRenderTarget;
-        if (desc->usage_flags & RHI_TEXTURE_SHADER_READ) td.usage |= MTLTextureUsageShaderRead;
-        if (desc->usage_flags & RHI_TEXTURE_STORAGE) td.usage |= MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
 
-        IOSurfaceRef iosurface = nullptr;
-        if (desc->usage_flags & RHI_TEXTURE_EXTERNAL_IMAGE) {
-            if (desc->format != RHI_FORMAT_BGRA8_UNORM) {
-                ENGINE_LOG_ERROR("rhi_metal", "external image export currently supports BGRA8 render targets only");
-                return -1;
-            }
+        double scale = 1.0;
+        if (view.window) {
+          scale = view.window.backingScaleFactor;
+        } else if ([NSScreen mainScreen]) {
+          scale = [NSScreen mainScreen].backingScaleFactor;
+        }
 
-            td.storageMode = MTLStorageModeShared;
-            td.usage |= MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+        if (sc->layer.contentsScale != scale) {
+          sc->layer.contentsScale = scale;
+        }
 
-            NSDictionary* surfaceProps = @{
-                (__bridge NSString*)kIOSurfaceWidth: @(desc->width),
-                (__bridge NSString*)kIOSurfaceHeight: @(desc->height),
-                (__bridge NSString*)kIOSurfaceBytesPerElement: @4,
-                (__bridge NSString*)kIOSurfaceBytesPerRow: @(desc->width * 4),
-                (__bridge NSString*)kIOSurfacePixelFormat: @(kCVPixelFormatType_32BGRA),
-            };
-            iosurface = IOSurfaceCreate((__bridge CFDictionaryRef)surfaceProps);
-            if (!iosurface) {
-                ENGINE_LOG_ERROR("rhi_metal", "failed to allocate IOSurface-backed render target");
-                return -1;
-            }
-        } else if (desc->usage_flags & RHI_TEXTURE_RENDER_TARGET) {
-            td.storageMode = MTLStorageModePrivate;
-        } else if (desc->usage_flags & RHI_TEXTURE_STORAGE) {
-            // Storage textures (compute read/write) never need CPU access;
-            // Private mode keeps a single GPU-side copy, avoiding the
-            // dual-copy coherency issue of Managed mode where a blit pass
-            // reads the stale zero-initialised CPU copy after compute writes.
-            td.storageMode = MTLStorageModePrivate;
-        } else {
+        if (sc->width != w || sc->height != h) {
+          sc->width = w;
+          sc->height = h;
+          sc->layer.drawableSize = CGSizeMake((CGFloat)w, (CGFloat)h);
+        }
+      }
+    }
+    id<CAMetalDrawable> drawable = [sc->layer nextDrawable];
+    if (!drawable) {
+      ENGINE_LOG_ERROR("rhi_metal", "nextDrawable nil (window hidden?)");
+      return 0;
+    }
+    sc->drawable = drawable;
+    sc->color_image = drawable.texture;
+    RhiTextureImpl *ti = new RhiTextureImpl();
+    ti->tex = drawable.texture;
+    ti->drawable = drawable;
+    ti->queue = nullptr;
+    ti->iosurface = nullptr;
+    ti->format = RHI_FORMAT_BGRA8_UNORM;
+    *out_image = reinterpret_cast<RhiTexture *>(ti);
+    return 1;
+  }
+}
+
+static int32_t metal_present(RhiSwapchain *p) {
+  if (!p)
+    return -1;
+  RhiSwapchainImpl *sc = reinterpret_cast<RhiSwapchainImpl *>(p);
+  if (!sc->drawable)
+    return -2;
+  // The drawable is presented when its command buffer (created via
+  // rhi_begin_cmdlist with texture) commits. markPresented is implicit.
+  return 0;
+}
+
+static void metal_swapchain_get_size(RhiSwapchain *p, uint32_t *width,
+                                     uint32_t *height) {
+  if (!p)
+    return;
+  RhiSwapchainImpl *sc = reinterpret_cast<RhiSwapchainImpl *>(p);
+  if (width)
+    *width = sc->width;
+  if (height)
+    *height = sc->height;
+}
+
+static int32_t metal_create_buffer(RhiDevice *d, const RhiBufferDesc *desc,
+                                   RhiBuffer **out) {
+  @autoreleasepool {
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+    id<MTLBuffer> buf =
+        [di->device newBufferWithLength:desc->size
+                                options:MTLResourceStorageModeShared];
+    if (!buf)
+      return -1;
+    RhiBufferImpl *bi = new RhiBufferImpl();
+    bi->buf = buf;
+    bi->readback_queue = di->queue_graphics;
+    *out = reinterpret_cast<RhiBuffer *>(bi);
+    return 0;
+  }
+}
+
+static uint64_t metal_get_buffer_device_address(RhiBuffer *buf) {
+  if (!buf)
+    return 0;
+  RhiBufferImpl *bi = reinterpret_cast<RhiBufferImpl *>(buf);
+  if (!bi->buf)
+    return 0;
+  if (@available(macOS 13.0, iOS 16.0, *)) {
+    return bi->buf.gpuAddress;
+  }
+  return 0;
+}
+
+static int32_t metal_create_texture(RhiDevice *d, const RhiTextureDesc *desc,
+                                    RhiTexture **out) {
+  @autoreleasepool {
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+    MTLPixelFormat fmt = MTLPixelFormatBGRA8Unorm;
+    switch (desc->format) {
+    case RHI_FORMAT_RGBA8_UNORM:
+      fmt = MTLPixelFormatRGBA8Unorm;
+      break;
+    case RHI_FORMAT_RGBA8_SRGB:
+      fmt = MTLPixelFormatRGBA8Unorm_sRGB;
+      break;
+    case RHI_FORMAT_RGBA16_FLOAT:
+      fmt = MTLPixelFormatRGBA16Float;
+      break;
+    case RHI_FORMAT_BGRA8_UNORM:
+      fmt = MTLPixelFormatBGRA8Unorm;
+      break;
+    case RHI_FORMAT_DEPTH32_FLOAT:
+      fmt = MTLPixelFormatDepth32Float;
+      break;
+    case RHI_FORMAT_DEPTH24_STENCIL8:
+      fmt = MTLPixelFormatDepth24Unorm_Stencil8;
+      break;
+    case RHI_FORMAT_RG16_UNORM:
+      fmt = MTLPixelFormatRG16Unorm;
+      break;
+    case RHI_FORMAT_RG32_UINT:
+      fmt = MTLPixelFormatRG32Uint;
+      break;
+    case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:
+      fmt = MTLPixelFormatBC1_RGBA;
+      break;
+    case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:
+      fmt = MTLPixelFormatBC1_RGBA;
+      break;
+    case RHI_FORMAT_BC3_UNORM_BLOCK:
+      fmt = MTLPixelFormatBC3_RGBA;
+      break;
+    case RHI_FORMAT_BC5_UNORM_BLOCK:
+      fmt = MTLPixelFormatBC5_RGUnorm;
+      break;
+    case RHI_FORMAT_BC7_UNORM_BLOCK:
+      fmt = MTLPixelFormatBC7_RGBAUnorm;
+      break;
+    case RHI_FORMAT_ETC2_RGB8_UNORM_BLOCK:
+      fmt = MTLPixelFormatETC2_RGB8;
+      break;
+    case RHI_FORMAT_ASTC_4x4_UNORM_BLOCK:
+      fmt = MTLPixelFormatASTC_4x4_LDR;
+      break;
+    default:
+      break;
+    }
+    NSUInteger mip_count = desc->mip_levels > 0 ? desc->mip_levels : 1;
+    MTLTextureDescriptor *td = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:fmt
+                                     width:desc->width
+                                    height:desc->height
+                                 mipmapped:(mip_count > 1)];
+    td.mipmapLevelCount = mip_count;
+    td.usage = 0;
+    if (desc->usage_flags & RHI_TEXTURE_RENDER_TARGET)
+      td.usage |= MTLTextureUsageRenderTarget;
+    if (desc->usage_flags & RHI_TEXTURE_SHADER_READ)
+      td.usage |= MTLTextureUsageShaderRead;
+    if (desc->usage_flags & RHI_TEXTURE_STORAGE)
+      td.usage |= MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
+
+    IOSurfaceRef iosurface = nullptr;
+    if (desc->usage_flags & RHI_TEXTURE_EXTERNAL_IMAGE) {
+      if (desc->format != RHI_FORMAT_BGRA8_UNORM) {
+        ENGINE_LOG_ERROR("rhi_metal", "external image export currently "
+                                      "supports BGRA8 render targets only");
+        return -1;
+      }
+
+      td.storageMode = MTLStorageModeShared;
+      td.usage |= MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+
+      NSDictionary *surfaceProps = @{
+        (__bridge NSString *)kIOSurfaceWidth : @(desc->width),
+        (__bridge NSString *)kIOSurfaceHeight : @(desc->height),
+        (__bridge NSString *)kIOSurfaceBytesPerElement : @4,
+        (__bridge NSString *)kIOSurfaceBytesPerRow : @(desc->width * 4),
+        (__bridge NSString *)
+        kIOSurfacePixelFormat : @(kCVPixelFormatType_32BGRA),
+      };
+      iosurface = IOSurfaceCreate((__bridge CFDictionaryRef)surfaceProps);
+      if (!iosurface) {
+        ENGINE_LOG_ERROR("rhi_metal",
+                         "failed to allocate IOSurface-backed render target");
+        return -1;
+      }
+    } else if (desc->usage_flags & RHI_TEXTURE_RENDER_TARGET) {
+      td.storageMode = MTLStorageModePrivate;
+    } else if (desc->usage_flags & RHI_TEXTURE_STORAGE) {
+      // Storage textures (compute read/write) never need CPU access;
+      // Private mode keeps a single GPU-side copy, avoiding the
+      // dual-copy coherency issue of Managed mode where a blit pass
+      // reads the stale zero-initialised CPU copy after compute writes.
+      td.storageMode = MTLStorageModePrivate;
+    } else {
 #if TARGET_OS_OSX
-            // Compressed formats stay Managed on macOS: the CPU-side
-            // replaceRegion: + [synchronizeTexture] blit path used by
-            // metal_texture_upload_mip / metal_texture_upload requires
-            // CPU-writeable storage. Switching to Private would need a
-            // staging-buffer blit path (TODO for iOS + Private GPU heaps).
-            td.storageMode = MTLStorageModeManaged;
+      // Compressed formats stay Managed on macOS: the CPU-side
+      // replaceRegion: + [synchronizeTexture] blit path used by
+      // metal_texture_upload_mip / metal_texture_upload requires
+      // CPU-writeable storage. Switching to Private would need a
+      // staging-buffer blit path (TODO for iOS + Private GPU heaps).
+      td.storageMode = MTLStorageModeManaged;
 #else
-            td.storageMode = MTLStorageModeShared;
+      td.storageMode = MTLStorageModeShared;
 #endif
-        }
-        id<MTLTexture> tex = iosurface != nullptr
-            ? [di->device newTextureWithDescriptor:td iosurface:iosurface plane:0]
-            : [di->device newTextureWithDescriptor:td];
-        if (!tex) {
-            if (iosurface) {
-                CFRelease(iosurface);
-            }
-            return -1;
-        }
-        RhiTextureImpl* ti = new RhiTextureImpl();
-        ti->tex = tex;
-        ti->queue = di->queue_graphics;
-        ti->drawable = nil;
-        ti->iosurface = iosurface;
-        ti->format = desc->format;
-        *out = reinterpret_cast<RhiTexture*>(ti);
-        return 0;
     }
+    id<MTLTexture> tex = iosurface != nullptr
+                             ? [di->device newTextureWithDescriptor:td
+                                                          iosurface:iosurface
+                                                              plane:0]
+                             : [di->device newTextureWithDescriptor:td];
+    if (!tex) {
+      if (iosurface) {
+        CFRelease(iosurface);
+      }
+      return -1;
+    }
+    RhiTextureImpl *ti = new RhiTextureImpl();
+    ti->tex = tex;
+    ti->queue = di->queue_graphics;
+    ti->drawable = nil;
+    ti->iosurface = iosurface;
+    ti->format = desc->format;
+    *out = reinterpret_cast<RhiTexture *>(ti);
+    return 0;
+  }
 }
 
 // Persists the full Slang diagnostic stream to a stable on-disk path AND
@@ -641,585 +722,688 @@ static int32_t metal_create_texture(RhiDevice* d, const RhiTextureDesc* desc, Rh
 // failure path in metal_create_shader calls this before logging so the
 // underlying compiler complaint is recoverable in full, even when the
 // in-process ring buffer truncates the error mid-stream.
-static void metal_dump_slang_diag(
-    const char* label,
-    const char* diag,
-    const RhiShaderDesc* desc,
-    const char* stage,
-    const std::vector<std::string>& include_dirs,
-    const std::vector<std::string>& cli_tokens) {
-    static std::mutex diagnostics_mutex;
-    std::lock_guard<std::mutex> lock(diagnostics_mutex);
-    const char* entry = desc && desc->entry_point
-        ? desc->entry_point
-        : "(unknown)";
-    uint32_t source_length = desc ? desc->source_len : 0;
-    if (!diag || !diag[0]) {
-        fprintf(stderr,
-                "=== SLANG FAIL [%s] entry=%s stage=%s "
-                "(no diagnostics emitted) ===\n",
-                label, entry, stage);
-    } else {
-        fprintf(stderr,
-                "=== SLANG FAIL [%s] entry=%s stage=%s ===\n%s\n=== END ===\n",
-                label, entry, stage, diag);
-    }
-    // /out/logs/ is the same root the engine log subsystem writes to, so
-    // the developer can find this artifact adjacent to engine.log when
-    // launched from Finder/Dock (where stderr is invisible). Create the
-    // directory defensively: engine_log_init only opens the file path, it
-    // never mkdirs the parent, so on the first compile failure to happen
-    // prior to any engine log emission the persistent copy would silently
-    // disappear. EEXIST is fine; any other error we tolerate since stderr
-    // is the primary channel anyway.
-    if (mkdir("out/logs", 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr, "SLANG helper: mkdir(\"out/logs\") failed: errno=%d\n", errno);
-    }
-    FILE* fp = fopen("out/logs/slang_diagnostics.txt", "a");
-    if (fp) {
-        fprintf(fp,
-                "=== Slang shader failure ===\n"
-                "phase: %s\n"
-                "entry: %s\n"
-                "stage: %s\n"
-                "source: /tmp/temp.slang\n"
-                "source_bytes: %u\n"
-                "include_directories (%zu):\n",
-                label, entry, stage, source_length, include_dirs.size());
-        for (const std::string& dir : include_dirs)
-            fprintf(fp, "  - %s\n", dir.c_str());
-        fprintf(fp, "compiler_arguments (%zu):\n", cli_tokens.size());
-        for (const std::string& token : cli_tokens)
-            fprintf(fp, "  - %s\n", token.c_str());
-        fprintf(fp, "diagnostics:\n%s\n=== End Slang shader failure ===\n\n",
-                (diag && diag[0]) ? diag : "(no diagnostics)");
-        fclose(fp);
-    }
+static void metal_dump_slang_diag(const char *label, const char *diag,
+                                  const RhiShaderDesc *desc, const char *stage,
+                                  const std::vector<std::string> &include_dirs,
+                                  const std::vector<std::string> &cli_tokens) {
+  static std::mutex diagnostics_mutex;
+  std::lock_guard<std::mutex> lock(diagnostics_mutex);
+  const char *entry =
+      desc && desc->entry_point ? desc->entry_point : "(unknown)";
+  uint32_t source_length = desc ? desc->source_len : 0;
+  if (!diag || !diag[0]) {
+    fprintf(stderr,
+            "=== SLANG FAIL [%s] entry=%s stage=%s "
+            "(no diagnostics emitted) ===\n",
+            label, entry, stage);
+  } else {
+    fprintf(stderr,
+            "=== SLANG FAIL [%s] entry=%s stage=%s ===\n%s\n=== END ===\n",
+            label, entry, stage, diag);
+  }
+  // /out/logs/ is the same root the engine log subsystem writes to, so
+  // the developer can find this artifact adjacent to engine.log when
+  // launched from Finder/Dock (where stderr is invisible). Create the
+  // directory defensively: engine_log_init only opens the file path, it
+  // never mkdirs the parent, so on the first compile failure to happen
+  // prior to any engine log emission the persistent copy would silently
+  // disappear. EEXIST is fine; any other error we tolerate since stderr
+  // is the primary channel anyway.
+  if (mkdir("out/logs", 0755) != 0 && errno != EEXIST) {
+    fprintf(stderr, "SLANG helper: mkdir(\"out/logs\") failed: errno=%d\n",
+            errno);
+  }
+  FILE *fp = fopen("out/logs/slang_diagnostics.txt", "a");
+  if (fp) {
+    fprintf(fp,
+            "=== Slang shader failure ===\n"
+            "phase: %s\n"
+            "entry: %s\n"
+            "stage: %s\n"
+            "source: /tmp/temp.slang\n"
+            "source_bytes: %u\n"
+            "include_directories (%zu):\n",
+            label, entry, stage, source_length, include_dirs.size());
+    for (const std::string &dir : include_dirs)
+      fprintf(fp, "  - %s\n", dir.c_str());
+    fprintf(fp, "compiler_arguments (%zu):\n", cli_tokens.size());
+    for (const std::string &token : cli_tokens)
+      fprintf(fp, "  - %s\n", token.c_str());
+    fprintf(fp, "diagnostics:\n%s\n=== End Slang shader failure ===\n\n",
+            (diag && diag[0]) ? diag : "(no diagnostics)");
+    fclose(fp);
+  }
 }
 
-static int32_t metal_create_shader(RhiDevice* d, const RhiShaderDesc* desc, RhiShader** out) {
-    @autoreleasepool {
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        NSString* src = nil;
+static int32_t metal_create_shader(RhiDevice *d, const RhiShaderDesc *desc,
+                                   RhiShader **out) {
+  @autoreleasepool {
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+    NSString *src = nil;
 
-        slang::IGlobalSession* globalSession = nullptr;
-        slang::createGlobalSession(&globalSession);
-        if (!globalSession) {
-            ENGINE_LOG_ERROR("rhi_metal", "Slang: Failed to create global session");
-            return -1;
-        }
+    slang::IGlobalSession *globalSession = nullptr;
+    slang::createGlobalSession(&globalSession);
+    if (!globalSession) {
+      ENGINE_LOG_ERROR("rhi_metal", "Slang: Failed to create global session");
+      return -1;
+    }
 
-        slang::ICompileRequest* request = nullptr;
-        globalSession->createCompileRequest(&request);
-        if (!request) {
-            ENGINE_LOG_ERROR("rhi_metal", "Slang: Failed to create compile request");
-            globalSession->Release();
-            return -1;
-        }
+    slang::ICompileRequest *request = nullptr;
+    globalSession->createCompileRequest(&request);
+    if (!request) {
+      ENGINE_LOG_ERROR("rhi_metal", "Slang: Failed to create compile request");
+      globalSession->Release();
+      return -1;
+    }
 
-        const char* stage_str = "none";
-        if (desc->stage_flags & RHI_STAGE_VERTEX) stage_str = "vertex";
-        if (desc->stage_flags & RHI_STAGE_FRAGMENT) stage_str = "fragment";
-        if (desc->stage_flags & RHI_STAGE_COMPUTE) stage_str = "compute";
+    const char *stage_str = "none";
+    if (desc->stage_flags & RHI_STAGE_VERTEX)
+      stage_str = "vertex";
+    if (desc->stage_flags & RHI_STAGE_FRAGMENT)
+      stage_str = "fragment";
+    if (desc->stage_flags & RHI_STAGE_COMPUTE)
+      stage_str = "compute";
 
-        FILE* fp = fopen("/tmp/temp.slang", "w");
-        fwrite(desc->source, 1, strlen(desc->source), fp);
-        fclose(fp);
+    FILE *fp = fopen("/tmp/temp.slang", "w");
+    fwrite(desc->source, 1, strlen(desc->source), fp);
+    fclose(fp);
 
-        const int kMaxArgs = 128;
-        const char* args[kMaxArgs];
-        int arg_count = 0;
-        args[arg_count++] = "/tmp/temp.slang";
-        args[arg_count++] = "-target"; args[arg_count++] = "metal";
-        args[arg_count++] = "-entry"; args[arg_count++] = desc->entry_point;
-        args[arg_count++] = "-stage"; args[arg_count++] = stage_str;
-        args[arg_count++] = "-matrix-layout-column-major";
+    const int kMaxArgs = 128;
+    const char *args[kMaxArgs];
+    int arg_count = 0;
+    args[arg_count++] = "/tmp/temp.slang";
+    args[arg_count++] = "-target";
+    args[arg_count++] = "metal";
+    args[arg_count++] = "-entry";
+    args[arg_count++] = desc->entry_point;
+    args[arg_count++] = "-stage";
+    args[arg_count++] = stage_str;
+    args[arg_count++] = "-matrix-layout-column-major";
 
-        std::vector<std::string> include_dirs;
-        if (desc->include_path && strlen(desc->include_path) > 0) {
-            std::string joined(desc->include_path);
-            const std::string sep(RHI_SHADER_INCLUDE_PATH_SEPARATOR);
-            size_t scan = 0;
-            while (scan <= joined.size()) {
-                size_t end = joined.find(sep, scan);
-                std::string one = joined.substr(
-                    scan,
-                    end == std::string::npos ? std::string::npos : (end - scan));
-                if (!one.empty()) include_dirs.push_back(one);
-                if (end == std::string::npos) break;
-                scan = end + sep.size();
-            }
-        }
-        size_t include_dirs_emitted = 0;
-        for (const std::string& dir : include_dirs) {
-            if (arg_count + 2 > kMaxArgs) break;
-            args[arg_count++] = "-I";
-            args[arg_count++] = dir.c_str();
-            ++include_dirs_emitted;
-        }
-        if (include_dirs_emitted < include_dirs.size()) {
-            ENGINE_LOG_WARN("rhi_metal",
-                            "include path overflow: requested %zu dirs, emitted %zu (kMaxArgs=%d)",
-                            include_dirs.size(), include_dirs_emitted, kMaxArgs);
-        }
+    std::vector<std::string> include_dirs;
+    if (desc->include_path && strlen(desc->include_path) > 0) {
+      std::string joined(desc->include_path);
+      const std::string sep(RHI_SHADER_INCLUDE_PATH_SEPARATOR);
+      size_t scan = 0;
+      while (scan <= joined.size()) {
+        size_t end = joined.find(sep, scan);
+        std::string one = joined.substr(
+            scan, end == std::string::npos ? std::string::npos : (end - scan));
+        if (!one.empty())
+          include_dirs.push_back(one);
+        if (end == std::string::npos)
+          break;
+        scan = end + sep.size();
+      }
+    }
+    size_t include_dirs_emitted = 0;
+    for (const std::string &dir : include_dirs) {
+      if (arg_count + 2 > kMaxArgs)
+        break;
+      args[arg_count++] = "-I";
+      args[arg_count++] = dir.c_str();
+      ++include_dirs_emitted;
+    }
+    if (include_dirs_emitted < include_dirs.size()) {
+      ENGINE_LOG_WARN("rhi_metal",
+                      "include path overflow: requested %zu dirs, emitted %zu "
+                      "(kMaxArgs=%d)",
+                      include_dirs.size(), include_dirs_emitted, kMaxArgs);
+    }
 
-        std::vector<std::string> cli_tokens;
-        if (desc->cli_args && strlen(desc->cli_args) > 0) {
-            std::string joined(desc->cli_args);
-            size_t scan = 0;
-            while (scan <= joined.size()) {
-                size_t start = joined.find_first_not_of(" \t\n\r", scan);
-                if (start == std::string::npos) break;
-                size_t end = joined.find_first_of(" \t\n\r", start);
-                if (end == std::string::npos) end = joined.size();
-                std::string tok = joined.substr(start, end - start);
-                if (!tok.empty()) cli_tokens.push_back(tok);
-                scan = end;
-            }
-        }
-        size_t cli_tokens_emitted = 0;
-        for (const std::string& tok : cli_tokens) {
-            if (arg_count + 1 > kMaxArgs) break;
-            args[arg_count++] = tok.c_str();
-            ++cli_tokens_emitted;
-        }
-        if (cli_tokens_emitted < cli_tokens.size()) {
-            ENGINE_LOG_WARN("rhi_metal",
-                            "cli_args overflow: requested %zu tokens, emitted %zu (kMaxArgs=%d)",
-                            cli_tokens.size(), cli_tokens_emitted, kMaxArgs);
-        }
+    std::vector<std::string> cli_tokens;
+    if (desc->cli_args && strlen(desc->cli_args) > 0) {
+      std::string joined(desc->cli_args);
+      size_t scan = 0;
+      while (scan <= joined.size()) {
+        size_t start = joined.find_first_not_of(" \t\n\r", scan);
+        if (start == std::string::npos)
+          break;
+        size_t end = joined.find_first_of(" \t\n\r", start);
+        if (end == std::string::npos)
+          end = joined.size();
+        std::string tok = joined.substr(start, end - start);
+        if (!tok.empty())
+          cli_tokens.push_back(tok);
+        scan = end;
+      }
+    }
+    size_t cli_tokens_emitted = 0;
+    for (const std::string &tok : cli_tokens) {
+      if (arg_count + 1 > kMaxArgs)
+        break;
+      args[arg_count++] = tok.c_str();
+      ++cli_tokens_emitted;
+    }
+    if (cli_tokens_emitted < cli_tokens.size()) {
+      ENGINE_LOG_WARN(
+          "rhi_metal",
+          "cli_args overflow: requested %zu tokens, emitted %zu (kMaxArgs=%d)",
+          cli_tokens.size(), cli_tokens_emitted, kMaxArgs);
+    }
 
-        SlangResult argsRes = spProcessCommandLineArguments(request, args, arg_count);
-        if (SLANG_FAILED(argsRes)) {
-            metal_dump_slang_diag(
-                "arg-process",
-                spGetDiagnosticOutput(request),
-                desc,
-                stage_str,
-                include_dirs,
-                cli_tokens);
-            ENGINE_LOG_ERROR("rhi_metal",
-                             "Slang: failed to process arguments (entry=%s). "
-                             "Full diagnostics at out/logs/slang_diagnostics.txt "
-                             "(also tee'd to stderr).",
-                             desc->entry_point);
-            request->Release();
-            globalSession->Release();
-            return -1;
-        }
+    SlangResult argsRes =
+        spProcessCommandLineArguments(request, args, arg_count);
+    if (SLANG_FAILED(argsRes)) {
+      metal_dump_slang_diag("arg-process", spGetDiagnosticOutput(request), desc,
+                            stage_str, include_dirs, cli_tokens);
+      ENGINE_LOG_ERROR("rhi_metal",
+                       "Slang: failed to process arguments (entry=%s). "
+                       "Full diagnostics at out/logs/slang_diagnostics.txt "
+                       "(also tee'd to stderr).",
+                       desc->entry_point);
+      request->Release();
+      globalSession->Release();
+      return -1;
+    }
 
-        SlangResult res = spCompile(request);
-        if (SLANG_FAILED(res)) {
-            metal_dump_slang_diag(
-                "compile",
-                spGetDiagnosticOutput(request),
-                desc,
-                stage_str,
-                include_dirs,
-                cli_tokens);
-            ENGINE_LOG_ERROR("rhi_metal",
-                             "Slang: compile failed (entry=%s). "
-                             "Full diagnostics at out/logs/slang_diagnostics.txt "
-                             "(also tee'd to stderr).",
-                             desc->entry_point);
-            request->Release();
-            globalSession->Release();
-            return -1;
-        }
+    SlangResult res = spCompile(request);
+    if (SLANG_FAILED(res)) {
+      metal_dump_slang_diag("compile", spGetDiagnosticOutput(request), desc,
+                            stage_str, include_dirs, cli_tokens);
+      ENGINE_LOG_ERROR("rhi_metal",
+                       "Slang: compile failed (entry=%s). "
+                       "Full diagnostics at out/logs/slang_diagnostics.txt "
+                       "(also tee'd to stderr).",
+                       desc->entry_point);
+      request->Release();
+      globalSession->Release();
+      return -1;
+    }
 
-        size_t codeSize = 0;
-        const void* codePtr = spGetCompileRequestCode(request, &codeSize);
-        if (!codePtr) {
-            metal_dump_slang_diag(
-                "get-code",
-                spGetDiagnosticOutput(request),
-                desc,
-                stage_str,
-                include_dirs,
-                cli_tokens);
-            ENGINE_LOG_ERROR("rhi_metal",
-                             "Slang: failed to retrieve compiled code (entry=%s). "
-                             "Full diagnostics at out/logs/slang_diagnostics.txt "
-                             "(also tee'd to stderr).",
-                             desc->entry_point);
-            request->Release();
-            globalSession->Release();
-            return -1;
-        }
+    size_t codeSize = 0;
+    const void *codePtr = spGetCompileRequestCode(request, &codeSize);
+    if (!codePtr) {
+      metal_dump_slang_diag("get-code", spGetDiagnosticOutput(request), desc,
+                            stage_str, include_dirs, cli_tokens);
+      ENGINE_LOG_ERROR("rhi_metal",
+                       "Slang: failed to retrieve compiled code (entry=%s). "
+                       "Full diagnostics at out/logs/slang_diagnostics.txt "
+                       "(also tee'd to stderr).",
+                       desc->entry_point);
+      request->Release();
+      globalSession->Release();
+      return -1;
+    }
 
-        NSString* mslSrc = [[NSString alloc] initWithBytes:codePtr length:codeSize encoding:NSUTF8StringEncoding];
+    NSString *mslSrc = [[NSString alloc] initWithBytes:codePtr
+                                                length:codeSize
+                                              encoding:NSUTF8StringEncoding];
 
-        // Diagnostic: dump generated MSL to /tmp so we can verify Slang binding
-        // mapping regardless of process working directory.
-        {
-            NSString* dumpPath = [NSString stringWithFormat:@"/tmp/msl_%s.metal", desc->entry_point];
-            [[mslSrc dataUsingEncoding:NSUTF8StringEncoding] writeToFile:dumpPath atomically:YES];
-            fprintf(stderr, "MSL dump: %s -> %s (%zu bytes)\n",
-                    desc->entry_point, [dumpPath UTF8String], (size_t)codeSize);
-        }
+    // Diagnostic: dump generated MSL to /tmp so we can verify Slang binding
+    // mapping regardless of process working directory.
+    {
+      NSString *dumpPath =
+          [NSString stringWithFormat:@"/tmp/msl_%s.metal", desc->entry_point];
+      [[mslSrc dataUsingEncoding:NSUTF8StringEncoding] writeToFile:dumpPath
+                                                        atomically:YES];
+      fprintf(stderr, "MSL dump: %s -> %s (%zu bytes)\n", desc->entry_point,
+              [dumpPath UTF8String], (size_t)codeSize);
+    }
 
-        NSError* error = nil;
-        MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-        id<MTLLibrary> lib = [di->device newLibraryWithSource:mslSrc options:opts error:&error];
-        if (!lib) {
-            ENGINE_LOG_ERROR("rhi_metal", "MSL compile failed: %s", [[error localizedDescription] UTF8String]);
-            request->Release();
-            globalSession->Release();
-            return -1;
-        }
+    NSError *error = nil;
+    MTLCompileOptions *opts = [[MTLCompileOptions alloc] init];
+    id<MTLLibrary> lib =
+        [di->device newLibraryWithSource:mslSrc options:opts error:&error];
+    if (!lib) {
+      ENGINE_LOG_ERROR("rhi_metal", "MSL compile failed: %s",
+                       [[error localizedDescription] UTF8String]);
+      request->Release();
+      globalSession->Release();
+      return -1;
+    }
 
-        NSString* entry = [NSString stringWithUTF8String:desc->entry_point];
-        id<MTLFunction> fn = [lib newFunctionWithName:entry];
-        if (!fn) {
-            NSString* entry_mangled = [entry stringByAppendingString:@"_"];
-            fn = [lib newFunctionWithName:entry_mangled];
-            if (!fn) {
-                ENGINE_LOG_ERROR("rhi_metal", "entry point '%s' (or mangled) not found in generated library", desc->entry_point);
-                request->Release();
-                globalSession->Release();
-                return -2;
-            }
-        }
-        
-        RhiShaderImpl* si = new RhiShaderImpl();
-        si->lib = lib;
-        si->fn  = fn;
-        *out = reinterpret_cast<RhiShader*>(si);
-
+    NSString *entry = [NSString stringWithUTF8String:desc->entry_point];
+    id<MTLFunction> fn = [lib newFunctionWithName:entry];
+    if (!fn) {
+      NSString *entry_mangled = [entry stringByAppendingString:@"_"];
+      fn = [lib newFunctionWithName:entry_mangled];
+      if (!fn) {
+        ENGINE_LOG_ERROR(
+            "rhi_metal",
+            "entry point '%s' (or mangled) not found in generated library",
+            desc->entry_point);
         request->Release();
         globalSession->Release();
-
-        return 0;
+        return -2;
+      }
     }
-}
 
-static int32_t metal_create_graphics_pipeline(RhiDevice* d,
-                                              const RhiGraphicsPipelineDesc* desc,
-                                              RhiPipeline** out) {
-    if (!out) return -1;
-    @autoreleasepool {
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        if (!di) {
-            ENGINE_LOG_ERROR("rhi_metal", "graphics_pipeline: null device handle");
-            return -1;
-        }
-        // MARK: null-guard vs/fs. The C# wrapper now filters disposed
-        // shaders but a stale in-flight native request (e.g. an
-        // orphaned Task that outlived the plugin that scheduled it)
-        // can still arrive here with desc->vertex_shader or
-        // desc->fragment_shader == NULL. Returning a tagged error
-        // (vs -2 missing-vs -3 missing-fs) surfaces the real cause in
-        // the engine log instead of an opaque SIGSEGV @ 0x8.
-        RhiShaderImpl* vs = reinterpret_cast<RhiShaderImpl*>(desc->vertex_shader);
-        RhiShaderImpl* fs = reinterpret_cast<RhiShaderImpl*>(desc->fragment_shader);
-        if (!vs) {
-            ENGINE_LOG_ERROR("rhi_metal", "graphics_pipeline: null vertex_shader handle");
-            return -2;
-        }
-        if (!fs) {
-            ENGINE_LOG_ERROR("rhi_metal", "graphics_pipeline: null fragment_shader handle");
-            return -3;
-        }
-        MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
-        pd.vertexFunction   = vs->fn;
-        pd.fragmentFunction = fs->fn;
-        RhiTextureFormat color_formats[4] = {
-            desc->color_attachment_format,
-            RHI_FORMAT_UNDEFINED,
-            RHI_FORMAT_UNDEFINED,
-            RHI_FORMAT_UNDEFINED
-        };
-        uint32_t color_count =
-            desc->color_attachment_format == RHI_FORMAT_UNDEFINED ? 0u : 1u;
-        if (desc->abi >= 5u) {
-            color_formats[1] = desc->color_attachment_format_1;
-            color_formats[2] = desc->color_attachment_format_2;
-            color_formats[3] = desc->color_attachment_format_3;
-            color_count = desc->color_attachment_count > 4u
-                ? 4u
-                : desc->color_attachment_count;
-        }
-        for (uint32_t color_index = 0u;
-             color_index < color_count;
-             ++color_index) {
-            MTLPixelFormat color = MTLPixelFormatInvalid;
-            switch (color_formats[color_index]) {
-                case RHI_FORMAT_RGBA8_UNORM:  color = MTLPixelFormatRGBA8Unorm; break;
-                case RHI_FORMAT_BGRA8_UNORM:  color = MTLPixelFormatBGRA8Unorm; break;
-                case RHI_FORMAT_RGBA8_SRGB:   color = MTLPixelFormatRGBA8Unorm_sRGB; break;
-                case RHI_FORMAT_RGBA16_FLOAT: color = MTLPixelFormatRGBA16Float; break;
-                case RHI_FORMAT_RG16_UNORM:   color = MTLPixelFormatRG16Unorm; break;
-                case RHI_FORMAT_RG32_UINT:    color = MTLPixelFormatRG32Uint; break;
-                default: break;
-            }
-            pd.colorAttachments[color_index].pixelFormat = color;
-        }
-        if (desc->enable_blend) {
-            pd.colorAttachments[0].blendingEnabled = YES;
-            pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
-            pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
-            pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-            pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
-            pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-            pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-        }
-        pd.depthAttachmentPixelFormat = desc->enable_depth
-            ? MTLPixelFormatDepth32Float
-            : MTLPixelFormatInvalid;
-        NSError* err = nil;
-        id<MTLRenderPipelineState> state =
-            [di->device newRenderPipelineStateWithDescriptor:pd error:&err];
-        if (!state) {
-            ENGINE_LOG_ERROR("rhi_metal", "pipeline: %s",
-                              [[err localizedDescription] UTF8String]);
-            return -1;
-        }
-        RhiPipelineImpl* pi = new RhiPipelineImpl();
-        pi->g = state;
-        pi->c = nil;
-        pi->depth_stencil = nil;
-        if (desc->enable_depth) {
-            MTLDepthStencilDescriptor* depth_desc =
-                [[MTLDepthStencilDescriptor alloc] init];
-            depth_desc.depthCompareFunction =
-                desc->depth_compare == RHI_COMPARE_ALWAYS
-                    ? MTLCompareFunctionAlways
-                    : MTLCompareFunctionLessEqual;
-            depth_desc.depthWriteEnabled =
-                desc->enable_depth_write ? YES : NO;
-            pi->depth_stencil =
-                [di->device newDepthStencilStateWithDescriptor:depth_desc];
-        }
-        if (desc->primitive_topology == 1 /* RHI_TOPOLOGY_LINE_LIST */) {
-            pi->primitive_type = MTLPrimitiveTypeLine;
-        } else {
-            pi->primitive_type = MTLPrimitiveTypeTriangle;
-        }
-        *out = reinterpret_cast<RhiPipeline*>(pi);
-        return 0;
-    }
-}
+    RhiShaderImpl *si = new RhiShaderImpl();
+    si->lib = lib;
+    si->fn = fn;
+    *out = reinterpret_cast<RhiShader *>(si);
 
-static int32_t metal_create_compute_pipeline(RhiDevice* d,
-                                             const RhiComputePipelineDesc* desc,
-                                             RhiPipeline** out) {
-    if (!out) return -1;
-    @autoreleasepool {
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        if (!di) {
-            ENGINE_LOG_ERROR("rhi_metal", "compute_pipeline: null device handle");
-            return -1;
-        }
-        // MARK: null-guard cs. The C# RhiPipeline.CreateCompute
-        // wrapper now throws ObjectDisposedException when the shader
-        // was already disposed at P/Invoke start, but an orphan in-
-        // flight background Task (DDGI placement-pass constructor
-        // outliving the plugin that scheduled its ConstructPassWith-
-        // Timeout wrapper) can still reach here with
-        // desc->compute_shader == NULL. Returning -2 surfaces the
-        // missing-shader cause in the engine log instead of the opaque
-        // EXC_BAD_ACCESS we used to see at cs->fn offset 0x8.
-        RhiShaderImpl* cs = reinterpret_cast<RhiShaderImpl*>(desc->compute_shader);
-        if (!cs) {
-            ENGINE_LOG_ERROR("rhi_metal", "compute_pipeline: null compute_shader handle");
-            return -2;
-        }
-        NSError* err = nil;
-        id<MTLComputePipelineState> state =
-            [di->device newComputePipelineStateWithFunction:cs->fn error:&err];
-        if (!state) {
-            ENGINE_LOG_ERROR("rhi_metal", "compute pipeline: %s",
-                              [[err localizedDescription] UTF8String]);
-            return -1;
-        }
-        RhiPipelineImpl* pi = new RhiPipelineImpl();
-        pi->g = nil;
-        pi->c = state;
-        pi->depth_stencil = nil;
-        *out = reinterpret_cast<RhiPipeline*>(pi);
-        return 0;
-    }
-}
+    request->Release();
+    globalSession->Release();
 
-static int32_t metal_create_heap(RhiDevice* d, const RhiHeapDesc* desc, RhiHeap** out) {
-    @autoreleasepool {
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        MTLHeapDescriptor* hd = [MTLHeapDescriptor new];
-        hd.size = desc->size;
-        hd.storageMode = MTLStorageModePrivate; // Default for GPU sub-allocations
-        if (@available(macOS 10.15, iOS 13.0, *)) {
-            hd.type = MTLHeapTypePlacement;
-        }
-        if (desc->usage_flags & RHI_HEAP_USAGE_RENDER_TARGET) {
-            // No strict flags needed in Metal for this aside from sizing, but we can set properties if required
-        }
-        id<MTLHeap> heap = [di->device newHeapWithDescriptor:hd];
-        if (!heap) return -1;
-        RhiHeapImpl* hi = new RhiHeapImpl();
-        hi->heap = heap;
-        *out = reinterpret_cast<RhiHeap*>(hi);
-        return 0;
-    }
-}
-
-static int32_t metal_create_texture_from_heap(RhiDevice* d, RhiHeap* h, const RhiTextureDesc* desc, uint64_t offset, RhiTexture** out) {
-    @autoreleasepool {
-        RhiHeapImpl* hi = reinterpret_cast<RhiHeapImpl*>(h);
-        MTLPixelFormat fmt = MTLPixelFormatBGRA8Unorm;
-        switch (desc->format) {
-            case RHI_FORMAT_RGBA8_UNORM:             fmt = MTLPixelFormatRGBA8Unorm; break;
-            case RHI_FORMAT_RGBA8_SRGB:              fmt = MTLPixelFormatRGBA8Unorm_sRGB; break;
-            case RHI_FORMAT_RGBA16_FLOAT:            fmt = MTLPixelFormatRGBA16Float; break;
-            case RHI_FORMAT_BGRA8_UNORM:             fmt = MTLPixelFormatBGRA8Unorm; break;
-            case RHI_FORMAT_DEPTH32_FLOAT:           fmt = MTLPixelFormatDepth32Float; break;
-            case RHI_FORMAT_DEPTH24_STENCIL8:        fmt = MTLPixelFormatDepth24Unorm_Stencil8; break;
-            case RHI_FORMAT_RG16_UNORM:              fmt = MTLPixelFormatRG16Unorm; break;
-            case RHI_FORMAT_RG32_UINT:               fmt = MTLPixelFormatRG32Uint; break;
-            case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:     fmt = MTLPixelFormatBC1_RGBA; break;
-            case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:    fmt = MTLPixelFormatBC1_RGBA; break;
-            case RHI_FORMAT_BC3_UNORM_BLOCK:         fmt = MTLPixelFormatBC3_RGBA; break;
-            case RHI_FORMAT_BC5_UNORM_BLOCK:         fmt = MTLPixelFormatBC5_RGUnorm; break;
-            case RHI_FORMAT_BC7_UNORM_BLOCK:         fmt = MTLPixelFormatBC7_RGBAUnorm; break;
-            case RHI_FORMAT_ETC2_RGB8_UNORM_BLOCK:   fmt = MTLPixelFormatETC2_RGB8; break;
-            case RHI_FORMAT_ASTC_4x4_UNORM_BLOCK:    fmt = MTLPixelFormatASTC_4x4_LDR; break;
-            default: break;
-        }
-        NSUInteger mip_count = desc->mip_levels > 0 ? desc->mip_levels : 1;
-        MTLTextureDescriptor* td =
-            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt
-                                                               width:desc->width
-                                                              height:desc->height
-                                                           mipmapped:(mip_count > 1)];
-        td.mipmapLevelCount = mip_count;
-        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-        td.storageMode = MTLStorageModePrivate; // Must match heap
-        id<MTLTexture> tex = [hi->heap newTextureWithDescriptor:td offset:offset];
-        if (!tex) return -1;
-        RhiTextureImpl* ti = new RhiTextureImpl();
-        ti->tex = tex;
-        ti->drawable = nil;
-        ti->queue = nullptr;
-        ti->iosurface = nullptr;
-        ti->format = desc->format;
-        *out = reinterpret_cast<RhiTexture*>(ti);
-        return 0;
-    }
-}
-
-static int32_t metal_create_buffer_from_heap(RhiDevice* d, RhiHeap* h, const RhiBufferDesc* desc, uint64_t offset, RhiBuffer** out) {
-    @autoreleasepool {
-        RhiHeapImpl* hi = reinterpret_cast<RhiHeapImpl*>(h);
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        MTLSizeAndAlign sa = [di->device heapBufferSizeAndAlignWithLength:desc->size options:MTLResourceStorageModePrivate];
-        NSUInteger alignedSize = (sa.size + sa.align - 1) & ~(sa.align - 1);
-        id<MTLBuffer> buf = [hi->heap newBufferWithLength:alignedSize options:MTLResourceStorageModePrivate offset:offset];
-        if (!buf) {
-            ENGINE_LOG_ERROR("rhi_metal", "metal_create_buffer_from_heap failed: desc->size=%llu, offset=%llu, sa.size=%llu, sa.align=%llu, alignedSize=%llu, heap.size=%llu", (unsigned long long)desc->size, (unsigned long long)offset, (unsigned long long)sa.size, (unsigned long long)sa.align, (unsigned long long)alignedSize, (unsigned long long)[hi->heap size]);
-            return -1;
-        }
-        RhiBufferImpl* bi = new RhiBufferImpl();
-        bi->buf = buf;
-        bi->readback_queue = di->queue_graphics;
-        *out = reinterpret_cast<RhiBuffer*>(bi);
-        return 0;
-    }
-}
-
-static int32_t metal_create_fence(RhiDevice* device, RhiFence** out) {
-    @autoreleasepool {
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(device);
-        id<MTLSharedEvent> event = [di->device newSharedEvent];
-        if (!event) return -1;
-        RhiFenceImpl* fi = new RhiFenceImpl();
-        fi->event = event;
-        *out = reinterpret_cast<RhiFence*>(fi);
-        return 0;
-    }
-}
-
-static int32_t metal_create_timestamp_query_pool(
-    RhiDevice* device, uint32_t sample_count, RhiTimestampQueryPool** out) {
-    if (!device || !out || sample_count == 0) return -1;
-    if (@available(macOS 11.0, iOS 14.0, *)) {
-        @autoreleasepool {
-            RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(device);
-            id<MTLCounterSet> timestamp_set = nil;
-            for (id<MTLCounterSet> counter_set in di->device.counterSets) {
-                if ([counter_set.name isEqualToString:MTLCommonCounterSetTimestamp]) {
-                    timestamp_set = counter_set;
-                    break;
-                }
-            }
-            bool supports_draw =
-                [di->device supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
-            bool supports_dispatch =
-                [di->device supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
-            bool supports_stage =
-                [di->device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary];
-
-            id<MTLCounterSampleBuffer> samples = nil;
-            id<MTLBuffer> results = nil;
-            if (timestamp_set &&
-                (supports_stage || supports_draw || supports_dispatch)) {
-                MTLCounterSampleBufferDescriptor* descriptor =
-                    [[MTLCounterSampleBufferDescriptor alloc] init];
-                descriptor.counterSet = timestamp_set;
-                descriptor.storageMode = MTLStorageModePrivate;
-                descriptor.sampleCount = sample_count;
-                descriptor.label = @"Quick3D Render Graph Timestamps";
-
-                NSError* error = nil;
-                samples =
-                    [di->device newCounterSampleBufferWithDescriptor:descriptor error:&error];
-                results = [di->device
-                    newBufferWithLength:sizeof(MTLCounterResultTimestamp) * sample_count
-                               options:MTLResourceStorageModeShared];
-                if (!samples || !results) {
-                    const char* error_message = error
-                        ? error.localizedDescription.UTF8String
-                        : "allocation failed";
-                    ENGINE_LOG_WARN(
-                        "rhi_metal",
-                        "per-pass timestamp counters unavailable: %s",
-                        error_message);
-                    samples = nil;
-                    results = nil;
-                }
-            }
-
-            RhiTimestampQueryPoolImpl* pool = new RhiTimestampQueryPoolImpl();
-            pool->samples = samples;
-            pool->results = results;
-            pool->pending = nil;
-            pool->sampled.resize(sample_count, 0);
-            pool->sample_roles.resize(sample_count, 0);
-            pool->sample_count = sample_count;
-            pool->samples_per_duration = 2;
-            pool->resolved_count = 0;
-            pool->supports_stage_sampling = supports_stage;
-            pool->supports_draw_sampling = supports_draw;
-            pool->supports_dispatch_sampling = supports_dispatch;
-            pool->cpu_reference_start = 0;
-            pool->gpu_reference_start = 0;
-            *out = reinterpret_cast<RhiTimestampQueryPool*>(pool);
-            return 0;
-        }
-    }
-    return -1;
-}
-
-static int32_t metal_timestamp_query_pool_set_samples_per_duration(
-    RhiTimestampQueryPool* pool, uint32_t sample_count) {
-    if (!pool || sample_count < 2 || (sample_count & 1u) != 0) return -1;
-    RhiTimestampQueryPoolImpl* pi =
-        reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
-    if (pi->pending || pi->sample_count % sample_count != 0) return -1;
-    pi->samples_per_duration = sample_count;
     return 0;
+  }
+}
+
+static int32_t metal_create_graphics_pipeline(
+    RhiDevice *d, const RhiGraphicsPipelineDesc *desc, RhiPipeline **out) {
+  if (!out)
+    return -1;
+  @autoreleasepool {
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+    if (!di) {
+      ENGINE_LOG_ERROR("rhi_metal", "graphics_pipeline: null device handle");
+      return -1;
+    }
+    // MARK: null-guard vs/fs. The C# wrapper now filters disposed
+    // shaders but a stale in-flight native request (e.g. an
+    // orphaned Task that outlived the plugin that scheduled it)
+    // can still arrive here with desc->vertex_shader or
+    // desc->fragment_shader == NULL. Returning a tagged error
+    // (vs -2 missing-vs -3 missing-fs) surfaces the real cause in
+    // the engine log instead of an opaque SIGSEGV @ 0x8.
+    RhiShaderImpl *vs = reinterpret_cast<RhiShaderImpl *>(desc->vertex_shader);
+    RhiShaderImpl *fs =
+        reinterpret_cast<RhiShaderImpl *>(desc->fragment_shader);
+    if (!vs) {
+      ENGINE_LOG_ERROR("rhi_metal",
+                       "graphics_pipeline: null vertex_shader handle");
+      return -2;
+    }
+    if (!fs) {
+      ENGINE_LOG_ERROR("rhi_metal",
+                       "graphics_pipeline: null fragment_shader handle");
+      return -3;
+    }
+    MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+    pd.vertexFunction = vs->fn;
+    pd.fragmentFunction = fs->fn;
+    RhiTextureFormat color_formats[4] = {
+        desc->color_attachment_format, RHI_FORMAT_UNDEFINED,
+        RHI_FORMAT_UNDEFINED, RHI_FORMAT_UNDEFINED};
+    uint32_t color_count =
+        desc->color_attachment_format == RHI_FORMAT_UNDEFINED ? 0u : 1u;
+    if (desc->abi >= 5u) {
+      color_formats[1] = desc->color_attachment_format_1;
+      color_formats[2] = desc->color_attachment_format_2;
+      color_formats[3] = desc->color_attachment_format_3;
+      color_count =
+          desc->color_attachment_count > 4u ? 4u : desc->color_attachment_count;
+    }
+    for (uint32_t color_index = 0u; color_index < color_count; ++color_index) {
+      MTLPixelFormat color = MTLPixelFormatInvalid;
+      switch (color_formats[color_index]) {
+      case RHI_FORMAT_RGBA8_UNORM:
+        color = MTLPixelFormatRGBA8Unorm;
+        break;
+      case RHI_FORMAT_BGRA8_UNORM:
+        color = MTLPixelFormatBGRA8Unorm;
+        break;
+      case RHI_FORMAT_RGBA8_SRGB:
+        color = MTLPixelFormatRGBA8Unorm_sRGB;
+        break;
+      case RHI_FORMAT_RGBA16_FLOAT:
+        color = MTLPixelFormatRGBA16Float;
+        break;
+      case RHI_FORMAT_RG16_UNORM:
+        color = MTLPixelFormatRG16Unorm;
+        break;
+      case RHI_FORMAT_RG32_UINT:
+        color = MTLPixelFormatRG32Uint;
+        break;
+      default:
+        break;
+      }
+      pd.colorAttachments[color_index].pixelFormat = color;
+    }
+    if (desc->enable_blend) {
+      pd.colorAttachments[0].blendingEnabled = YES;
+      pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+      pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+      pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+      pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+      pd.colorAttachments[0].destinationRGBBlendFactor =
+          MTLBlendFactorOneMinusSourceAlpha;
+      pd.colorAttachments[0].destinationAlphaBlendFactor =
+          MTLBlendFactorOneMinusSourceAlpha;
+    }
+    pd.depthAttachmentPixelFormat =
+        desc->enable_depth ? MTLPixelFormatDepth32Float : MTLPixelFormatInvalid;
+    NSError *err = nil;
+    id<MTLRenderPipelineState> state =
+        [di->device newRenderPipelineStateWithDescriptor:pd error:&err];
+    if (!state) {
+      ENGINE_LOG_ERROR("rhi_metal", "pipeline: %s",
+                       [[err localizedDescription] UTF8String]);
+      return -1;
+    }
+    RhiPipelineImpl *pi = new RhiPipelineImpl();
+    pi->g = state;
+    pi->c = nil;
+    pi->depth_stencil = nil;
+    if (desc->enable_depth) {
+      MTLDepthStencilDescriptor *depth_desc =
+          [[MTLDepthStencilDescriptor alloc] init];
+      depth_desc.depthCompareFunction =
+          desc->depth_compare == RHI_COMPARE_ALWAYS
+              ? MTLCompareFunctionAlways
+              : MTLCompareFunctionLessEqual;
+      depth_desc.depthWriteEnabled = desc->enable_depth_write ? YES : NO;
+      pi->depth_stencil =
+          [di->device newDepthStencilStateWithDescriptor:depth_desc];
+    }
+    if (desc->primitive_topology == 1 /* RHI_TOPOLOGY_LINE_LIST */) {
+      pi->primitive_type = MTLPrimitiveTypeLine;
+    } else {
+      pi->primitive_type = MTLPrimitiveTypeTriangle;
+    }
+    *out = reinterpret_cast<RhiPipeline *>(pi);
+    return 0;
+  }
+}
+
+static int32_t metal_create_compute_pipeline(RhiDevice *d,
+                                             const RhiComputePipelineDesc *desc,
+                                             RhiPipeline **out) {
+  if (!out)
+    return -1;
+  @autoreleasepool {
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+    if (!di) {
+      ENGINE_LOG_ERROR("rhi_metal", "compute_pipeline: null device handle");
+      return -1;
+    }
+    // MARK: null-guard cs. The C# RhiPipeline.CreateCompute
+    // wrapper now throws ObjectDisposedException when the shader
+    // was already disposed at P/Invoke start, but an orphan in-
+    // flight background Task (DDGI placement-pass constructor
+    // outliving the plugin that scheduled its ConstructPassWith-
+    // Timeout wrapper) can still reach here with
+    // desc->compute_shader == NULL. Returning -2 surfaces the
+    // missing-shader cause in the engine log instead of the opaque
+    // EXC_BAD_ACCESS we used to see at cs->fn offset 0x8.
+    RhiShaderImpl *cs = reinterpret_cast<RhiShaderImpl *>(desc->compute_shader);
+    if (!cs) {
+      ENGINE_LOG_ERROR("rhi_metal",
+                       "compute_pipeline: null compute_shader handle");
+      return -2;
+    }
+    NSError *err = nil;
+    id<MTLComputePipelineState> state =
+        [di->device newComputePipelineStateWithFunction:cs->fn error:&err];
+    if (!state) {
+      ENGINE_LOG_ERROR("rhi_metal", "compute pipeline: %s",
+                       [[err localizedDescription] UTF8String]);
+      return -1;
+    }
+    RhiPipelineImpl *pi = new RhiPipelineImpl();
+    pi->g = nil;
+    pi->c = state;
+    pi->depth_stencil = nil;
+    *out = reinterpret_cast<RhiPipeline *>(pi);
+    return 0;
+  }
+}
+
+static int32_t metal_create_heap(RhiDevice *d, const RhiHeapDesc *desc,
+                                 RhiHeap **out) {
+  @autoreleasepool {
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+    MTLHeapDescriptor *hd = [MTLHeapDescriptor new];
+    hd.size = desc->size;
+    hd.storageMode = MTLStorageModePrivate; // Default for GPU sub-allocations
+    if (@available(macOS 10.15, iOS 13.0, *)) {
+      hd.type = (desc->usage_flags & RHI_HEAP_USAGE_SPARSE)
+                    ? MTLHeapTypeSparse
+                    : MTLHeapTypePlacement;
+    }
+    if (desc->usage_flags & RHI_HEAP_USAGE_RENDER_TARGET) {
+      // No strict flags needed in Metal for this aside from sizing, but we can
+      // set properties if required
+    }
+    id<MTLHeap> heap = [di->device newHeapWithDescriptor:hd];
+    if (!heap)
+      return -1;
+    RhiHeapImpl *hi = new RhiHeapImpl();
+    hi->heap = heap;
+    *out = reinterpret_cast<RhiHeap *>(hi);
+    return 0;
+  }
+}
+
+static int32_t metal_create_texture_from_heap(RhiDevice *d, RhiHeap *h,
+                                              const RhiTextureDesc *desc,
+                                              uint64_t offset,
+                                              RhiTexture **out) {
+  @autoreleasepool {
+    RhiHeapImpl *hi = reinterpret_cast<RhiHeapImpl *>(h);
+    MTLPixelFormat fmt = MTLPixelFormatBGRA8Unorm;
+    switch (desc->format) {
+    case RHI_FORMAT_RGBA8_UNORM:
+      fmt = MTLPixelFormatRGBA8Unorm;
+      break;
+    case RHI_FORMAT_RGBA8_SRGB:
+      fmt = MTLPixelFormatRGBA8Unorm_sRGB;
+      break;
+    case RHI_FORMAT_RGBA16_FLOAT:
+      fmt = MTLPixelFormatRGBA16Float;
+      break;
+    case RHI_FORMAT_BGRA8_UNORM:
+      fmt = MTLPixelFormatBGRA8Unorm;
+      break;
+    case RHI_FORMAT_DEPTH32_FLOAT:
+      fmt = MTLPixelFormatDepth32Float;
+      break;
+    case RHI_FORMAT_DEPTH24_STENCIL8:
+      fmt = MTLPixelFormatDepth24Unorm_Stencil8;
+      break;
+    case RHI_FORMAT_RG16_UNORM:
+      fmt = MTLPixelFormatRG16Unorm;
+      break;
+    case RHI_FORMAT_RG32_UINT:
+      fmt = MTLPixelFormatRG32Uint;
+      break;
+    case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:
+      fmt = MTLPixelFormatBC1_RGBA;
+      break;
+    case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:
+      fmt = MTLPixelFormatBC1_RGBA;
+      break;
+    case RHI_FORMAT_BC3_UNORM_BLOCK:
+      fmt = MTLPixelFormatBC3_RGBA;
+      break;
+    case RHI_FORMAT_BC5_UNORM_BLOCK:
+      fmt = MTLPixelFormatBC5_RGUnorm;
+      break;
+    case RHI_FORMAT_BC7_UNORM_BLOCK:
+      fmt = MTLPixelFormatBC7_RGBAUnorm;
+      break;
+    case RHI_FORMAT_ETC2_RGB8_UNORM_BLOCK:
+      fmt = MTLPixelFormatETC2_RGB8;
+      break;
+    case RHI_FORMAT_ASTC_4x4_UNORM_BLOCK:
+      fmt = MTLPixelFormatASTC_4x4_LDR;
+      break;
+    default:
+      break;
+    }
+    NSUInteger mip_count = desc->mip_levels > 0 ? desc->mip_levels : 1;
+    MTLTextureDescriptor *td = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:fmt
+                                     width:desc->width
+                                    height:desc->height
+                                 mipmapped:(mip_count > 1)];
+    td.mipmapLevelCount = mip_count;
+    td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    td.storageMode = MTLStorageModePrivate; // Must match heap
+    id<MTLTexture> tex = [hi->heap newTextureWithDescriptor:td offset:offset];
+    if (!tex)
+      return -1;
+    RhiTextureImpl *ti = new RhiTextureImpl();
+    ti->tex = tex;
+    ti->drawable = nil;
+    ti->queue = nullptr;
+    ti->iosurface = nullptr;
+    ti->format = desc->format;
+    *out = reinterpret_cast<RhiTexture *>(ti);
+    return 0;
+  }
+}
+
+static int32_t metal_create_buffer_from_heap(RhiDevice *d, RhiHeap *h,
+                                             const RhiBufferDesc *desc,
+                                             uint64_t offset, RhiBuffer **out) {
+  @autoreleasepool {
+    RhiHeapImpl *hi = reinterpret_cast<RhiHeapImpl *>(h);
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+    MTLSizeAndAlign sa = [di->device
+        heapBufferSizeAndAlignWithLength:desc->size
+                                 options:MTLResourceStorageModePrivate];
+    NSUInteger alignedSize = (sa.size + sa.align - 1) & ~(sa.align - 1);
+    id<MTLBuffer> buf =
+        [hi->heap newBufferWithLength:alignedSize
+                              options:MTLResourceStorageModePrivate
+                               offset:offset];
+    if (!buf) {
+      ENGINE_LOG_ERROR(
+          "rhi_metal",
+          "metal_create_buffer_from_heap failed: desc->size=%llu, offset=%llu, "
+          "sa.size=%llu, sa.align=%llu, alignedSize=%llu, heap.size=%llu",
+          (unsigned long long)desc->size, (unsigned long long)offset,
+          (unsigned long long)sa.size, (unsigned long long)sa.align,
+          (unsigned long long)alignedSize, (unsigned long long)[hi->heap size]);
+      return -1;
+    }
+    RhiBufferImpl *bi = new RhiBufferImpl();
+    bi->buf = buf;
+    bi->readback_queue = di->queue_graphics;
+    *out = reinterpret_cast<RhiBuffer *>(bi);
+    return 0;
+  }
+}
+
+static void metal_bind_sparse_texture_memory(RhiDevice *d, RhiTexture *tex,
+                                             const RhiSparseBindRegion *binds,
+                                             uint32_t bind_count) {
+  @autoreleasepool {
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+    RhiTextureImpl *ti = reinterpret_cast<RhiTextureImpl *>(tex);
+
+    id<MTLCommandBuffer> cb = [di->queue_graphics commandBuffer];
+    id<MTLResourceStateCommandEncoder> enc = [cb resourceStateCommandEncoder];
+
+    for (uint32_t i = 0; i < bind_count; i++) {
+      MTLRegion region = MTLRegionMake3D(binds[i].x_offset, binds[i].y_offset,
+                                         binds[i].z_offset, binds[i].width,
+                                         binds[i].height, binds[i].depth);
+
+      [enc updateTextureMapping:ti->tex
+                           mode:MTLSparseTextureMappingModeMap
+                         region:region
+                       mipLevel:binds[i].mip_level
+                          slice:binds[i].array_layer];
+    }
+    [enc endEncoding];
+    [cb commit];
+  }
+}
+
+static int32_t metal_create_fence(RhiDevice *device, RhiFence **out) {
+  @autoreleasepool {
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(device);
+    id<MTLSharedEvent> event = [di->device newSharedEvent];
+    if (!event)
+      return -1;
+    RhiFenceImpl *fi = new RhiFenceImpl();
+    fi->event = event;
+    *out = reinterpret_cast<RhiFence *>(fi);
+    return 0;
+  }
+}
+
+static int32_t metal_create_timestamp_query_pool(RhiDevice *device,
+                                                 uint32_t sample_count,
+                                                 RhiTimestampQueryPool **out) {
+  if (!device || !out || sample_count == 0)
+    return -1;
+  if (@available(macOS 11.0, iOS 14.0, *)) {
+    @autoreleasepool {
+      RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(device);
+      id<MTLCounterSet> timestamp_set = nil;
+      for (id<MTLCounterSet> counter_set in di->device.counterSets) {
+        if ([counter_set.name isEqualToString:MTLCommonCounterSetTimestamp]) {
+          timestamp_set = counter_set;
+          break;
+        }
+      }
+      bool supports_draw = [di->device
+          supportsCounterSampling:MTLCounterSamplingPointAtDrawBoundary];
+      bool supports_dispatch = [di->device
+          supportsCounterSampling:MTLCounterSamplingPointAtDispatchBoundary];
+      bool supports_stage = [di->device
+          supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary];
+
+      id<MTLCounterSampleBuffer> samples = nil;
+      id<MTLBuffer> results = nil;
+      if (timestamp_set &&
+          (supports_stage || supports_draw || supports_dispatch)) {
+        MTLCounterSampleBufferDescriptor *descriptor =
+            [[MTLCounterSampleBufferDescriptor alloc] init];
+        descriptor.counterSet = timestamp_set;
+        descriptor.storageMode = MTLStorageModePrivate;
+        descriptor.sampleCount = sample_count;
+        descriptor.label = @"Quick3D Render Graph Timestamps";
+
+        NSError *error = nil;
+        samples = [di->device newCounterSampleBufferWithDescriptor:descriptor
+                                                             error:&error];
+        results = [di->device
+            newBufferWithLength:sizeof(MTLCounterResultTimestamp) * sample_count
+                        options:MTLResourceStorageModeShared];
+        if (!samples || !results) {
+          const char *error_message =
+              error ? error.localizedDescription.UTF8String
+                    : "allocation failed";
+          ENGINE_LOG_WARN("rhi_metal",
+                          "per-pass timestamp counters unavailable: %s",
+                          error_message);
+          samples = nil;
+          results = nil;
+        }
+      }
+
+      RhiTimestampQueryPoolImpl *pool = new RhiTimestampQueryPoolImpl();
+      pool->samples = samples;
+      pool->results = results;
+      pool->pending = nil;
+      pool->sampled.resize(sample_count, 0);
+      pool->sample_roles.resize(sample_count, 0);
+      pool->sample_count = sample_count;
+      pool->samples_per_duration = 2;
+      pool->resolved_count = 0;
+      pool->supports_stage_sampling = supports_stage;
+      pool->supports_draw_sampling = supports_draw;
+      pool->supports_dispatch_sampling = supports_dispatch;
+      pool->cpu_reference_start = 0;
+      pool->gpu_reference_start = 0;
+      *out = reinterpret_cast<RhiTimestampQueryPool *>(pool);
+      return 0;
+    }
+  }
+  return -1;
+}
+
+static int32_t
+metal_timestamp_query_pool_set_samples_per_duration(RhiTimestampQueryPool *pool,
+                                                    uint32_t sample_count) {
+  if (!pool || sample_count < 2 || (sample_count & 1u) != 0)
+    return -1;
+  RhiTimestampQueryPoolImpl *pi =
+      reinterpret_cast<RhiTimestampQueryPoolImpl *>(pool);
+  if (pi->pending || pi->sample_count % sample_count != 0)
+    return -1;
+  pi->samples_per_duration = sample_count;
+  return 0;
 }
 
 struct RhiSamplerImpl {
-    id<MTLSamplerState> samp;
+  id<MTLSamplerState> samp;
 };
 
 // Cached MTLDepthStencilState used by every render pass that has a depth
@@ -1231,1502 +1415,1683 @@ struct RhiSamplerImpl {
 // showed through them.
 static __strong id<MTLDepthStencilState> g_depth_stencil_state_write = nil;
 static __strong id<MTLDepthStencilState> g_depth_stencil_state_no_write = nil;
-static __weak id<MTLDevice>             g_dss_owner_device = nil;
+static __weak id<MTLDevice> g_dss_owner_device = nil;
 
-static id<MTLDepthStencilState> GetOrCreateDepthStencilState(
-    id<MTLDevice> device,
-    bool enable_depth_write) {
-    @autoreleasepool {
-        if (g_dss_owner_device != device) {
-            g_depth_stencil_state_write = nil;
-            g_depth_stencil_state_no_write = nil;
-            g_dss_owner_device = device;
+static id<MTLDepthStencilState>
+GetOrCreateDepthStencilState(id<MTLDevice> device, bool enable_depth_write) {
+  @autoreleasepool {
+    if (g_dss_owner_device != device) {
+      g_depth_stencil_state_write = nil;
+      g_depth_stencil_state_no_write = nil;
+      g_dss_owner_device = device;
+    }
+
+    if (enable_depth_write && g_depth_stencil_state_write)
+      return g_depth_stencil_state_write;
+    if (!enable_depth_write && g_depth_stencil_state_no_write)
+      return g_depth_stencil_state_no_write;
+
+    MTLDepthStencilDescriptor *dsd = [[MTLDepthStencilDescriptor alloc] init];
+    dsd.depthCompareFunction = MTLCompareFunctionLessEqual;
+    dsd.depthWriteEnabled = enable_depth_write ? YES : NO;
+    dsd.backFaceStencil = nil;
+    dsd.frontFaceStencil = nil;
+    id<MTLDepthStencilState> s =
+        [device newDepthStencilStateWithDescriptor:dsd];
+    if (!s)
+      return nil;
+
+    if (enable_depth_write)
+      g_depth_stencil_state_write = s;
+    else
+      g_depth_stencil_state_no_write = s;
+
+    return s;
+  }
+}
+
+static void metal_destroy_buffer(RhiBuffer *b) {
+  if (!b)
+    return;
+  delete reinterpret_cast<RhiBufferImpl *>(b);
+}
+static void metal_destroy_texture(RhiTexture *tex) {
+  if (!tex)
+    return;
+  {
+    std::lock_guard<std::mutex> lock(g_bindless_mutex);
+    for (auto *hi : g_bindless_heaps) {
+      std::lock_guard<std::mutex> hlock(hi->mutex);
+      auto it = hi->texture_to_slot.find(tex);
+      if (it != hi->texture_to_slot.end()) {
+        uint32_t slot = it->second;
+        if (hi->arg_encoder && hi->arg_buffer) {
+          [hi->arg_encoder setArgumentBuffer:hi->arg_buffer offset:0];
+          [hi->arg_encoder setTexture:nil atIndex:slot];
         }
-
-        if (enable_depth_write && g_depth_stencil_state_write) return g_depth_stencil_state_write;
-        if (!enable_depth_write && g_depth_stencil_state_no_write) return g_depth_stencil_state_no_write;
-
-        MTLDepthStencilDescriptor* dsd = [[MTLDepthStencilDescriptor alloc] init];
-        dsd.depthCompareFunction = MTLCompareFunctionLessEqual;
-        dsd.depthWriteEnabled    = enable_depth_write ? YES : NO;
-        dsd.backFaceStencil      = nil;
-        dsd.frontFaceStencil     = nil;
-        id<MTLDepthStencilState> s = [device newDepthStencilStateWithDescriptor:dsd];
-        if (!s) return nil;
-        
-        if (enable_depth_write) g_depth_stencil_state_write = s;
-        else g_depth_stencil_state_no_write = s;
-
-        return s;
-    }
-}
-
-static void metal_destroy_buffer(RhiBuffer* b) {
-    if (!b) return;
-    delete reinterpret_cast<RhiBufferImpl*>(b);
-}
-static void metal_destroy_texture(RhiTexture* tex) {
-    if (!tex) return;
-    {
-        std::lock_guard<std::mutex> lock(g_bindless_mutex);
-        for (auto* hi : g_bindless_heaps) {
-            std::lock_guard<std::mutex> hlock(hi->mutex);
-            auto it = hi->texture_to_slot.find(tex);
-            if (it != hi->texture_to_slot.end()) {
-                uint32_t slot = it->second;
-                if (hi->arg_encoder && hi->arg_buffer) {
-                    [hi->arg_encoder setArgumentBuffer:hi->arg_buffer offset:0];
-                    [hi->arg_encoder setTexture:nil atIndex:slot];
-                }
-                hi->texture_to_slot.erase(it);
-                if (slot < hi->slot_to_texture.size()) {
-                    hi->slot_to_texture[slot] = nullptr;
-                    hi->slot_to_resource[slot] = nil;
-                }
-                hi->free_list.push_back(slot);
-                hi->resident_cache_dirty = true;
-            }
+        hi->texture_to_slot.erase(it);
+        if (slot < hi->slot_to_texture.size()) {
+          hi->slot_to_texture[slot] = nullptr;
+          hi->slot_to_resource[slot] = nil;
         }
+        hi->free_list.push_back(slot);
+        hi->resident_cache_dirty = true;
+      }
     }
-    RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(tex);
-    ti->tex = nil;
-    if (ti->iosurface) {
-        CFRelease(ti->iosurface);
-        ti->iosurface = nullptr;
+  }
+  RhiTextureImpl *ti = reinterpret_cast<RhiTextureImpl *>(tex);
+  ti->tex = nil;
+  if (ti->iosurface) {
+    CFRelease(ti->iosurface);
+    ti->iosurface = nullptr;
+  }
+  delete ti;
+}
+
+static RhiSampler *metal_create_sampler(RhiDevice *d) {
+  RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+  MTLSamplerDescriptor *desc = [[MTLSamplerDescriptor alloc] init];
+  desc.minFilter = MTLSamplerMinMagFilterLinear;
+  desc.magFilter = MTLSamplerMinMagFilterLinear;
+  desc.mipFilter = MTLSamplerMipFilterLinear;
+  desc.sAddressMode = MTLSamplerAddressModeRepeat;
+  desc.tAddressMode = MTLSamplerAddressModeRepeat;
+  desc.rAddressMode = MTLSamplerAddressModeRepeat;
+  desc.maxAnisotropy = 16;
+
+  id<MTLSamplerState> s = [di->device newSamplerStateWithDescriptor:desc];
+  if (!s)
+    return nullptr;
+
+  RhiSamplerImpl *si = new RhiSamplerImpl();
+  si->samp = s;
+  return reinterpret_cast<RhiSampler *>(si);
+}
+
+static void metal_destroy_sampler(RhiSampler *samp) {
+  if (!samp)
+    return;
+  RhiSamplerImpl *si = reinterpret_cast<RhiSamplerImpl *>(samp);
+  si->samp = nil;
+  delete si;
+}
+
+static void metal_destroy_shader(RhiShader *p) {
+  if (!p)
+    return;
+  delete reinterpret_cast<RhiShaderImpl *>(p);
+}
+static void metal_destroy_pipeline(RhiPipeline *p) {
+  if (!p)
+    return;
+  delete reinterpret_cast<RhiPipelineImpl *>(p);
+}
+static void metal_destroy_heap(RhiHeap *h) {
+  if (!h)
+    return;
+  delete reinterpret_cast<RhiHeapImpl *>(h);
+}
+
+static void metal_destroy_fence(RhiFence *f) {
+  if (!f)
+    return;
+  delete reinterpret_cast<RhiFenceImpl *>(f);
+}
+
+static void metal_destroy_timestamp_query_pool(RhiTimestampQueryPool *pool) {
+  if (!pool)
+    return;
+  delete reinterpret_cast<RhiTimestampQueryPoolImpl *>(pool);
+}
+
+static int32_t metal_fence_export_external_handle(RhiFence *f,
+                                                  void **out_handle) {
+  if (!f || !out_handle)
+    return -1;
+  @autoreleasepool {
+    RhiFenceImpl *fi = reinterpret_cast<RhiFenceImpl *>(f);
+    if (!fi->event)
+      return -1;
+    *out_handle = (__bridge_retained void *)fi->event;
+    return 0;
+  }
+}
+
+static void metal_release_external_semaphore_handle(void *handle) {
+  if (!handle)
+    return;
+  @autoreleasepool {
+    CFRelease(handle);
+  }
+}
+
+static int32_t metal_buffer_upload(RhiBuffer *buf, const void *data,
+                                   uint64_t size) {
+  RhiBufferImpl *bi = reinterpret_cast<RhiBufferImpl *>(buf);
+  if (size > (uint64_t)[bi->buf length]) {
+    ENGINE_LOG_ERROR("rhi_metal", "upload exceeds buffer size (%llu > %llu)",
+                     (unsigned long long)size,
+                     (unsigned long long)[bi->buf length]);
+    return -1;
+  }
+  memcpy([bi->buf contents], data, (size_t)size);
+  return 0;
+}
+
+static int32_t metal_buffer_readback(RhiBuffer *buf, uint64_t offset_bytes,
+                                     void *out_bytes, uint64_t out_size) {
+  @autoreleasepool {
+    if (!buf || !out_bytes || out_size == 0)
+      return -1;
+
+    RhiBufferImpl *bi = reinterpret_cast<RhiBufferImpl *>(buf);
+    if (!bi->buf || offset_bytes > (uint64_t)bi->buf.length ||
+        out_size > (uint64_t)bi->buf.length - offset_bytes) {
+      ENGINE_LOG_ERROR("rhi_metal",
+                       "buffer readback range out of bounds (offset=%llu "
+                       "size=%llu length=%llu)",
+                       (unsigned long long)offset_bytes,
+                       (unsigned long long)out_size,
+                       (unsigned long long)bi->buf.length);
+      return -1;
     }
-    delete ti;
-}
 
-static RhiSampler* metal_create_sampler(RhiDevice* d) {
-    RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-    MTLSamplerDescriptor* desc = [[MTLSamplerDescriptor alloc] init];
-    desc.minFilter = MTLSamplerMinMagFilterLinear;
-    desc.magFilter = MTLSamplerMinMagFilterLinear;
-    desc.mipFilter = MTLSamplerMipFilterLinear;
-    desc.sAddressMode = MTLSamplerAddressModeRepeat;
-    desc.tAddressMode = MTLSamplerAddressModeRepeat;
-    desc.rAddressMode = MTLSamplerAddressModeRepeat;
-    desc.maxAnisotropy = 16;
-
-    id<MTLSamplerState> s = [di->device newSamplerStateWithDescriptor:desc];
-    if (!s) return nullptr;
-
-    RhiSamplerImpl* si = new RhiSamplerImpl();
-    si->samp = s;
-    return reinterpret_cast<RhiSampler*>(si);
-}
-
-static void metal_destroy_sampler(RhiSampler* samp) {
-    if (!samp) return;
-    RhiSamplerImpl* si = reinterpret_cast<RhiSamplerImpl*>(samp);
-    si->samp = nil;
-    delete si;
-}
-
-static void metal_destroy_shader(RhiShader* p) {
-    if (!p) return;
-    delete reinterpret_cast<RhiShaderImpl*>(p);
-}
-static void metal_destroy_pipeline(RhiPipeline* p) {
-    if (!p) return;
-    delete reinterpret_cast<RhiPipelineImpl*>(p);
-}
-static void metal_destroy_heap(RhiHeap* h) {
-    if (!h) return;
-    delete reinterpret_cast<RhiHeapImpl*>(h);
-}
-
-static void metal_destroy_fence(RhiFence* f) {
-    if (!f) return;
-    delete reinterpret_cast<RhiFenceImpl*>(f);
-}
-
-static void metal_destroy_timestamp_query_pool(RhiTimestampQueryPool* pool) {
-    if (!pool) return;
-    delete reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
-}
-
-static int32_t metal_fence_export_external_handle(RhiFence* f, void** out_handle) {
-    if (!f || !out_handle) return -1;
-    @autoreleasepool {
-        RhiFenceImpl* fi = reinterpret_cast<RhiFenceImpl*>(f);
-        if (!fi->event) return -1;
-        *out_handle = (__bridge_retained void*)fi->event;
-        return 0;
+    id<MTLBuffer> staging =
+        [bi->buf.device newBufferWithLength:(NSUInteger)out_size
+                                    options:MTLResourceStorageModeShared];
+    if (!staging) {
+      ENGINE_LOG_ERROR("rhi_metal",
+                       "buffer readback staging allocation failed (size=%llu)",
+                       (unsigned long long)out_size);
+      return -1;
     }
-}
 
-static void metal_release_external_semaphore_handle(void* handle) {
-    if (!handle) return;
-    @autoreleasepool {
-        CFRelease(handle);
+    id<MTLCommandQueue> queue = bi->readback_queue;
+    if (!queue) {
+      ENGINE_LOG_ERROR("rhi_metal",
+                       "buffer readback command queue unavailable");
+      return -1;
     }
+
+    id<MTLCommandBuffer> command_buffer = [queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [command_buffer blitCommandEncoder];
+    [blit copyFromBuffer:bi->buf
+             sourceOffset:(NSUInteger)offset_bytes
+                 toBuffer:staging
+        destinationOffset:0
+                     size:(NSUInteger)out_size];
+    [blit endEncoding];
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
+
+    if (command_buffer.status != MTLCommandBufferStatusCompleted) {
+      ENGINE_LOG_ERROR("rhi_metal", "buffer readback blit failed (status=%ld)",
+                       (long)command_buffer.status);
+      return -1;
+    }
+
+    memcpy(out_bytes, staging.contents, (size_t)out_size);
+    return 0;
+  }
 }
 
-static int32_t metal_buffer_upload(RhiBuffer* buf, const void* data, uint64_t size) {
-    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
-    if (size > (uint64_t)[bi->buf length]) {
-        ENGINE_LOG_ERROR("rhi_metal", "upload exceeds buffer size (%llu > %llu)",
-                         (unsigned long long)size,
-                         (unsigned long long)[bi->buf length]);
+static int32_t metal_buffer_read_mapped(RhiBuffer *buf, uint64_t offset_bytes,
+                                        void *out_bytes, uint64_t out_size) {
+  @autoreleasepool {
+    if (!buf || !out_bytes || out_size == 0)
+      return -1;
+    RhiBufferImpl *bi = reinterpret_cast<RhiBufferImpl *>(buf);
+    if (!bi->buf || bi->buf.storageMode != MTLStorageModeShared ||
+        offset_bytes > (uint64_t)bi->buf.length ||
+        out_size > (uint64_t)bi->buf.length - offset_bytes) {
+      return -1;
+    }
+    memcpy(out_bytes, (const uint8_t *)bi->buf.contents + offset_bytes,
+           (size_t)out_size);
+    return 0;
+  }
+}
+
+static int32_t metal_texture_readback(RhiTexture *t, void *out,
+                                      uint64_t out_size, uint32_t stride) {
+  @autoreleasepool {
+    RhiTextureImpl *ti = reinterpret_cast<RhiTextureImpl *>(t);
+    NSUInteger h = ti->tex.height;
+    NSUInteger w = ti->tex.width;
+    if ((uint64_t)h * stride > out_size) {
+      ENGINE_LOG_ERROR("rhi_metal", "readback buffer too small");
+      return -1;
+    }
+    if (ti->tex.storageMode == MTLStorageModePrivate) {
+      if (!ti->queue) {
+        ENGINE_LOG_ERROR(
+            "rhi_metal",
+            "Cannot readback Private texture without a command queue");
         return -1;
+      }
+      id<MTLBuffer> readbackBuf =
+          [ti->tex.device newBufferWithLength:out_size
+                                      options:MTLResourceStorageModeShared];
+      id<MTLCommandBuffer> cb = [ti->queue commandBuffer];
+      id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+
+      [blit copyFromTexture:ti->tex
+                       sourceSlice:0
+                       sourceLevel:0
+                      sourceOrigin:MTLOriginMake(0, 0, 0)
+                        sourceSize:MTLSizeMake(w, h, 1)
+                          toBuffer:readbackBuf
+                 destinationOffset:0
+            destinationBytesPerRow:stride
+          destinationBytesPerImage:stride * h];
+
+#if TARGET_OS_OSX
+      if (readbackBuf.storageMode == MTLStorageModeManaged) {
+        [blit synchronizeResource:readbackBuf];
+      }
+#endif
+      [blit endEncoding];
+      [cb commit];
+      [cb waitUntilCompleted];
+
+      memcpy(out, [readbackBuf contents], out_size);
+    } else {
+      MTLRegion region = MTLRegionMake2D(0, 0, w, h);
+      [ti->tex getBytes:out bytesPerRow:stride fromRegion:region mipmapLevel:0];
     }
-    memcpy([bi->buf contents], data, (size_t)size);
     return 0;
+  }
 }
 
-static int32_t metal_buffer_readback(RhiBuffer* buf,
-                                       uint64_t offset_bytes,
-                                       void* out_bytes,
-                                       uint64_t out_size) {
-    @autoreleasepool {
-        if (!buf || !out_bytes || out_size == 0) return -1;
-
-        RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
-        if (!bi->buf || offset_bytes > (uint64_t)bi->buf.length ||
-            out_size > (uint64_t)bi->buf.length - offset_bytes) {
-            ENGINE_LOG_ERROR(
-                "rhi_metal",
-                "buffer readback range out of bounds (offset=%llu size=%llu length=%llu)",
-                (unsigned long long)offset_bytes,
-                (unsigned long long)out_size,
-                (unsigned long long)bi->buf.length);
-            return -1;
-        }
-
-        id<MTLBuffer> staging =
-            [bi->buf.device newBufferWithLength:(NSUInteger)out_size
-                                         options:MTLResourceStorageModeShared];
-        if (!staging) {
-            ENGINE_LOG_ERROR(
-                "rhi_metal",
-                "buffer readback staging allocation failed (size=%llu)",
-                (unsigned long long)out_size);
-            return -1;
-        }
-
-        id<MTLCommandQueue> queue = bi->readback_queue;
-        if (!queue) {
-            ENGINE_LOG_ERROR("rhi_metal", "buffer readback command queue unavailable");
-            return -1;
-        }
-
-        id<MTLCommandBuffer> command_buffer = [queue commandBuffer];
-        id<MTLBlitCommandEncoder> blit = [command_buffer blitCommandEncoder];
-        [blit copyFromBuffer:bi->buf
-                sourceOffset:(NSUInteger)offset_bytes
-                    toBuffer:staging
-           destinationOffset:0
-                        size:(NSUInteger)out_size];
-        [blit endEncoding];
-        [command_buffer commit];
-        [command_buffer waitUntilCompleted];
-
-        if (command_buffer.status != MTLCommandBufferStatusCompleted) {
-            ENGINE_LOG_ERROR(
-                "rhi_metal",
-                "buffer readback blit failed (status=%ld)",
-                (long)command_buffer.status);
-            return -1;
-        }
-
-        memcpy(out_bytes, staging.contents, (size_t)out_size);
-        return 0;
-    }
-}
-
-static int32_t metal_buffer_read_mapped(RhiBuffer* buf,
-                                         uint64_t offset_bytes,
-                                         void* out_bytes,
-                                         uint64_t out_size) {
-    @autoreleasepool {
-        if (!buf || !out_bytes || out_size == 0) return -1;
-        RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
-        if (!bi->buf || bi->buf.storageMode != MTLStorageModeShared ||
-            offset_bytes > (uint64_t)bi->buf.length ||
-            out_size > (uint64_t)bi->buf.length - offset_bytes) {
-            return -1;
-        }
-        memcpy(out_bytes,
-               (const uint8_t*)bi->buf.contents + offset_bytes,
-               (size_t)out_size);
-        return 0;
-    }
-}
-
-static int32_t metal_texture_readback(RhiTexture* t, void* out,
-                                        uint64_t out_size, uint32_t stride) {
-    @autoreleasepool {
-        RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(t);
-        NSUInteger h = ti->tex.height;
-        NSUInteger w = ti->tex.width;
-        if ((uint64_t)h * stride > out_size) {
-            ENGINE_LOG_ERROR("rhi_metal", "readback buffer too small");
-            return -1;
-        }
-        if (ti->tex.storageMode == MTLStorageModePrivate) {
-            if (!ti->queue) {
-                ENGINE_LOG_ERROR("rhi_metal", "Cannot readback Private texture without a command queue");
-                return -1;
-            }
-            id<MTLBuffer> readbackBuf = [ti->tex.device newBufferWithLength:out_size options:MTLResourceStorageModeShared];
-            id<MTLCommandBuffer> cb = [ti->queue commandBuffer];
-            id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-            
-            [blit copyFromTexture:ti->tex
-                      sourceSlice:0
-                      sourceLevel:0
-                     sourceOrigin:MTLOriginMake(0, 0, 0)
-                       sourceSize:MTLSizeMake(w, h, 1)
-                         toBuffer:readbackBuf
-                destinationOffset:0
-           destinationBytesPerRow:stride
-         destinationBytesPerImage:stride * h];
-            
+static int32_t metal_texture_upload(RhiTexture *t, const void *data,
+                                    uint64_t size, uint32_t stride) {
+  @autoreleasepool {
+    RhiTextureImpl *ti = reinterpret_cast<RhiTextureImpl *>(t);
+    if (!ti->tex)
+      return -1;
+    MTLRegion r = MTLRegionMake2D(0, 0, [ti->tex width], [ti->tex height]);
+    [ti->tex replaceRegion:r mipmapLevel:0 withBytes:data bytesPerRow:stride];
 #if TARGET_OS_OSX
-            if (readbackBuf.storageMode == MTLStorageModeManaged) {
-                [blit synchronizeResource:readbackBuf];
-            }
-#endif
-            [blit endEncoding];
-            [cb commit];
-            [cb waitUntilCompleted];
-            
-            memcpy(out, [readbackBuf contents], out_size);
-        } else {
-            MTLRegion region = MTLRegionMake2D(0, 0, w, h);
-            [ti->tex getBytes:out bytesPerRow:stride fromRegion:region mipmapLevel:0];
-        }
-        return 0;
+    if (ti->tex.storageMode == MTLStorageModeManaged && ti->queue) {
+      id<MTLCommandBuffer> cb = [ti->queue commandBuffer];
+      id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+      [blit synchronizeTexture:ti->tex slice:0 level:0];
+      [blit endEncoding];
+      [cb commit];
+      [cb waitUntilCompleted];
     }
-}
-
-static int32_t metal_texture_upload(RhiTexture* t, const void* data, uint64_t size, uint32_t stride) {
-    @autoreleasepool {
-        RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(t);
-        if (!ti->tex) return -1;
-        MTLRegion r = MTLRegionMake2D(0, 0, [ti->tex width], [ti->tex height]);
-        [ti->tex replaceRegion:r mipmapLevel:0 withBytes:data bytesPerRow:stride];
-#if TARGET_OS_OSX
-        if (ti->tex.storageMode == MTLStorageModeManaged && ti->queue) {
-            id<MTLCommandBuffer> cb = [ti->queue commandBuffer];
-            id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-            [blit synchronizeTexture:ti->tex slice:0 level:0];
-            [blit endEncoding];
-            [cb commit];
-            [cb waitUntilCompleted];
-        }
 #endif
-        return 0;
-    }
-}
-
-static int32_t metal_texture_upload_mip(RhiTexture* t, uint32_t mip_level, const void* data, uint64_t size, uint32_t stride) {
-    @autoreleasepool {
-        RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(t);
-        if (!ti->tex) return -1;
-
-        // For block-compressed formats the mip dimensions are clamped so the
-        // block grid never collapses below one block wide/tall. Metal
-        // requires bytesPerRow to be >= blocks_wide * bytes_per_block, so
-        // the loader passes a stride derived from max(1, dim / block_w).
-        NSUInteger mip_w = MAX((NSUInteger)1, [ti->tex width]  >> mip_level);
-        NSUInteger mip_h = MAX((NSUInteger)1, [ti->tex height] >> mip_level);
-        MTLRegion r = MTLRegionMake2D(0, 0, mip_w, mip_h);
-        [ti->tex replaceRegion:r mipmapLevel:mip_level withBytes:data bytesPerRow:stride];
-
-#if TARGET_OS_OSX
-        if (ti->tex.storageMode == MTLStorageModeManaged && ti->queue) {
-            id<MTLCommandBuffer> cb = [ti->queue commandBuffer];
-            id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-            [blit synchronizeTexture:ti->tex slice:0 level:mip_level];
-            [blit endEncoding];
-            [cb commit];
-            [cb waitUntilCompleted];
-        }
-#endif
-        return 0;
-    }
-}
-
-static int32_t metal_texture_export_external_image(RhiTexture* t, void** out_handle,
-                                                   uint32_t* out_width, uint32_t* out_height,
-                                                   RhiTextureFormat* out_format) {
-    if (!t || !out_handle) return -1;
-    RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(t);
-    if (!ti->iosurface) return -1;
-
-    CFRetain(ti->iosurface);
-    *out_handle = ti->iosurface;
-    if (out_width) *out_width = (uint32_t)ti->tex.width;
-    if (out_height) *out_height = (uint32_t)ti->tex.height;
-    if (out_format) *out_format = ti->format;
     return 0;
+  }
 }
 
-static void metal_release_external_image_handle(void* handle) {
-    if (!handle) return;
-    CFRelease((CFTypeRef)handle);
-}
+static int32_t metal_texture_upload_mip(RhiTexture *t, uint32_t mip_level,
+                                        const void *data, uint64_t size,
+                                        uint32_t stride) {
+  @autoreleasepool {
+    RhiTextureImpl *ti = reinterpret_cast<RhiTextureImpl *>(t);
+    if (!ti->tex)
+      return -1;
 
-static void metal_format_block_info(RhiTextureFormat fmt,
-                                     uint32_t* out_block_w,
-                                     uint32_t* out_block_h,
-                                     uint32_t* out_bytes_per_block) {
-    switch (fmt) {
-        case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:
-        case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:
-            if (out_block_w) *out_block_w = 4;
-            if (out_block_h) *out_block_h = 4;
-            if (out_bytes_per_block) *out_bytes_per_block = 8;
-            break;
-        case RHI_FORMAT_BC3_UNORM_BLOCK:
-        case RHI_FORMAT_BC5_UNORM_BLOCK:
-        case RHI_FORMAT_BC7_UNORM_BLOCK:
-            if (out_block_w) *out_block_w = 4;
-            if (out_block_h) *out_block_h = 4;
-            if (out_bytes_per_block) *out_bytes_per_block = 16;
-            break;
-        case RHI_FORMAT_ETC2_RGB8_UNORM_BLOCK:
-            if (out_block_w) *out_block_w = 4;
-            if (out_block_h) *out_block_h = 4;
-            if (out_bytes_per_block) *out_bytes_per_block = 8;
-            break;
-        case RHI_FORMAT_ASTC_4x4_UNORM_BLOCK:
-            if (out_block_w) *out_block_w = 4;
-            if (out_block_h) *out_block_h = 4;
-            if (out_bytes_per_block) *out_bytes_per_block = 16;
-            break;
-        default:
-            if (out_block_w) *out_block_w = 0;
-            if (out_block_h) *out_block_h = 0;
-            if (out_bytes_per_block) *out_bytes_per_block = 0;
-            break;
+    // For block-compressed formats the mip dimensions are clamped so the
+    // block grid never collapses below one block wide/tall. Metal
+    // requires bytesPerRow to be >= blocks_wide * bytes_per_block, so
+    // the loader passes a stride derived from max(1, dim / block_w).
+    NSUInteger mip_w = MAX((NSUInteger)1, [ti->tex width] >> mip_level);
+    NSUInteger mip_h = MAX((NSUInteger)1, [ti->tex height] >> mip_level);
+    MTLRegion r = MTLRegionMake2D(0, 0, mip_w, mip_h);
+    [ti->tex replaceRegion:r
+               mipmapLevel:mip_level
+                 withBytes:data
+               bytesPerRow:stride];
+
+#if TARGET_OS_OSX
+    if (ti->tex.storageMode == MTLStorageModeManaged && ti->queue) {
+      id<MTLCommandBuffer> cb = [ti->queue commandBuffer];
+      id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+      [blit synchronizeTexture:ti->tex slice:0 level:mip_level];
+      [blit endEncoding];
+      [cb commit];
+      [cb waitUntilCompleted];
     }
+#endif
+    return 0;
+  }
 }
 
-static RhiCommandList* metal_begin_cmdlist(RhiDevice* device, RhiQueueType queue) {
-    @autoreleasepool {
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(device);
-        id<MTLCommandQueue> q = (queue == RHI_QUEUE_COMPUTE) ? di->queue_compute : di->queue_graphics;
-        id<MTLCommandBuffer> cb = [q commandBuffer];
-        if (!cb) return nullptr;
-        RhiCommandListImpl* cli = new RhiCommandListImpl();
-        cli->buf = cb;
-        cli->timing_pool = nullptr;
-        cli->timing_next_sample_index = 0;
-        cli->timing_scope_end_index = 0;
-        cli->timing_end_requested = false;
-        return reinterpret_cast<RhiCommandList*>(cli);
-    }
+static int32_t
+metal_texture_export_external_image(RhiTexture *t, void **out_handle,
+                                    uint32_t *out_width, uint32_t *out_height,
+                                    RhiTextureFormat *out_format) {
+  if (!t || !out_handle)
+    return -1;
+  RhiTextureImpl *ti = reinterpret_cast<RhiTextureImpl *>(t);
+  if (!ti->iosurface)
+    return -1;
+
+  CFRetain(ti->iosurface);
+  *out_handle = ti->iosurface;
+  if (out_width)
+    *out_width = (uint32_t)ti->tex.width;
+  if (out_height)
+    *out_height = (uint32_t)ti->tex.height;
+  if (out_format)
+    *out_format = ti->format;
+  return 0;
 }
 
-static int32_t metal_submit_and_wait(RhiDevice* d, RhiCommandList* cl) {
-    @autoreleasepool {
-        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-        if (cli->drawable_to_present) {
-            [cli->buf presentDrawable:cli->drawable_to_present];
-        }
-        [cli->buf commit];
-        [cli->buf waitUntilCompleted];
-        delete cli;
-        return 0;
-    }
+static void metal_release_external_image_handle(void *handle) {
+  if (!handle)
+    return;
+  CFRelease((CFTypeRef)handle);
 }
 
-static int32_t metal_submit(RhiDevice* d, RhiCommandList* cl) {
-    @autoreleasepool {
-        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-        if (cli->drawable_to_present) {
-            [cli->buf presentDrawable:cli->drawable_to_present];
-        }
-        [cli->buf commit];
-        delete cli;
-        return 0;
-    }
-}static void metal_cmd_pipeline_barrier(RhiCommandList* cl, uint32_t count,
-                                         const RhiBarrier* barriers) {
-    // Metal handles pipeline barriers natively except on specific explicit memory
-    // hazards inside a single encoder. Between passes, it's a no-op on Metal.
+static void metal_format_block_info(RhiTextureFormat fmt, uint32_t *out_block_w,
+                                    uint32_t *out_block_h,
+                                    uint32_t *out_bytes_per_block) {
+  switch (fmt) {
+  case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:
+  case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:
+    if (out_block_w)
+      *out_block_w = 4;
+    if (out_block_h)
+      *out_block_h = 4;
+    if (out_bytes_per_block)
+      *out_bytes_per_block = 8;
+    break;
+  case RHI_FORMAT_BC3_UNORM_BLOCK:
+  case RHI_FORMAT_BC5_UNORM_BLOCK:
+  case RHI_FORMAT_BC7_UNORM_BLOCK:
+    if (out_block_w)
+      *out_block_w = 4;
+    if (out_block_h)
+      *out_block_h = 4;
+    if (out_bytes_per_block)
+      *out_bytes_per_block = 16;
+    break;
+  case RHI_FORMAT_ETC2_RGB8_UNORM_BLOCK:
+    if (out_block_w)
+      *out_block_w = 4;
+    if (out_block_h)
+      *out_block_h = 4;
+    if (out_bytes_per_block)
+      *out_bytes_per_block = 8;
+    break;
+  case RHI_FORMAT_ASTC_4x4_UNORM_BLOCK:
+    if (out_block_w)
+      *out_block_w = 4;
+    if (out_block_h)
+      *out_block_h = 4;
+    if (out_bytes_per_block)
+      *out_bytes_per_block = 16;
+    break;
+  default:
+    if (out_block_w)
+      *out_block_w = 0;
+    if (out_block_h)
+      *out_block_h = 0;
+    if (out_bytes_per_block)
+      *out_bytes_per_block = 0;
+    break;
+  }
 }
 
-static void metal_cmd_signal_fence(RhiCommandList* cl, RhiFence* f, uint64_t value) {
-    @autoreleasepool {
-        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-        RhiFenceImpl* fi = reinterpret_cast<RhiFenceImpl*>(f);
-        [cli->buf encodeSignalEvent:fi->event value:value];
-    }
+static RhiCommandList *metal_begin_cmdlist(RhiDevice *device,
+                                           RhiQueueType queue) {
+  @autoreleasepool {
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(device);
+    id<MTLCommandQueue> q =
+        (queue == RHI_QUEUE_COMPUTE) ? di->queue_compute : di->queue_graphics;
+    id<MTLCommandBuffer> cb = [q commandBuffer];
+    if (!cb)
+      return nullptr;
+    RhiCommandListImpl *cli = new RhiCommandListImpl();
+    cli->buf = cb;
+    cli->timing_pool = nullptr;
+    cli->timing_next_sample_index = 0;
+    cli->timing_scope_end_index = 0;
+    cli->timing_end_requested = false;
+    return reinterpret_cast<RhiCommandList *>(cli);
+  }
 }
 
-static void metal_cmd_wait_fence(RhiCommandList* cl, RhiFence* f, uint64_t value) {
-    @autoreleasepool {
-        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-        RhiFenceImpl* fi = reinterpret_cast<RhiFenceImpl*>(f);
-        [cli->buf encodeWaitForEvent:fi->event value:value];
+static int32_t metal_submit_and_wait(RhiDevice *d, RhiCommandList *cl) {
+  @autoreleasepool {
+    RhiCommandListImpl *cli = reinterpret_cast<RhiCommandListImpl *>(cl);
+    if (cli->drawable_to_present) {
+      [cli->buf presentDrawable:cli->drawable_to_present];
     }
+    [cli->buf commit];
+    [cli->buf waitUntilCompleted];
+    delete cli;
+    return 0;
+  }
 }
 
-static uint64_t metal_fence_get_completed_value(RhiFence* f) {
-    if (!f) return 0;
-    @autoreleasepool {
-        RhiFenceImpl* fi = reinterpret_cast<RhiFenceImpl*>(f);
-        return fi->event ? fi->event.signaledValue : 0;
+static int32_t metal_submit(RhiDevice *d, RhiCommandList *cl) {
+  @autoreleasepool {
+    RhiCommandListImpl *cli = reinterpret_cast<RhiCommandListImpl *>(cl);
+    if (cli->drawable_to_present) {
+      [cli->buf presentDrawable:cli->drawable_to_present];
     }
+    [cli->buf commit];
+    delete cli;
+    return 0;
+  }
+}
+static void metal_cmd_pipeline_barrier(RhiCommandList *cl, uint32_t count,
+                                       const RhiBarrier *barriers) {
+  // Metal handles pipeline barriers natively except on specific explicit memory
+  // hazards inside a single encoder. Between passes, it's a no-op on Metal.
+}
+
+static void metal_cmd_signal_fence(RhiCommandList *cl, RhiFence *f,
+                                   uint64_t value) {
+  @autoreleasepool {
+    RhiCommandListImpl *cli = reinterpret_cast<RhiCommandListImpl *>(cl);
+    RhiFenceImpl *fi = reinterpret_cast<RhiFenceImpl *>(f);
+    [cli->buf encodeSignalEvent:fi->event value:value];
+  }
+}
+
+static void metal_cmd_wait_fence(RhiCommandList *cl, RhiFence *f,
+                                 uint64_t value) {
+  @autoreleasepool {
+    RhiCommandListImpl *cli = reinterpret_cast<RhiCommandListImpl *>(cl);
+    RhiFenceImpl *fi = reinterpret_cast<RhiFenceImpl *>(f);
+    [cli->buf encodeWaitForEvent:fi->event value:value];
+  }
+}
+
+static uint64_t metal_fence_get_completed_value(RhiFence *f) {
+  if (!f)
+    return 0;
+  @autoreleasepool {
+    RhiFenceImpl *fi = reinterpret_cast<RhiFenceImpl *>(f);
+    return fi->event ? fi->event.signaledValue : 0;
+  }
 }
 
 static uint32_t metal_uncompressed_bytes_per_pixel(RhiTextureFormat format) {
-    switch (format) {
-        case RHI_FORMAT_RGBA8_UNORM:
-        case RHI_FORMAT_RGBA8_SRGB:
-        case RHI_FORMAT_BGRA8_UNORM:
-        case RHI_FORMAT_DEPTH32_FLOAT:
-        case RHI_FORMAT_DEPTH24_STENCIL8:
-        case RHI_FORMAT_RG16_UNORM:
-            return 4;
-        case RHI_FORMAT_RGBA16_FLOAT:
-        case RHI_FORMAT_RG32_UINT:
-            return 8;
-        default:
-            return 0;
-    }
+  switch (format) {
+  case RHI_FORMAT_RGBA8_UNORM:
+  case RHI_FORMAT_RGBA8_SRGB:
+  case RHI_FORMAT_BGRA8_UNORM:
+  case RHI_FORMAT_DEPTH32_FLOAT:
+  case RHI_FORMAT_DEPTH24_STENCIL8:
+  case RHI_FORMAT_RG16_UNORM:
+    return 4;
+  case RHI_FORMAT_RGBA16_FLOAT:
+  case RHI_FORMAT_RG32_UINT:
+    return 8;
+  default:
+    return 0;
+  }
 }
 
 static int32_t metal_cmd_copy_texture_to_buffer(
-    RhiCommandList* cl, RhiTexture* source,
-    uint32_t source_x, uint32_t source_y,
-    uint32_t width, uint32_t height,
-    uint32_t source_mip_level, RhiBuffer* destination,
+    RhiCommandList *cl, RhiTexture *source, uint32_t source_x,
+    uint32_t source_y, uint32_t width, uint32_t height,
+    uint32_t source_mip_level, RhiBuffer *destination,
     uint64_t destination_offset, uint32_t destination_bytes_per_row) {
-    if (!cl || !source || !destination || width == 0 || height == 0)
-        return -1;
+  if (!cl || !source || !destination || width == 0 || height == 0)
+    return -1;
+  @autoreleasepool {
+    RhiCommandListImpl *cli = reinterpret_cast<RhiCommandListImpl *>(cl);
+    RhiTextureImpl *ti = reinterpret_cast<RhiTextureImpl *>(source);
+    RhiBufferImpl *bi = reinterpret_cast<RhiBufferImpl *>(destination);
+    if (!cli->buf || !ti->tex || !bi->buf ||
+        source_mip_level >= ti->tex.mipmapLevelCount)
+      return -1;
+
+    uint32_t bytes_per_pixel = metal_uncompressed_bytes_per_pixel(ti->format);
+    NSUInteger mip_width =
+        MAX((NSUInteger)1, ti->tex.width >> source_mip_level);
+    NSUInteger mip_height =
+        MAX((NSUInteger)1, ti->tex.height >> source_mip_level);
+    uint64_t required_row_bytes = (uint64_t)width * bytes_per_pixel;
+    uint64_t required_size =
+        destination_offset +
+        (uint64_t)(height - 1) * destination_bytes_per_row + required_row_bytes;
+    if (bytes_per_pixel == 0 || source_x + width > mip_width ||
+        source_y + height > mip_height ||
+        destination_bytes_per_row < required_row_bytes ||
+        (destination_bytes_per_row & 255u) != 0 ||
+        (destination_offset & 255u) != 0 ||
+        required_size > (uint64_t)bi->buf.length)
+      return -1;
+
+    id<MTLBlitCommandEncoder> blit = [cli->buf blitCommandEncoder];
+    if (!blit)
+      return -1;
+    [blit copyFromTexture:ti->tex
+                     sourceSlice:0
+                     sourceLevel:source_mip_level
+                    sourceOrigin:MTLOriginMake(source_x, source_y, 0)
+                      sourceSize:MTLSizeMake(width, height, 1)
+                        toBuffer:bi->buf
+               destinationOffset:(NSUInteger)destination_offset
+          destinationBytesPerRow:destination_bytes_per_row
+        destinationBytesPerImage:(NSUInteger)destination_bytes_per_row *
+                                 height];
+    [blit endEncoding];
+    return 0;
+  }
+}
+
+static int32_t metal_cmd_write_timestamp(RhiCommandList *cl,
+                                         RhiTimestampQueryPool *pool,
+                                         uint32_t sample_index) {
+  if (!cl || !pool)
+    return -1;
+  if (@available(macOS 11.0, iOS 14.0, *)) {
     @autoreleasepool {
-        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-        RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(source);
-        RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(destination);
-        if (!cli->buf || !ti->tex || !bi->buf ||
-            source_mip_level >= ti->tex.mipmapLevelCount)
-            return -1;
+      RhiCommandListImpl *cli = reinterpret_cast<RhiCommandListImpl *>(cl);
+      RhiTimestampQueryPoolImpl *pi =
+          reinterpret_cast<RhiTimestampQueryPoolImpl *>(pool);
+      if (sample_index >= pi->sample_count || pi->pending)
+        return -1;
+      uint32_t samples_per_duration = pi->samples_per_duration;
+      if ((sample_index % samples_per_duration) == 0) {
+        if (sample_index + samples_per_duration > pi->sample_count)
+          return -1;
+        if (sample_index == 0) {
+          std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
+          std::fill(pi->sample_roles.begin(), pi->sample_roles.end(), 0);
+        }
+        cli->timing_pool = pi;
+        cli->timing_next_sample_index = sample_index;
+        cli->timing_scope_end_index = sample_index + samples_per_duration - 1;
+        cli->timing_end_requested = false;
+      } else if (cli->timing_pool == pi &&
+                 cli->timing_scope_end_index == sample_index) {
+        cli->timing_end_requested = true;
+      }
+      return 0;
+    }
+  }
+  return -1;
+}
 
-        uint32_t bytes_per_pixel =
-            metal_uncompressed_bytes_per_pixel(ti->format);
-        NSUInteger mip_width = MAX((NSUInteger)1,
-            ti->tex.width >> source_mip_level);
-        NSUInteger mip_height = MAX((NSUInteger)1,
-            ti->tex.height >> source_mip_level);
-        uint64_t required_row_bytes = (uint64_t)width * bytes_per_pixel;
-        uint64_t required_size = destination_offset +
-            (uint64_t)(height - 1) * destination_bytes_per_row +
-            required_row_bytes;
-        if (bytes_per_pixel == 0 ||
-            source_x + width > mip_width ||
-            source_y + height > mip_height ||
-            destination_bytes_per_row < required_row_bytes ||
-            (destination_bytes_per_row & 255u) != 0 ||
-            (destination_offset & 255u) != 0 ||
-            required_size > (uint64_t)bi->buf.length)
-            return -1;
+static int32_t metal_cmd_resolve_timestamps(RhiCommandList *cl,
+                                            RhiTimestampQueryPool *pool,
+                                            uint32_t sample_count) {
+  if (!cl || !pool || sample_count == 0)
+    return -1;
+  if (@available(macOS 11.0, iOS 14.0, *)) {
+    @autoreleasepool {
+      RhiCommandListImpl *cli = reinterpret_cast<RhiCommandListImpl *>(cl);
+      RhiTimestampQueryPoolImpl *pi =
+          reinterpret_cast<RhiTimestampQueryPoolImpl *>(pool);
+      if (sample_count > pi->sample_count || pi->pending)
+        return -1;
+      if (pi->samples && pi->results) {
+        id<MTLBlitCommandEncoder> encoder = [cli->buf blitCommandEncoder];
+        if (!encoder)
+          return -1;
+        [encoder resolveCounters:pi->samples
+                         inRange:NSMakeRange(0, sample_count)
+               destinationBuffer:pi->results
+               destinationOffset:0];
+        [encoder endEncoding];
+      }
+      [cli->buf.device sampleTimestamps:&pi->cpu_reference_start
+                           gpuTimestamp:&pi->gpu_reference_start];
+      pi->resolved_count = sample_count;
+      pi->pending = cli->buf;
+      return 0;
+    }
+  }
+  return -1;
+}
 
-        id<MTLBlitCommandEncoder> blit = [cli->buf blitCommandEncoder];
-        if (!blit) return -1;
-        [blit copyFromTexture:ti->tex
-                  sourceSlice:0
-                  sourceLevel:source_mip_level
-                 sourceOrigin:MTLOriginMake(source_x, source_y, 0)
-                   sourceSize:MTLSizeMake(width, height, 1)
-                     toBuffer:bi->buf
-            destinationOffset:(NSUInteger)destination_offset
-       destinationBytesPerRow:destination_bytes_per_row
-     destinationBytesPerImage:(NSUInteger)destination_bytes_per_row * height];
-        [blit endEncoding];
+static int32_t
+metal_timestamp_query_pool_read_durations(RhiTimestampQueryPool *pool,
+                                          uint32_t duration_count,
+                                          uint64_t *out_duration_nanoseconds) {
+  if (!pool || !out_duration_nanoseconds)
+    return -1;
+  if (@available(macOS 11.0, iOS 14.0, *)) {
+    @autoreleasepool {
+      RhiTimestampQueryPoolImpl *pi =
+          reinterpret_cast<RhiTimestampQueryPoolImpl *>(pool);
+      if (!pi->pending)
         return 0;
-    }
-}
+      if (pi->pending.status < MTLCommandBufferStatusCompleted)
+        return 0;
+      if (!pi->samples || pi->pending.status == MTLCommandBufferStatusError ||
+          duration_count * pi->samples_per_duration > pi->resolved_count) {
+        pi->pending = nil;
+        std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
+        return -1;
+      }
 
-static int32_t metal_cmd_write_timestamp(
-    RhiCommandList* cl, RhiTimestampQueryPool* pool, uint32_t sample_index) {
-    if (!cl || !pool) return -1;
-    if (@available(macOS 11.0, iOS 14.0, *)) {
-        @autoreleasepool {
-            RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-            RhiTimestampQueryPoolImpl* pi =
-                reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
-            if (sample_index >= pi->sample_count || pi->pending) return -1;
-            uint32_t samples_per_duration =
-                pi->samples_per_duration;
-            if ((sample_index % samples_per_duration) == 0) {
-                if (sample_index + samples_per_duration >
-                    pi->sample_count) return -1;
-                if (sample_index == 0) {
-                    std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
-                    std::fill(
-                        pi->sample_roles.begin(),
-                        pi->sample_roles.end(),
-                        0);
-                }
-                cli->timing_pool = pi;
-                cli->timing_next_sample_index = sample_index;
-                cli->timing_scope_end_index =
-                    sample_index + samples_per_duration - 1;
-                cli->timing_end_requested = false;
-            } else if (cli->timing_pool == pi &&
-                       cli->timing_scope_end_index == sample_index) {
-                cli->timing_end_requested = true;
-            }
-            return 0;
+      const MTLCounterResultTimestamp *values =
+          reinterpret_cast<const MTLCounterResultTimestamp *>(
+              pi->results.contents);
+      uint32_t first_sample = pi->resolved_count;
+      uint32_t last_sample = 0;
+      for (uint32_t i = 0; i < pi->resolved_count; ++i) {
+        if (!pi->sampled[i] || values[i].timestamp == MTLCounterErrorValue) {
+          continue;
         }
-    }
-    return -1;
-}
-
-static int32_t metal_cmd_resolve_timestamps(
-    RhiCommandList* cl, RhiTimestampQueryPool* pool, uint32_t sample_count) {
-    if (!cl || !pool || sample_count == 0) return -1;
-    if (@available(macOS 11.0, iOS 14.0, *)) {
-        @autoreleasepool {
-            RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-            RhiTimestampQueryPoolImpl* pi =
-                reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
-            if (sample_count > pi->sample_count || pi->pending) return -1;
-            if (pi->samples && pi->results) {
-                id<MTLBlitCommandEncoder> encoder = [cli->buf blitCommandEncoder];
-                if (!encoder) return -1;
-                [encoder resolveCounters:pi->samples
-                                 inRange:NSMakeRange(0, sample_count)
-                       destinationBuffer:pi->results
-                       destinationOffset:0];
-                [encoder endEncoding];
-            }
-            [cli->buf.device
-                sampleTimestamps:&pi->cpu_reference_start
-                    gpuTimestamp:&pi->gpu_reference_start];
-            pi->resolved_count = sample_count;
-            pi->pending = cli->buf;
-            return 0;
+        if (first_sample == pi->resolved_count)
+          first_sample = i;
+        last_sample = i;
+      }
+      if (first_sample == pi->resolved_count || last_sample <= first_sample) {
+        pi->pending = nil;
+        std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
+        return -1;
+      }
+      MTLTimestamp cpu_reference_end = 0;
+      MTLTimestamp gpu_reference_end = 0;
+      [pi->pending.device sampleTimestamps:&cpu_reference_end
+                              gpuTimestamp:&gpu_reference_end];
+      double cpu_span =
+          cpu_reference_end > pi->cpu_reference_start
+              ? static_cast<double>(cpu_reference_end - pi->cpu_reference_start)
+              : 0.0;
+      double gpu_span =
+          gpu_reference_end > pi->gpu_reference_start
+              ? static_cast<double>(gpu_reference_end - pi->gpu_reference_start)
+              : 0.0;
+      if (cpu_span <= 0.0 || gpu_span <= 0.0) {
+        pi->pending = nil;
+        std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
+        return -1;
+      }
+      double nanoseconds_per_gpu_tick = cpu_span / gpu_span;
+      for (uint32_t i = 0; i < duration_count; ++i) {
+        uint32_t block_start = i * pi->samples_per_duration;
+        uint32_t block_end = block_start + pi->samples_per_duration;
+        double duration = 0.0;
+        bool has_duration = false;
+        for (uint32_t sample_index = block_start; sample_index + 1 < block_end;
+             sample_index += 2) {
+          uint32_t end_index = sample_index + 1;
+          if (pi->sample_roles[sample_index] != kTimingSampleBegin ||
+              pi->sample_roles[end_index] != kTimingSampleEnd ||
+              !pi->sampled[sample_index] || !pi->sampled[end_index]) {
+            continue;
+          }
+          uint64_t begin = values[sample_index].timestamp;
+          uint64_t end = values[end_index].timestamp;
+          if (begin == MTLCounterErrorValue || end == MTLCounterErrorValue ||
+              end < begin) {
+            continue;
+          }
+          duration +=
+              static_cast<double>(end - begin) * nanoseconds_per_gpu_tick;
+          has_duration = true;
         }
+        out_duration_nanoseconds[i] =
+            has_duration ? static_cast<uint64_t>(duration) : UINT64_MAX;
+      }
+      pi->pending = nil;
+      std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
+      return 1;
     }
-    return -1;
-}
-
-static int32_t metal_timestamp_query_pool_read_durations(
-    RhiTimestampQueryPool* pool, uint32_t duration_count,
-    uint64_t* out_duration_nanoseconds) {
-    if (!pool || !out_duration_nanoseconds) return -1;
-    if (@available(macOS 11.0, iOS 14.0, *)) {
-        @autoreleasepool {
-            RhiTimestampQueryPoolImpl* pi =
-                reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
-            if (!pi->pending) return 0;
-            if (pi->pending.status < MTLCommandBufferStatusCompleted) return 0;
-            if (!pi->samples ||
-                pi->pending.status == MTLCommandBufferStatusError ||
-                duration_count * pi->samples_per_duration >
-                    pi->resolved_count) {
-                pi->pending = nil;
-                std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
-                return -1;
-            }
-
-            const MTLCounterResultTimestamp* values =
-                reinterpret_cast<const MTLCounterResultTimestamp*>(pi->results.contents);
-            uint32_t first_sample = pi->resolved_count;
-            uint32_t last_sample = 0;
-            for (uint32_t i = 0; i < pi->resolved_count; ++i) {
-                if (!pi->sampled[i] ||
-                    values[i].timestamp == MTLCounterErrorValue) {
-                    continue;
-                }
-                if (first_sample == pi->resolved_count) first_sample = i;
-                last_sample = i;
-            }
-            if (first_sample == pi->resolved_count ||
-                last_sample <= first_sample) {
-                pi->pending = nil;
-                std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
-                return -1;
-            }
-            MTLTimestamp cpu_reference_end = 0;
-            MTLTimestamp gpu_reference_end = 0;
-            [pi->pending.device
-                sampleTimestamps:&cpu_reference_end
-                    gpuTimestamp:&gpu_reference_end];
-            double cpu_span =
-                cpu_reference_end > pi->cpu_reference_start
-                    ? static_cast<double>(
-                        cpu_reference_end -
-                        pi->cpu_reference_start)
-                    : 0.0;
-            double gpu_span =
-                gpu_reference_end > pi->gpu_reference_start
-                    ? static_cast<double>(
-                        gpu_reference_end -
-                        pi->gpu_reference_start)
-                    : 0.0;
-            if (cpu_span <= 0.0 || gpu_span <= 0.0) {
-                pi->pending = nil;
-                std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
-                return -1;
-            }
-            double nanoseconds_per_gpu_tick = cpu_span / gpu_span;
-            for (uint32_t i = 0; i < duration_count; ++i) {
-                uint32_t block_start =
-                    i * pi->samples_per_duration;
-                uint32_t block_end =
-                    block_start + pi->samples_per_duration;
-                double duration = 0.0;
-                bool has_duration = false;
-                for (uint32_t sample_index = block_start;
-                     sample_index + 1 < block_end;
-                     sample_index += 2) {
-                    uint32_t end_index = sample_index + 1;
-                    if (pi->sample_roles[sample_index] !=
-                            kTimingSampleBegin ||
-                        pi->sample_roles[end_index] !=
-                            kTimingSampleEnd ||
-                        !pi->sampled[sample_index] ||
-                        !pi->sampled[end_index]) {
-                        continue;
-                    }
-                    uint64_t begin = values[sample_index].timestamp;
-                    uint64_t end = values[end_index].timestamp;
-                    if (begin == MTLCounterErrorValue ||
-                        end == MTLCounterErrorValue ||
-                        end < begin) {
-                        continue;
-                    }
-                    duration += static_cast<double>(end - begin) *
-                        nanoseconds_per_gpu_tick;
-                    has_duration = true;
-                }
-                out_duration_nanoseconds[i] = has_duration
-                    ? static_cast<uint64_t>(duration)
-                    : UINT64_MAX;
-            }
-            pi->pending = nil;
-            std::fill(pi->sampled.begin(), pi->sampled.end(), 0);
-            return 1;
-        }
-    }
-    return -1;
+  }
+  return -1;
 }
 
 static int32_t metal_timestamp_query_pool_read_frame_duration(
-    RhiTimestampQueryPool* pool, uint64_t* out_duration_nanoseconds) {
-    if (!pool || !out_duration_nanoseconds) return -1;
-    @autoreleasepool {
-        RhiTimestampQueryPoolImpl* pi =
-            reinterpret_cast<RhiTimestampQueryPoolImpl*>(pool);
-        if (!pi->pending) return 0;
-        if (pi->pending.status < MTLCommandBufferStatusCompleted) return 0;
-        if (pi->pending.status == MTLCommandBufferStatusError) return -1;
-        double duration =
-            (pi->pending.GPUEndTime - pi->pending.GPUStartTime) * 1000000000.0;
-        *out_duration_nanoseconds =
-            duration > 0.0 ? static_cast<uint64_t>(duration) : 0;
-        return 1;
+    RhiTimestampQueryPool *pool, uint64_t *out_duration_nanoseconds) {
+  if (!pool || !out_duration_nanoseconds)
+    return -1;
+  @autoreleasepool {
+    RhiTimestampQueryPoolImpl *pi =
+        reinterpret_cast<RhiTimestampQueryPoolImpl *>(pool);
+    if (!pi->pending)
+      return 0;
+    if (pi->pending.status < MTLCommandBufferStatusCompleted)
+      return 0;
+    if (pi->pending.status == MTLCommandBufferStatusError)
+      return -1;
+    double duration =
+        (pi->pending.GPUEndTime - pi->pending.GPUStartTime) * 1000000000.0;
+    *out_duration_nanoseconds =
+        duration > 0.0 ? static_cast<uint64_t>(duration) : 0;
+    return 1;
+  }
+}
+
+static bool metal_allocate_timing_samples(RhiCommandListImpl *command_list,
+                                          uint32_t count,
+                                          uint32_t *out_first_sample) {
+  if (!command_list || !out_first_sample || !command_list->timing_pool ||
+      !command_list->timing_pool->samples || count == 0 ||
+      command_list->timing_next_sample_index + count - 1 >
+          command_list->timing_scope_end_index) {
+    return false;
+  }
+  *out_first_sample = command_list->timing_next_sample_index;
+  command_list->timing_next_sample_index += count;
+  return true;
+}
+
+static void metal_mark_timing_pair(RhiTimestampQueryPoolImpl *pool,
+                                   uint32_t begin_sample, uint32_t end_sample) {
+  pool->sampled[begin_sample] = 1;
+  pool->sampled[end_sample] = 1;
+  pool->sample_roles[begin_sample] = kTimingSampleBegin;
+  pool->sample_roles[end_sample] = kTimingSampleEnd;
+}
+
+static RhiEncoder *metal_begin_render_pass(RhiCommandList *cl,
+                                           const RhiPassDesc *desc) {
+  @autoreleasepool {
+    RhiCommandListImpl *cli = reinterpret_cast<RhiCommandListImpl *>(cl);
+    MTLRenderPassDescriptor *pd = [MTLRenderPassDescriptor new];
+    for (uint32_t i = 0; i < desc->color_count; ++i) {
+      RhiTextureImpl *ti = reinterpret_cast<RhiTextureImpl *>(
+          desc->color_attachments[i].texture);
+      if (ti->drawable) {
+        cli->drawable_to_present = ti->drawable;
+      }
+      pd.colorAttachments[i].texture = ti->tex;
+      switch (desc->color_attachments[i].load_op) {
+      case RHI_LOAD_OP_CLEAR:
+        pd.colorAttachments[i].loadAction = MTLLoadActionClear;
+        break;
+      case RHI_LOAD_OP_DISCARD:
+        pd.colorAttachments[i].loadAction = MTLLoadActionDontCare;
+        break;
+      default:
+        pd.colorAttachments[i].loadAction = MTLLoadActionLoad;
+        break;
+      }
+      switch (desc->color_attachments[i].store_op) {
+      case RHI_STORE_OP_DISCARD:
+        pd.colorAttachments[i].storeAction = MTLStoreActionDontCare;
+        break;
+      default:
+        pd.colorAttachments[i].storeAction = MTLStoreActionStore;
+        break;
+      }
+      pd.colorAttachments[i].clearColor =
+          MTLClearColorMake(0.05, 0.06, 0.09, 1.0);
     }
-}
-
-static bool metal_allocate_timing_samples(
-    RhiCommandListImpl* command_list,
-    uint32_t count,
-    uint32_t* out_first_sample) {
-    if (!command_list || !out_first_sample ||
-        !command_list->timing_pool ||
-        !command_list->timing_pool->samples ||
-        count == 0 ||
-        command_list->timing_next_sample_index + count - 1 >
-            command_list->timing_scope_end_index) {
-        return false;
+    if (desc->depth_attachment) {
+      RhiTextureImpl *dti =
+          reinterpret_cast<RhiTextureImpl *>(desc->depth_attachment->texture);
+      pd.depthAttachment.texture = dti->tex;
+      switch (desc->depth_attachment->load_op) {
+      case RHI_LOAD_OP_CLEAR:
+        pd.depthAttachment.loadAction = MTLLoadActionClear;
+        break;
+      case RHI_LOAD_OP_DISCARD:
+        pd.depthAttachment.loadAction = MTLLoadActionDontCare;
+        break;
+      default:
+        pd.depthAttachment.loadAction = MTLLoadActionLoad;
+        break;
+      }
+      switch (desc->depth_attachment->store_op) {
+      case RHI_STORE_OP_DISCARD:
+        pd.depthAttachment.storeAction = MTLStoreActionDontCare;
+        break;
+      default:
+        pd.depthAttachment.storeAction = MTLStoreActionStore;
+        break;
+      }
+      pd.depthAttachment.clearDepth = 1.0;
     }
-    *out_first_sample = command_list->timing_next_sample_index;
-    command_list->timing_next_sample_index += count;
-    return true;
-}
-
-static void metal_mark_timing_pair(
-    RhiTimestampQueryPoolImpl* pool,
-    uint32_t begin_sample,
-    uint32_t end_sample) {
-    pool->sampled[begin_sample] = 1;
-    pool->sampled[end_sample] = 1;
-    pool->sample_roles[begin_sample] = kTimingSampleBegin;
-    pool->sample_roles[end_sample] = kTimingSampleEnd;
-}
-
-static RhiEncoder* metal_begin_render_pass(RhiCommandList* cl, const RhiPassDesc* desc) {
-    @autoreleasepool {
-        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-        MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor new];
-        for (uint32_t i = 0; i < desc->color_count; ++i) {
-            RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(desc->color_attachments[i].texture);
-            if (ti->drawable) {
-                cli->drawable_to_present = ti->drawable;
-            }
-            pd.colorAttachments[i].texture = ti->tex;
-            switch (desc->color_attachments[i].load_op) {
-                case RHI_LOAD_OP_CLEAR:    pd.colorAttachments[i].loadAction = MTLLoadActionClear; break;
-                case RHI_LOAD_OP_DISCARD:  pd.colorAttachments[i].loadAction = MTLLoadActionDontCare; break;
-                default:                  pd.colorAttachments[i].loadAction = MTLLoadActionLoad; break;
-            }
-            switch (desc->color_attachments[i].store_op) {
-                case RHI_STORE_OP_DISCARD: pd.colorAttachments[i].storeAction = MTLStoreActionDontCare; break;
-                default:                  pd.colorAttachments[i].storeAction = MTLStoreActionStore; break;
-            }
-            pd.colorAttachments[i].clearColor = MTLClearColorMake(0.05, 0.06, 0.09, 1.0);
-        }
-        if (desc->depth_attachment) {
-            RhiTextureImpl* dti = reinterpret_cast<RhiTextureImpl*>(desc->depth_attachment->texture);
-            pd.depthAttachment.texture      = dti->tex;
-            switch (desc->depth_attachment->load_op) {
-                case RHI_LOAD_OP_CLEAR:    pd.depthAttachment.loadAction = MTLLoadActionClear; break;
-                case RHI_LOAD_OP_DISCARD:  pd.depthAttachment.loadAction = MTLLoadActionDontCare; break;
-                default:                   pd.depthAttachment.loadAction = MTLLoadActionLoad; break;
-            }
-            switch (desc->depth_attachment->store_op) {
-                case RHI_STORE_OP_DISCARD: pd.depthAttachment.storeAction = MTLStoreActionDontCare; break;
-                default:                   pd.depthAttachment.storeAction = MTLStoreActionStore; break;
-            }
-            pd.depthAttachment.clearDepth   = 1.0;
-        }
-        bool use_stage_timing = false;
-        uint32_t stage_timing_first = UINT32_MAX;
-        if (cli->timing_pool && cli->timing_pool->samples) {
-            MTLRenderPassSampleBufferAttachmentDescriptor* attachment =
-                pd.sampleBufferAttachments[0];
-            attachment.sampleBuffer = cli->timing_pool->samples;
-            attachment.startOfVertexSampleIndex = MTLCounterDontSample;
-            attachment.endOfVertexSampleIndex = MTLCounterDontSample;
-            attachment.startOfFragmentSampleIndex = MTLCounterDontSample;
-            attachment.endOfFragmentSampleIndex = MTLCounterDontSample;
-            use_stage_timing =
-                cli->timing_pool->supports_stage_sampling &&
-                !cli->timing_pool->supports_draw_sampling;
-            if (use_stage_timing &&
-                metal_allocate_timing_samples(
-                    cli,
-                    4,
-                    &stage_timing_first)) {
-                attachment.startOfVertexSampleIndex = stage_timing_first;
-                attachment.endOfVertexSampleIndex = stage_timing_first + 1;
-                attachment.startOfFragmentSampleIndex = stage_timing_first + 2;
-                attachment.endOfFragmentSampleIndex = stage_timing_first + 3;
-                metal_mark_timing_pair(
-                    cli->timing_pool,
-                    stage_timing_first,
-                    stage_timing_first + 1);
-                metal_mark_timing_pair(
-                    cli->timing_pool,
-                    stage_timing_first + 2,
-                    stage_timing_first + 3);
-            }
-        }
-        id<MTLRenderCommandEncoder> enc = [cli->buf renderCommandEncoderWithDescriptor:pd];
-
-        // Apple docs: without a bound MTLDepthStencilState, depth test, read,
-        // and write are all disabled regardless of depthAttachmentPixelFormat
-        // on the pipeline. Bind the cached Less-compare / write-enabled
-        if (desc->depth_attachment) {
-            id<MTLDepthStencilState> dss = GetOrCreateDepthStencilState(cli->buf.device, true);
-            if (dss) [enc setDepthStencilState:dss];
-        }
-        RhiEncoderImpl* ri = new RhiEncoderImpl();
-        ri->render  = enc;
-        ri->compute = nil;
-        ri->is_compute = false;
-        ri->command_list = cli;
-        ri->timing_end_sample_index = UINT32_MAX;
-        if (cli->timing_pool &&
-            cli->timing_pool->samples &&
-            cli->timing_pool->supports_draw_sampling &&
-            !use_stage_timing) {
-            uint32_t first_sample = UINT32_MAX;
-            if (metal_allocate_timing_samples(cli, 2, &first_sample)) {
-            [enc sampleCountersInBuffer:cli->timing_pool->samples
-                          atSampleIndex:first_sample
-                            withBarrier:YES];
-                metal_mark_timing_pair(
-                    cli->timing_pool,
-                    first_sample,
-                    first_sample + 1);
-                ri->timing_end_sample_index = first_sample + 1;
-            }
-        }
-        return reinterpret_cast<RhiEncoder*>(ri);
+    bool use_stage_timing = false;
+    uint32_t stage_timing_first = UINT32_MAX;
+    if (cli->timing_pool && cli->timing_pool->samples) {
+      MTLRenderPassSampleBufferAttachmentDescriptor *attachment =
+          pd.sampleBufferAttachments[0];
+      attachment.sampleBuffer = cli->timing_pool->samples;
+      attachment.startOfVertexSampleIndex = MTLCounterDontSample;
+      attachment.endOfVertexSampleIndex = MTLCounterDontSample;
+      attachment.startOfFragmentSampleIndex = MTLCounterDontSample;
+      attachment.endOfFragmentSampleIndex = MTLCounterDontSample;
+      use_stage_timing = cli->timing_pool->supports_stage_sampling &&
+                         !cli->timing_pool->supports_draw_sampling;
+      if (use_stage_timing &&
+          metal_allocate_timing_samples(cli, 4, &stage_timing_first)) {
+        attachment.startOfVertexSampleIndex = stage_timing_first;
+        attachment.endOfVertexSampleIndex = stage_timing_first + 1;
+        attachment.startOfFragmentSampleIndex = stage_timing_first + 2;
+        attachment.endOfFragmentSampleIndex = stage_timing_first + 3;
+        metal_mark_timing_pair(cli->timing_pool, stage_timing_first,
+                               stage_timing_first + 1);
+        metal_mark_timing_pair(cli->timing_pool, stage_timing_first + 2,
+                               stage_timing_first + 3);
+      }
     }
-}
+    id<MTLRenderCommandEncoder> enc =
+        [cli->buf renderCommandEncoderWithDescriptor:pd];
 
-static RhiEncoder* metal_begin_compute_pass(RhiCommandList* cl, const char* name) {
-    @autoreleasepool {
-        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-        MTLComputePassDescriptor* pd =
-            [MTLComputePassDescriptor computePassDescriptor];
-        bool use_stage_timing = false;
-        if (cli->timing_pool && cli->timing_pool->samples) {
-            MTLComputePassSampleBufferAttachmentDescriptor* attachment =
-                pd.sampleBufferAttachments[0];
-            attachment.sampleBuffer = cli->timing_pool->samples;
-            attachment.startOfEncoderSampleIndex = MTLCounterDontSample;
-            attachment.endOfEncoderSampleIndex = MTLCounterDontSample;
-            use_stage_timing =
-                cli->timing_pool->supports_stage_sampling &&
-                !cli->timing_pool->supports_dispatch_sampling;
-            uint32_t first_sample = UINT32_MAX;
-            if (use_stage_timing &&
-                metal_allocate_timing_samples(
-                    cli,
-                    2,
-                    &first_sample)) {
-                attachment.startOfEncoderSampleIndex = first_sample;
-                attachment.endOfEncoderSampleIndex = first_sample + 1;
-                metal_mark_timing_pair(
-                    cli->timing_pool,
-                    first_sample,
-                    first_sample + 1);
-            }
-        }
-        id<MTLComputeCommandEncoder> enc =
-            [cli->buf computeCommandEncoderWithDescriptor:pd];
-        if (name) [enc setLabel:[NSString stringWithUTF8String:name]];
-        RhiEncoderImpl* ri = new RhiEncoderImpl();
-        ri->render  = nil;
-        ri->compute = enc;
-        ri->is_compute = true;
-        ri->command_list = cli;
-        ri->timing_end_sample_index = UINT32_MAX;
-        if (cli->timing_pool &&
-            cli->timing_pool->samples &&
-            cli->timing_pool->supports_dispatch_sampling &&
-            !use_stage_timing) {
-            uint32_t first_sample = UINT32_MAX;
-            if (metal_allocate_timing_samples(cli, 2, &first_sample)) {
-            [enc sampleCountersInBuffer:cli->timing_pool->samples
-                          atSampleIndex:first_sample
-                            withBarrier:YES];
-                metal_mark_timing_pair(
-                    cli->timing_pool,
-                    first_sample,
-                    first_sample + 1);
-                ri->timing_end_sample_index = first_sample + 1;
-            }
-        }
-        return reinterpret_cast<RhiEncoder*>(ri);
+    // Apple docs: without a bound MTLDepthStencilState, depth test, read,
+    // and write are all disabled regardless of depthAttachmentPixelFormat
+    // on the pipeline. Bind the cached Less-compare / write-enabled
+    if (desc->depth_attachment) {
+      id<MTLDepthStencilState> dss =
+          GetOrCreateDepthStencilState(cli->buf.device, true);
+      if (dss)
+        [enc setDepthStencilState:dss];
     }
-}
-
-static void metal_end_pass(RhiEncoder* enc) {
-    @autoreleasepool {
-        RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-        RhiCommandListImpl* cli = ri->command_list;
-        if (cli && cli->timing_pool &&
-            ri->timing_end_sample_index != UINT32_MAX) {
-            if (ri->render) {
-                [ri->render sampleCountersInBuffer:cli->timing_pool->samples
-                                     atSampleIndex:ri->timing_end_sample_index
-                                       withBarrier:YES];
-            } else if (ri->compute) {
-                [ri->compute sampleCountersInBuffer:cli->timing_pool->samples
-                                      atSampleIndex:ri->timing_end_sample_index
-                                        withBarrier:YES];
-            }
-        }
-        if (cli && cli->timing_pool && cli->timing_end_requested) {
-            cli->timing_pool = nullptr;
-            cli->timing_end_requested = false;
-        }
-        [ri->render  endEncoding];
-        [ri->compute endEncoding];
-        delete ri;
+    RhiEncoderImpl *ri = new RhiEncoderImpl();
+    ri->render = enc;
+    ri->compute = nil;
+    ri->is_compute = false;
+    ri->command_list = cli;
+    ri->timing_end_sample_index = UINT32_MAX;
+    if (cli->timing_pool && cli->timing_pool->samples &&
+        cli->timing_pool->supports_draw_sampling && !use_stage_timing) {
+      uint32_t first_sample = UINT32_MAX;
+      if (metal_allocate_timing_samples(cli, 2, &first_sample)) {
+        [enc sampleCountersInBuffer:cli->timing_pool->samples
+                      atSampleIndex:first_sample
+                        withBarrier:YES];
+        metal_mark_timing_pair(cli->timing_pool, first_sample,
+                               first_sample + 1);
+        ri->timing_end_sample_index = first_sample + 1;
+      }
     }
+    return reinterpret_cast<RhiEncoder *>(ri);
+  }
 }
 
-static void metal_cmd_bind_pipeline(RhiEncoder* enc, RhiPipeline* p) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    RhiPipelineImpl* pi = reinterpret_cast<RhiPipelineImpl*>(p);
-    if (ri->render && pi->g)  {
-        [ri->render  setRenderPipelineState:pi->g];
-        if (pi->depth_stencil)
-            [ri->render setDepthStencilState:pi->depth_stencil];
-        ri->current_primitive_type = pi->primitive_type;
-        // The MTLDepthStencilState is bound at render-pass begin (in
-        // metal_begin_render_pass) and persists for the life of the
-        // encoder, so rebinding on every pipeline change would be wasted
-        // work. Nothing to do here.
+static RhiEncoder *metal_begin_compute_pass(RhiCommandList *cl,
+                                            const char *name) {
+  @autoreleasepool {
+    RhiCommandListImpl *cli = reinterpret_cast<RhiCommandListImpl *>(cl);
+    MTLComputePassDescriptor *pd =
+        [MTLComputePassDescriptor computePassDescriptor];
+    bool use_stage_timing = false;
+    if (cli->timing_pool && cli->timing_pool->samples) {
+      MTLComputePassSampleBufferAttachmentDescriptor *attachment =
+          pd.sampleBufferAttachments[0];
+      attachment.sampleBuffer = cli->timing_pool->samples;
+      attachment.startOfEncoderSampleIndex = MTLCounterDontSample;
+      attachment.endOfEncoderSampleIndex = MTLCounterDontSample;
+      use_stage_timing = cli->timing_pool->supports_stage_sampling &&
+                         !cli->timing_pool->supports_dispatch_sampling;
+      uint32_t first_sample = UINT32_MAX;
+      if (use_stage_timing &&
+          metal_allocate_timing_samples(cli, 2, &first_sample)) {
+        attachment.startOfEncoderSampleIndex = first_sample;
+        attachment.endOfEncoderSampleIndex = first_sample + 1;
+        metal_mark_timing_pair(cli->timing_pool, first_sample,
+                               first_sample + 1);
+      }
     }
-    if (ri->compute && pi->c) [ri->compute setComputePipelineState:pi->c];
-}
-
-static void metal_cmd_bind_vertex_buffer(RhiEncoder* enc, uint32_t slot,
-                                          RhiBuffer* b, uint64_t off) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    if (!ri->render) return;
-    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(b);
-    [ri->render setVertexBuffer:bi->buf offset:off atIndex:slot];
-}
-
-static void metal_cmd_bind_uniform_buffer(RhiEncoder* enc, uint32_t slot, RhiBuffer* b) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(b);
-    if (ri->render)  {
-        [ri->render  setVertexBuffer:bi->buf offset:0 atIndex:slot];
-        [ri->render  setFragmentBuffer:bi->buf offset:0 atIndex:slot];
+    id<MTLComputeCommandEncoder> enc =
+        [cli->buf computeCommandEncoderWithDescriptor:pd];
+    if (name)
+      [enc setLabel:[NSString stringWithUTF8String:name]];
+    RhiEncoderImpl *ri = new RhiEncoderImpl();
+    ri->render = nil;
+    ri->compute = enc;
+    ri->is_compute = true;
+    ri->command_list = cli;
+    ri->timing_end_sample_index = UINT32_MAX;
+    if (cli->timing_pool && cli->timing_pool->samples &&
+        cli->timing_pool->supports_dispatch_sampling && !use_stage_timing) {
+      uint32_t first_sample = UINT32_MAX;
+      if (metal_allocate_timing_samples(cli, 2, &first_sample)) {
+        [enc sampleCountersInBuffer:cli->timing_pool->samples
+                      atSampleIndex:first_sample
+                        withBarrier:YES];
+        metal_mark_timing_pair(cli->timing_pool, first_sample,
+                               first_sample + 1);
+        ri->timing_end_sample_index = first_sample + 1;
+      }
     }
-    if (ri->compute) [ri->compute setBuffer:bi->buf offset:0 atIndex:slot];
+    return reinterpret_cast<RhiEncoder *>(ri);
+  }
 }
 
-static void metal_cmd_push_constants(RhiEncoder* enc, uint32_t slot, uint32_t size, const void* data) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    if (ri->render) {
-        [ri->render setVertexBytes:data length:size atIndex:slot];
-        [ri->render setFragmentBytes:data length:size atIndex:slot];
-    } else if (ri->compute) {
-        [ri->compute setBytes:data length:size atIndex:slot];
+static void metal_end_pass(RhiEncoder *enc) {
+  @autoreleasepool {
+    RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+    RhiCommandListImpl *cli = ri->command_list;
+    if (cli && cli->timing_pool && ri->timing_end_sample_index != UINT32_MAX) {
+      if (ri->render) {
+        [ri->render sampleCountersInBuffer:cli->timing_pool->samples
+                             atSampleIndex:ri->timing_end_sample_index
+                               withBarrier:YES];
+      } else if (ri->compute) {
+        [ri->compute sampleCountersInBuffer:cli->timing_pool->samples
+                              atSampleIndex:ri->timing_end_sample_index
+                                withBarrier:YES];
+      }
     }
+    if (cli && cli->timing_pool && cli->timing_end_requested) {
+      cli->timing_pool = nullptr;
+      cli->timing_end_requested = false;
+    }
+    [ri->render endEncoding];
+    [ri->compute endEncoding];
+    delete ri;
+  }
 }
 
-
-static void metal_cmd_set_viewport(RhiEncoder* enc, float x, float y, float w, float h,
-                                    float min_depth, float max_depth) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    if (!ri->render) return;
-    MTLViewport vp;
-    vp.originX = x; vp.originY = y; vp.width = w; vp.height = h;
-    vp.znear = min_depth; vp.zfar = max_depth;
-    [ri->render setViewport:vp];
+static void metal_cmd_bind_pipeline(RhiEncoder *enc, RhiPipeline *p) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  RhiPipelineImpl *pi = reinterpret_cast<RhiPipelineImpl *>(p);
+  if (ri->render && pi->g) {
+    [ri->render setRenderPipelineState:pi->g];
+    if (pi->depth_stencil)
+      [ri->render setDepthStencilState:pi->depth_stencil];
+    ri->current_primitive_type = pi->primitive_type;
+    // The MTLDepthStencilState is bound at render-pass begin (in
+    // metal_begin_render_pass) and persists for the life of the
+    // encoder, so rebinding on every pipeline change would be wasted
+    // work. Nothing to do here.
+  }
+  if (ri->compute && pi->c)
+    [ri->compute setComputePipelineState:pi->c];
 }
 
-static void metal_cmd_set_scissor(RhiEncoder* enc, uint32_t x, uint32_t y,
-                                   uint32_t w, uint32_t h) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    if (!ri->render) return;
-    MTLScissorRect r;
-    r.x = x; r.y = y; r.width = w; r.height = h;
-    [ri->render setScissorRect:r];
+static void metal_cmd_bind_vertex_buffer(RhiEncoder *enc, uint32_t slot,
+                                         RhiBuffer *b, uint64_t off) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  if (!ri->render)
+    return;
+  RhiBufferImpl *bi = reinterpret_cast<RhiBufferImpl *>(b);
+  [ri->render setVertexBuffer:bi->buf offset:off atIndex:slot];
 }
 
-static void metal_cmd_set_clear_color(RhiEncoder*, float, float, float, float) {
-    /* Clear color is set on MTLRenderPassDescriptor at beginRenderPass. */
+static void metal_cmd_bind_uniform_buffer(RhiEncoder *enc, uint32_t slot,
+                                          RhiBuffer *b) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  RhiBufferImpl *bi = reinterpret_cast<RhiBufferImpl *>(b);
+  if (ri->render) {
+    [ri->render setVertexBuffer:bi->buf offset:0 atIndex:slot];
+    [ri->render setFragmentBuffer:bi->buf offset:0 atIndex:slot];
+  }
+  if (ri->compute)
+    [ri->compute setBuffer:bi->buf offset:0 atIndex:slot];
 }
 
-static void metal_cmd_draw(RhiEncoder* enc, const RhiDrawArgs* a) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    if (!ri->render) return;
+static void metal_cmd_push_constants(RhiEncoder *enc, uint32_t slot,
+                                     uint32_t size, const void *data) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  if (ri->render) {
+    [ri->render setVertexBytes:data length:size atIndex:slot];
+    [ri->render setFragmentBytes:data length:size atIndex:slot];
+  } else if (ri->compute) {
+    [ri->compute setBytes:data length:size atIndex:slot];
+  }
+}
+
+static void metal_cmd_set_viewport(RhiEncoder *enc, float x, float y, float w,
+                                   float h, float min_depth, float max_depth) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  if (!ri->render)
+    return;
+  MTLViewport vp;
+  vp.originX = x;
+  vp.originY = y;
+  vp.width = w;
+  vp.height = h;
+  vp.znear = min_depth;
+  vp.zfar = max_depth;
+  [ri->render setViewport:vp];
+}
+
+static void metal_cmd_set_scissor(RhiEncoder *enc, uint32_t x, uint32_t y,
+                                  uint32_t w, uint32_t h) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  if (!ri->render)
+    return;
+  MTLScissorRect r;
+  r.x = x;
+  r.y = y;
+  r.width = w;
+  r.height = h;
+  [ri->render setScissorRect:r];
+}
+
+static void metal_cmd_set_clear_color(RhiEncoder *, float, float, float,
+                                      float) {
+  /* Clear color is set on MTLRenderPassDescriptor at beginRenderPass. */
+}
+
+static void metal_cmd_draw(RhiEncoder *enc, const RhiDrawArgs *a) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  if (!ri->render)
+    return;
+  [ri->render drawPrimitives:ri->current_primitive_type
+                 vertexStart:a->first_vertex
+                 vertexCount:a->vertex_count
+               instanceCount:a->instance_count
+                baseInstance:a->first_instance];
+}
+
+static void metal_cmd_draw_indexed(RhiEncoder *enc,
+                                   const RhiDrawIndexedArgs *a) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  if (!ri->render)
+    return;
+
+  MTLIndexType type =
+      (ri->active_index_buffer && ri->active_index_buffer_is_32bit)
+          ? MTLIndexTypeUInt32
+          : MTLIndexTypeUInt16;
+
+  [ri->render drawIndexedPrimitives:ri->current_primitive_type
+                         indexCount:a->index_count
+                          indexType:type
+                        indexBuffer:ri->active_index_buffer
+                  indexBufferOffset:ri->active_index_buffer_offset +
+                                    (a->first_index *
+                                     (type == MTLIndexTypeUInt32 ? 4 : 2))
+                      instanceCount:a->instance_count
+                         baseVertex:a->vertex_offset
+                       baseInstance:a->first_instance];
+}
+
+static void metal_cmd_draw_indirect(RhiEncoder *enc,
+                                    const RhiDrawIndirectArgs *a) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  if (!ri->render)
+    return;
+
+  RhiBufferImpl *bi = reinterpret_cast<RhiBufferImpl *>(a->indirect_buffer);
+
+  for (uint32_t i = 0; i < a->draw_count; ++i) {
     [ri->render drawPrimitives:ri->current_primitive_type
-                    vertexStart:a->first_vertex
-                    vertexCount:a->vertex_count
-                  instanceCount:a->instance_count
-                  baseInstance:a->first_instance];
+                indirectBuffer:bi->buf
+          indirectBufferOffset:a->indirect_buffer_offset + (i * a->stride)];
+  }
 }
 
-static void metal_cmd_draw_indexed(RhiEncoder* enc, const RhiDrawIndexedArgs* a) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    if (!ri->render) return;
-    
-    MTLIndexType type = (ri->active_index_buffer && ri->active_index_buffer_is_32bit) ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
-    
-    [ri->render drawIndexedPrimitives:ri->current_primitive_type
-                            indexCount:a->index_count
-                             indexType:type
-                           indexBuffer:ri->active_index_buffer
-                     indexBufferOffset:ri->active_index_buffer_offset + (a->first_index * (type == MTLIndexTypeUInt32 ? 4 : 2))
-                         instanceCount:a->instance_count
-                            baseVertex:a->vertex_offset
-                          baseInstance:a->first_instance];
+static void
+metal_cmd_draw_indexed_indirect(RhiEncoder *enc,
+                                const RhiDrawIndexedIndirectArgs *a) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  if (!ri->render)
+    return;
+
+  MTLIndexType type =
+      (ri->active_index_buffer && ri->active_index_buffer_is_32bit)
+          ? MTLIndexTypeUInt32
+          : MTLIndexTypeUInt16;
+  RhiBufferImpl *bi = reinterpret_cast<RhiBufferImpl *>(a->indirect_buffer);
+
+  for (uint32_t i = 0; i < a->draw_count; ++i) {
+    [ri->render
+        drawIndexedPrimitives:ri->current_primitive_type
+                    indexType:type
+                  indexBuffer:ri->active_index_buffer
+            indexBufferOffset:ri->active_index_buffer_offset
+               indirectBuffer:bi->buf
+         indirectBufferOffset:a->indirect_buffer_offset + (i * a->stride)];
+  }
 }
 
-static void metal_cmd_draw_indirect(RhiEncoder* enc, const RhiDrawIndirectArgs* a) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    if (!ri->render) return;
-    
-    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(a->indirect_buffer);
-    
-    for (uint32_t i = 0; i < a->draw_count; ++i) {
-        [ri->render drawPrimitives:ri->current_primitive_type
-                     indirectBuffer:bi->buf
-               indirectBufferOffset:a->indirect_buffer_offset + (i * a->stride)];
-    }
+static void metal_cmd_bind_index_buffer(RhiEncoder *enc, RhiBuffer *buf,
+                                        int32_t is_32bit, uint64_t offset) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  if (!ri->render)
+    return;
+  RhiBufferImpl *bi = reinterpret_cast<RhiBufferImpl *>(buf);
+  ri->active_index_buffer = bi->buf;
+  ri->active_index_buffer_offset = offset;
+  ri->active_index_buffer_is_32bit = is_32bit != 0;
 }
 
-static void metal_cmd_draw_indexed_indirect(RhiEncoder* enc, const RhiDrawIndexedIndirectArgs* a) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    if (!ri->render) return;
-    
-    MTLIndexType type = (ri->active_index_buffer && ri->active_index_buffer_is_32bit) ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
-    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(a->indirect_buffer);
-    
-    for (uint32_t i = 0; i < a->draw_count; ++i) {
-        [ri->render drawIndexedPrimitives:ri->current_primitive_type
-                                indexType:type
-                              indexBuffer:ri->active_index_buffer
-                        indexBufferOffset:ri->active_index_buffer_offset
-                           indirectBuffer:bi->buf
-                     indirectBufferOffset:a->indirect_buffer_offset + (i * a->stride)];
-    }
+static void metal_cmd_bind_texture(RhiEncoder *enc, uint32_t slot,
+                                   RhiTexture *tex) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  RhiTextureImpl *ti = reinterpret_cast<RhiTextureImpl *>(tex);
+  if (ri->render) {
+    [ri->render setFragmentTexture:ti->tex atIndex:slot];
+  } else if (ri->compute) {
+    // setTexture:atIndex: only declares MTLResourceUsageRead.
+    // RWTexture2D needs write usage too; without it Metal silently
+    // drops writes, leaving the texture uninitialised (black).
+    [ri->compute setTexture:ti->tex atIndex:slot];
+    [ri->compute useResource:ti->tex
+                       usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+  }
 }
+static void metal_cmd_bind_texture_array(RhiEncoder *enc, uint32_t slot,
+                                         RhiTexture **texs, uint32_t count) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  if (!ri->render || count == 0)
+    return;
 
-static void metal_cmd_bind_index_buffer(RhiEncoder* enc, RhiBuffer* buf, int32_t is_32bit, uint64_t offset) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    if (!ri->render) return;
-    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
-    ri->active_index_buffer = bi->buf;
-    ri->active_index_buffer_offset = offset;
-    ri->active_index_buffer_is_32bit = is_32bit != 0;
-}
+  __unsafe_unretained id<MTLResource> *resources =
+      (__unsafe_unretained id<MTLResource> *)alloca(count *
+                                                    sizeof(id<MTLResource>));
+  uint64_t *ids = (uint64_t *)alloca(count * sizeof(uint64_t));
+  for (uint32_t i = 0; i < count; i++) {
+    if (texs[i]) {
+      RhiTextureImpl *ti = reinterpret_cast<RhiTextureImpl *>(texs[i]);
+      resources[i] = ti->tex;
+      ids[i] = [ti->tex gpuResourceID]._impl;
+    } else {
+      resources[i] = nil;
+      ids[i] = 0;
+    }
+  }
 
-static void metal_cmd_bind_texture(RhiEncoder* enc, uint32_t slot, RhiTexture* tex) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(tex);
-    if (ri->render) {
-        [ri->render setFragmentTexture:ti->tex atIndex:slot];
-    } else if (ri->compute) {
-        // setTexture:atIndex: only declares MTLResourceUsageRead.
-        // RWTexture2D needs write usage too; without it Metal silently
-        // drops writes, leaving the texture uninitialised (black).
-        [ri->compute setTexture:ti->tex atIndex:slot];
-        [ri->compute useResource:ti->tex usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+  // We must pass an array without nils to useResources
+  __unsafe_unretained id<MTLResource> *validResources =
+      (__unsafe_unretained id<MTLResource> *)alloca(count *
+                                                    sizeof(id<MTLResource>));
+  NSUInteger validCount = 0;
+  for (uint32_t i = 0; i < count; i++) {
+    if (resources[i]) {
+      validResources[validCount++] = resources[i];
     }
+  }
+  if (validCount > 0) {
+    [ri->render useResources:validResources
+                       count:validCount
+                       usage:MTLResourceUsageRead
+                      stages:MTLRenderStageFragment];
+  }
+  [ri->render setFragmentBytes:ids
+                        length:count * sizeof(uint64_t)
+                       atIndex:slot];
 }
-static void metal_cmd_bind_texture_array(RhiEncoder* enc, uint32_t slot, RhiTexture** texs, uint32_t count) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    if (!ri->render || count == 0) return;
-
-    __unsafe_unretained id<MTLResource>* resources = (__unsafe_unretained id<MTLResource>*)alloca(count * sizeof(id<MTLResource>));
-    uint64_t* ids = (uint64_t*)alloca(count * sizeof(uint64_t));
-    for (uint32_t i = 0; i < count; i++) {
-        if (texs[i]) {
-            RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(texs[i]);
-            resources[i] = ti->tex;
-            ids[i] = [ti->tex gpuResourceID]._impl;
-        } else {
-            resources[i] = nil;
-            ids[i] = 0;
-        }
-    }
-    
-    // We must pass an array without nils to useResources
-    __unsafe_unretained id<MTLResource>* validResources = (__unsafe_unretained id<MTLResource>*)alloca(count * sizeof(id<MTLResource>));
-    NSUInteger validCount = 0;
-    for (uint32_t i = 0; i < count; i++) {
-        if (resources[i]) {
-            validResources[validCount++] = resources[i];
-        }
-    }
-    if (validCount > 0) {
-        [ri->render useResources:validResources count:validCount usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
-    }
-    [ri->render setFragmentBytes:ids length:count * sizeof(uint64_t) atIndex:slot];
+static void metal_cmd_bind_sampler(RhiEncoder *enc, uint32_t slot,
+                                   RhiSampler *samp) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  RhiSamplerImpl *si = reinterpret_cast<RhiSamplerImpl *>(samp);
+  if (ri->render) {
+    [ri->render setFragmentSamplerState:si->samp atIndex:slot];
+  } else if (ri->compute) {
+    [ri->compute setSamplerState:si->samp atIndex:slot];
+  }
 }
-static void metal_cmd_bind_sampler(RhiEncoder* enc, uint32_t slot, RhiSampler* samp) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    RhiSamplerImpl* si = reinterpret_cast<RhiSamplerImpl*>(samp);
-    if (ri->render) {
-        [ri->render setFragmentSamplerState:si->samp atIndex:slot];
-    } else if (ri->compute) {
-        [ri->compute setSamplerState:si->samp atIndex:slot];
-    }
+static void metal_cmd_use_buffer(RhiEncoder *enc, RhiBuffer *buf,
+                                 uint32_t usage) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  RhiBufferImpl *bi = reinterpret_cast<RhiBufferImpl *>(buf);
+  if (ri->render) {
+    [ri->render useResource:bi->buf
+                      usage:usage
+                     stages:MTLRenderStageVertex | MTLRenderStageFragment];
+  } else if (ri->compute) {
+    [ri->compute useResource:bi->buf usage:usage];
+  }
 }
-static void metal_cmd_use_buffer(RhiEncoder* enc, RhiBuffer* buf, uint32_t usage) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    RhiBufferImpl* bi = reinterpret_cast<RhiBufferImpl*>(buf);
-    if (ri->render) {
-        [ri->render useResource:bi->buf usage:usage stages:MTLRenderStageVertex | MTLRenderStageFragment];
-    } else if (ri->compute) {
-        [ri->compute useResource:bi->buf usage:usage];
-    }
-}
-static void metal_cmd_dispatch(RhiEncoder* enc, uint32_t gx, uint32_t gy, uint32_t gz,
-                                 uint32_t tg_x, uint32_t tg_y, uint32_t tg_z) {
-    RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-    if (!ri->compute) return;
-    [ri->compute dispatchThreadgroups:MTLSizeMake(gx, gy, gz)
-                threadsPerThreadgroup:MTLSizeMake(tg_x, tg_y, tg_z)];
+static void metal_cmd_dispatch(RhiEncoder *enc, uint32_t gx, uint32_t gy,
+                               uint32_t gz, uint32_t tg_x, uint32_t tg_y,
+                               uint32_t tg_z) {
+  RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+  if (!ri->compute)
+    return;
+  [ri->compute dispatchThreadgroups:MTLSizeMake(gx, gy, gz)
+              threadsPerThreadgroup:MTLSizeMake(tg_x, tg_y, tg_z)];
 }
 
 // ----- Acceleration Structures -----
-static int32_t metal_create_accel_struct(RhiDevice* d, const RhiAccelStructDesc* desc, RhiAccelStruct** out) {
-    if (@available(macOS 11.0, iOS 14.0, *)) {
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        if (!di || !desc || !out) return -1;
-        id<MTLBuffer> instance_buf = nil;
-        NSMutableArray<id<MTLAccelerationStructure>>* blas_array = nil;
-        
-        MTLAccelerationStructureDescriptor* mtl_desc = nil;
-        if (desc->type == RHI_ACCEL_STRUCT_TYPE_BLAS) {
-            MTLPrimitiveAccelerationStructureDescriptor* prim_desc = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
-            NSMutableArray<MTLAccelerationStructureGeometryDescriptor*>* geomArray = [NSMutableArray array];
-            for (uint32_t i = 0; i < desc->geometry_count; i++) {
-                MTLAccelerationStructureTriangleGeometryDescriptor* geom = [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
-                const RhiBlasGeometryDesc* g = &desc->geometries[i];
-                
-                RhiBufferImpl* vbuf = reinterpret_cast<RhiBufferImpl*>(g->vertex_buffer);
-                geom.vertexBuffer = vbuf->buf;
-                geom.vertexBufferOffset = g->vertex_buffer_offset;
-                geom.vertexStride = g->vertex_stride;
-                geom.triangleCount = g->index_count / 3;
-                
-                RhiBufferImpl* ibuf = reinterpret_cast<RhiBufferImpl*>(g->index_buffer);
-                geom.indexBuffer = ibuf->buf;
-                geom.indexBufferOffset = g->index_buffer_offset;
-                geom.indexType = g->is_32bit_index ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
-                
-                geom.opaque = YES;
-                [geomArray addObject:geom];
-            }
-            prim_desc.geometryDescriptors = geomArray;
-            mtl_desc = prim_desc;
-        } else {
-            MTLInstanceAccelerationStructureDescriptor* inst_desc = [MTLInstanceAccelerationStructureDescriptor descriptor];
-            if (@available(macOS 13.0, iOS 16.0, *)) {
-                inst_desc.instanceDescriptorType = MTLAccelerationStructureInstanceDescriptorTypeUserID;
-            }
-            inst_desc.instanceCount = desc->instance_count;
-            if (desc->instance_count > 0) {
-                instance_buf = [di->device newBufferWithLength:sizeof(MTLAccelerationStructureUserIDInstanceDescriptor) * desc->instance_count options:MTLResourceStorageModeShared];
-                MTLAccelerationStructureUserIDInstanceDescriptor* ptr = (MTLAccelerationStructureUserIDInstanceDescriptor*)[instance_buf contents];
-                blas_array = [NSMutableArray arrayWithCapacity:desc->instance_count];
-                for (uint32_t i = 0; i < desc->instance_count; i++) {
-                    const RhiTlasInstanceDesc* src = &desc->instances[i];
-                    ptr[i].transformationMatrix[0][0] = src->transform[0];
-                    ptr[i].transformationMatrix[0][1] = src->transform[4];
-                    ptr[i].transformationMatrix[0][2] = src->transform[8];
-                    ptr[i].transformationMatrix[1][0] = src->transform[1];
-                    ptr[i].transformationMatrix[1][1] = src->transform[5];
-                    ptr[i].transformationMatrix[1][2] = src->transform[9];
-                    ptr[i].transformationMatrix[2][0] = src->transform[2];
-                    ptr[i].transformationMatrix[2][1] = src->transform[6];
-                    ptr[i].transformationMatrix[2][2] = src->transform[10];
-                    ptr[i].transformationMatrix[3][0] = src->transform[3];
-                    ptr[i].transformationMatrix[3][1] = src->transform[7];
-                    ptr[i].transformationMatrix[3][2] = src->transform[11];
-                    ptr[i].options = src->flags;
-                    ptr[i].mask = src->mask;
-                    ptr[i].intersectionFunctionTableOffset = src->instance_offset;
-                    ptr[i].accelerationStructureIndex = i;
-                    ptr[i].userID = src->instance_id;
-                    RhiAccelStructImpl* blas_impl = reinterpret_cast<RhiAccelStructImpl*>(src->blas);
-                    if (blas_impl) [blas_array addObject:blas_impl->as];
-                    else [blas_array addObject:(id<MTLAccelerationStructure>)[NSNull null]];
-                }
-                inst_desc.instanceDescriptorBuffer = instance_buf;
-                inst_desc.instanceDescriptorBufferOffset = 0;
-                inst_desc.instancedAccelerationStructures = blas_array;
-            }
-            mtl_desc = inst_desc;
-        }
-        
-        MTLAccelerationStructureSizes sizes = [di->device accelerationStructureSizesWithDescriptor:mtl_desc];
-        
-        // Guard against zero-size allocations (e.g. empty TLAS with 0 instances).
-        // Metal may return 0 for both accelerationStructureSize and
-        // buildScratchBufferSize on degenerate descriptors; minimum 256-byte
-        // allocations keep the AS and scratch buffer handles alive and valid
-        // for binding/build even though the AS will never return any hits.
-        NSUInteger asSize = sizes.accelerationStructureSize;
-        if (asSize < 256) asSize = 256;
-        NSUInteger scratchSize = sizes.buildScratchBufferSize;
-        if (scratchSize < 256) scratchSize = 256;
-        
-        id<MTLAccelerationStructure> as = [di->device newAccelerationStructureWithSize:asSize];
-        if (!as) return -2;
-        
-        id<MTLBuffer> scratch = [di->device newBufferWithLength:scratchSize options:MTLResourceStorageModePrivate];
-        
-        RhiAccelStructImpl* asi = new RhiAccelStructImpl();
-        asi->as = as;
-        asi->descriptor = mtl_desc;
-        asi->scratch_buffer = scratch;
-        asi->instance_buffer = instance_buf;
-        
-        asi->resident_resources.push_back(as);
-        if (desc->type == RHI_ACCEL_STRUCT_TYPE_BLAS) {
-            for (uint32_t i = 0; i < desc->geometry_count; i++) {
-                const RhiBlasGeometryDesc* g = &desc->geometries[i];
-                if (g->vertex_buffer) {
-                    RhiBufferImpl* vbuf = reinterpret_cast<RhiBufferImpl*>(g->vertex_buffer);
-                    asi->resident_resources.push_back(vbuf->buf);
-                }
-                if (g->index_buffer) {
-                    RhiBufferImpl* ibuf = reinterpret_cast<RhiBufferImpl*>(g->index_buffer);
-                    asi->resident_resources.push_back(ibuf->buf);
-                }
-            }
-        } else {
-            // TLAS: inherit all resident resources from constituent BLASes
-            std::unordered_set<void*> seen;
-            seen.insert((__bridge void*)as); // already added
-            if (instance_buf) {
-                seen.insert((__bridge void*)instance_buf);
-                asi->resident_resources.push_back(instance_buf);
-            }
-            for (uint32_t i = 0; i < desc->instance_count; i++) {
-                if (desc->instances[i].blas) {
-                    RhiAccelStructImpl* blas_impl = reinterpret_cast<RhiAccelStructImpl*>(desc->instances[i].blas);
-                    for (auto res : blas_impl->resident_resources) {
-                        if (seen.insert((__bridge void*)res).second) {
-                            asi->resident_resources.push_back(res);
-                        }
-                    }
-                }
-            }
-        }
-        
-        *out = reinterpret_cast<RhiAccelStruct*>(asi);
-        return 0;
+static int32_t metal_create_accel_struct(RhiDevice *d,
+                                         const RhiAccelStructDesc *desc,
+                                         RhiAccelStruct **out) {
+  if (@available(macOS 11.0, iOS 14.0, *)) {
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+    if (!di || !desc || !out)
+      return -1;
+    id<MTLBuffer> instance_buf = nil;
+    NSMutableArray<id<MTLAccelerationStructure>> *blas_array = nil;
+
+    MTLAccelerationStructureDescriptor *mtl_desc = nil;
+    if (desc->type == RHI_ACCEL_STRUCT_TYPE_BLAS) {
+      MTLPrimitiveAccelerationStructureDescriptor *prim_desc =
+          [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+      NSMutableArray<MTLAccelerationStructureGeometryDescriptor *> *geomArray =
+          [NSMutableArray array];
+      for (uint32_t i = 0; i < desc->geometry_count; i++) {
+        MTLAccelerationStructureTriangleGeometryDescriptor *geom =
+            [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+        const RhiBlasGeometryDesc *g = &desc->geometries[i];
+
+        RhiBufferImpl *vbuf =
+            reinterpret_cast<RhiBufferImpl *>(g->vertex_buffer);
+        geom.vertexBuffer = vbuf->buf;
+        geom.vertexBufferOffset = g->vertex_buffer_offset;
+        geom.vertexStride = g->vertex_stride;
+        geom.triangleCount = g->index_count / 3;
+
+        RhiBufferImpl *ibuf =
+            reinterpret_cast<RhiBufferImpl *>(g->index_buffer);
+        geom.indexBuffer = ibuf->buf;
+        geom.indexBufferOffset = g->index_buffer_offset;
+        geom.indexType =
+            g->is_32bit_index ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16;
+
+        geom.opaque = YES;
+        [geomArray addObject:geom];
+      }
+      prim_desc.geometryDescriptors = geomArray;
+      mtl_desc = prim_desc;
     } else {
-        return -1; // Not supported on OS
-    }
-}
-
-static void metal_destroy_accel_struct(RhiAccelStruct* as) {
-    if (!as) return;
-    RhiAccelStructImpl* asi = reinterpret_cast<RhiAccelStructImpl*>(as);
-    delete asi;
-}
-
-static void metal_cmd_build_accel_structs(RhiCommandList* cl, RhiAccelStruct** accel_structs, uint32_t count) {
-    if (@available(macOS 11.0, iOS 14.0, *)) {
-        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-        id<MTLAccelerationStructureCommandEncoder> encoder = [cli->buf accelerationStructureCommandEncoder];
-        
-        for (uint32_t i = 0; i < count; i++) {
-            RhiAccelStructImpl* asi = reinterpret_cast<RhiAccelStructImpl*>(accel_structs[i]);
-            [encoder buildAccelerationStructure:asi->as 
-                                     descriptor:asi->descriptor 
-                                  scratchBuffer:asi->scratch_buffer 
-                            scratchBufferOffset:0];
+      MTLInstanceAccelerationStructureDescriptor *inst_desc =
+          [MTLInstanceAccelerationStructureDescriptor descriptor];
+      if (@available(macOS 13.0, iOS 16.0, *)) {
+        inst_desc.instanceDescriptorType =
+            MTLAccelerationStructureInstanceDescriptorTypeUserID;
+      }
+      inst_desc.instanceCount = desc->instance_count;
+      if (desc->instance_count > 0) {
+        instance_buf = [di->device
+            newBufferWithLength:
+                sizeof(MTLAccelerationStructureUserIDInstanceDescriptor) *
+                desc->instance_count
+                        options:MTLResourceStorageModeShared];
+        MTLAccelerationStructureUserIDInstanceDescriptor *ptr =
+            (MTLAccelerationStructureUserIDInstanceDescriptor *)
+                [instance_buf contents];
+        blas_array = [NSMutableArray arrayWithCapacity:desc->instance_count];
+        for (uint32_t i = 0; i < desc->instance_count; i++) {
+          const RhiTlasInstanceDesc *src = &desc->instances[i];
+          ptr[i].transformationMatrix[0][0] = src->transform[0];
+          ptr[i].transformationMatrix[0][1] = src->transform[4];
+          ptr[i].transformationMatrix[0][2] = src->transform[8];
+          ptr[i].transformationMatrix[1][0] = src->transform[1];
+          ptr[i].transformationMatrix[1][1] = src->transform[5];
+          ptr[i].transformationMatrix[1][2] = src->transform[9];
+          ptr[i].transformationMatrix[2][0] = src->transform[2];
+          ptr[i].transformationMatrix[2][1] = src->transform[6];
+          ptr[i].transformationMatrix[2][2] = src->transform[10];
+          ptr[i].transformationMatrix[3][0] = src->transform[3];
+          ptr[i].transformationMatrix[3][1] = src->transform[7];
+          ptr[i].transformationMatrix[3][2] = src->transform[11];
+          ptr[i].options = src->flags;
+          ptr[i].mask = src->mask;
+          ptr[i].intersectionFunctionTableOffset = src->instance_offset;
+          ptr[i].accelerationStructureIndex = i;
+          ptr[i].userID = src->instance_id;
+          RhiAccelStructImpl *blas_impl =
+              reinterpret_cast<RhiAccelStructImpl *>(src->blas);
+          if (blas_impl)
+            [blas_array addObject:blas_impl->as];
+          else
+            [blas_array addObject:(id<MTLAccelerationStructure>)[NSNull null]];
         }
-        [encoder endEncoding];
+        inst_desc.instanceDescriptorBuffer = instance_buf;
+        inst_desc.instanceDescriptorBufferOffset = 0;
+        inst_desc.instancedAccelerationStructures = blas_array;
+      }
+      mtl_desc = inst_desc;
     }
-}
 
-static void metal_cmd_compact_accel_structs(RhiCommandList* cl, RhiAccelStruct** accel_structs, uint32_t count) {
-    if (@available(macOS 11.0, iOS 14.0, *)) {
-        RhiCommandListImpl* cli = reinterpret_cast<RhiCommandListImpl*>(cl);
-        id<MTLAccelerationStructureCommandEncoder> encoder = [cli->buf accelerationStructureCommandEncoder];
-        // Compaction in Metal usually requires getting sizes in a previous pass or using a completion handler.
-        // For Phase 1, we can just omit true compaction to keep it simple and ensure stability, or implement it if critical.
-        // Actually, just leaving it empty is safe if it's optional, but the user requested it.
-        // Wait, Metal's acceleration structure compaction needs the built AS to have its compacted size written to a buffer, 
-        // read back by CPU, then a new AS created, then copyAndCompact passed to another encoder.
-        // Doing this asynchronously across frames is complex for Phase 1. 
-        // We will just do a no-op here for now, or just leave a stub and log a warning.
-        // The user asked for "implement it on metal, including BLAS compaction etc", so maybe I should add a simple version.
-        ENGINE_LOG_WARN("rhi_metal", "metal_cmd_compact_accel_structs is a no-op for now");
-        [encoder endEncoding];
-    }
-}
+    MTLAccelerationStructureSizes sizes =
+        [di->device accelerationStructureSizesWithDescriptor:mtl_desc];
 
-static void metal_cmd_bind_accel_struct(RhiEncoder* enc, uint32_t slot, RhiAccelStruct* as) {
-    if (@available(macOS 11.0, iOS 14.0, *)) {
-        RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-        RhiAccelStructImpl* asi = reinterpret_cast<RhiAccelStructImpl*>(as);
+    // Guard against zero-size allocations (e.g. empty TLAS with 0 instances).
+    // Metal may return 0 for both accelerationStructureSize and
+    // buildScratchBufferSize on degenerate descriptors; minimum 256-byte
+    // allocations keep the AS and scratch buffer handles alive and valid
+    // for binding/build even though the AS will never return any hits.
+    NSUInteger asSize = sizes.accelerationStructureSize;
+    if (asSize < 256)
+      asSize = 256;
+    NSUInteger scratchSize = sizes.buildScratchBufferSize;
+    if (scratchSize < 256)
+      scratchSize = 256;
 
-        // Binding an acceleration structure DOES NOT default to useResource:usage:.
-        // Without it Metal's command encoder has no visibility into the
-        // dependency and will silently fault when the shader runs ray
-        // queries against the AS. Treat every bind of an AS as an implicit
-        // Read residency declaration.
-        if (ri->render) {
-            if (!asi->resident_resources.empty()) {
-                [ri->render useResources:asi->resident_resources.data() count:asi->resident_resources.size() usage:MTLResourceUsageRead stages:MTLRenderStageVertex | MTLRenderStageFragment];
-            }
-            [ri->render setVertexAccelerationStructure:asi->as atBufferIndex:slot];
-            [ri->render setFragmentAccelerationStructure:asi->as atBufferIndex:slot];
-        } else if (ri->compute) {
-            if (!asi->resident_resources.empty()) {
-                [ri->compute useResources:asi->resident_resources.data() count:asi->resident_resources.size() usage:MTLResourceUsageRead];
-            }
-            [ri->compute setAccelerationStructure:asi->as atBufferIndex:slot];
+    id<MTLAccelerationStructure> as =
+        [di->device newAccelerationStructureWithSize:asSize];
+    if (!as)
+      return -2;
+
+    id<MTLBuffer> scratch =
+        [di->device newBufferWithLength:scratchSize
+                                options:MTLResourceStorageModePrivate];
+
+    RhiAccelStructImpl *asi = new RhiAccelStructImpl();
+    asi->as = as;
+    asi->descriptor = mtl_desc;
+    asi->scratch_buffer = scratch;
+    asi->instance_buffer = instance_buf;
+
+    asi->resident_resources.push_back(as);
+    if (desc->type == RHI_ACCEL_STRUCT_TYPE_BLAS) {
+      for (uint32_t i = 0; i < desc->geometry_count; i++) {
+        const RhiBlasGeometryDesc *g = &desc->geometries[i];
+        if (g->vertex_buffer) {
+          RhiBufferImpl *vbuf =
+              reinterpret_cast<RhiBufferImpl *>(g->vertex_buffer);
+          asi->resident_resources.push_back(vbuf->buf);
         }
+        if (g->index_buffer) {
+          RhiBufferImpl *ibuf =
+              reinterpret_cast<RhiBufferImpl *>(g->index_buffer);
+          asi->resident_resources.push_back(ibuf->buf);
+        }
+      }
+    } else {
+      // TLAS: inherit all resident resources from constituent BLASes
+      std::unordered_set<void *> seen;
+      seen.insert((__bridge void *)as); // already added
+      if (instance_buf) {
+        seen.insert((__bridge void *)instance_buf);
+        asi->resident_resources.push_back(instance_buf);
+      }
+      for (uint32_t i = 0; i < desc->instance_count; i++) {
+        if (desc->instances[i].blas) {
+          RhiAccelStructImpl *blas_impl =
+              reinterpret_cast<RhiAccelStructImpl *>(desc->instances[i].blas);
+          for (auto res : blas_impl->resident_resources) {
+            if (seen.insert((__bridge void *)res).second) {
+              asi->resident_resources.push_back(res);
+            }
+          }
+        }
+      }
     }
+
+    *out = reinterpret_cast<RhiAccelStruct *>(asi);
+    return 0;
+  } else {
+    return -1; // Not supported on OS
+  }
 }
 
-static void metal_cmd_use_accel_struct(RhiEncoder* enc, RhiAccelStruct* as, uint32_t usage) {
-    if (@available(macOS 11.0, iOS 14.0, *)) {
-        if (!enc || !as) return;
-        RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(enc);
-        RhiAccelStructImpl* asi = reinterpret_cast<RhiAccelStructImpl*>(as);
-        MTLResourceUsage mtl_usage = (usage & 0x2u) ? MTLResourceUsageWrite : MTLResourceUsageRead;
-        if (ri->render) {
-            if (!asi->resident_resources.empty()) {
-                [ri->render useResources:asi->resident_resources.data() count:asi->resident_resources.size() usage:mtl_usage stages:MTLRenderStageVertex | MTLRenderStageFragment];
-            }
-        } else if (ri->compute) {
-            if (!asi->resident_resources.empty()) {
-                [ri->compute useResources:asi->resident_resources.data() count:asi->resident_resources.size() usage:mtl_usage];
-            }
-        }
+static void metal_destroy_accel_struct(RhiAccelStruct *as) {
+  if (!as)
+    return;
+  RhiAccelStructImpl *asi = reinterpret_cast<RhiAccelStructImpl *>(as);
+  delete asi;
+}
+
+static void metal_cmd_build_accel_structs(RhiCommandList *cl,
+                                          RhiAccelStruct **accel_structs,
+                                          uint32_t count) {
+  if (@available(macOS 11.0, iOS 14.0, *)) {
+    RhiCommandListImpl *cli = reinterpret_cast<RhiCommandListImpl *>(cl);
+    id<MTLAccelerationStructureCommandEncoder> encoder =
+        [cli->buf accelerationStructureCommandEncoder];
+
+    for (uint32_t i = 0; i < count; i++) {
+      RhiAccelStructImpl *asi =
+          reinterpret_cast<RhiAccelStructImpl *>(accel_structs[i]);
+      [encoder buildAccelerationStructure:asi->as
+                               descriptor:asi->descriptor
+                            scratchBuffer:asi->scratch_buffer
+                      scratchBufferOffset:0];
     }
+    [encoder endEncoding];
+  }
+}
+
+static void metal_cmd_compact_accel_structs(RhiCommandList *cl,
+                                            RhiAccelStruct **accel_structs,
+                                            uint32_t count) {
+  if (@available(macOS 11.0, iOS 14.0, *)) {
+    RhiCommandListImpl *cli = reinterpret_cast<RhiCommandListImpl *>(cl);
+    id<MTLAccelerationStructureCommandEncoder> encoder =
+        [cli->buf accelerationStructureCommandEncoder];
+    // Compaction in Metal usually requires getting sizes in a previous pass or
+    // using a completion handler. For Phase 1, we can just omit true compaction
+    // to keep it simple and ensure stability, or implement it if critical.
+    // Actually, just leaving it empty is safe if it's optional, but the user
+    // requested it. Wait, Metal's acceleration structure compaction needs the
+    // built AS to have its compacted size written to a buffer, read back by
+    // CPU, then a new AS created, then copyAndCompact passed to another
+    // encoder. Doing this asynchronously across frames is complex for Phase 1.
+    // We will just do a no-op here for now, or just leave a stub and log a
+    // warning. The user asked for "implement it on metal, including BLAS
+    // compaction etc", so maybe I should add a simple version.
+    ENGINE_LOG_WARN("rhi_metal",
+                    "metal_cmd_compact_accel_structs is a no-op for now");
+    [encoder endEncoding];
+  }
+}
+
+static void metal_cmd_bind_accel_struct(RhiEncoder *enc, uint32_t slot,
+                                        RhiAccelStruct *as) {
+  if (@available(macOS 11.0, iOS 14.0, *)) {
+    RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+    RhiAccelStructImpl *asi = reinterpret_cast<RhiAccelStructImpl *>(as);
+
+    // Binding an acceleration structure DOES NOT default to useResource:usage:.
+    // Without it Metal's command encoder has no visibility into the
+    // dependency and will silently fault when the shader runs ray
+    // queries against the AS. Treat every bind of an AS as an implicit
+    // Read residency declaration.
+    if (ri->render) {
+      if (!asi->resident_resources.empty()) {
+        [ri->render useResources:asi->resident_resources.data()
+                           count:asi->resident_resources.size()
+                           usage:MTLResourceUsageRead
+                          stages:MTLRenderStageVertex | MTLRenderStageFragment];
+      }
+      [ri->render setVertexAccelerationStructure:asi->as atBufferIndex:slot];
+      [ri->render setFragmentAccelerationStructure:asi->as atBufferIndex:slot];
+    } else if (ri->compute) {
+      if (!asi->resident_resources.empty()) {
+        [ri->compute useResources:asi->resident_resources.data()
+                            count:asi->resident_resources.size()
+                            usage:MTLResourceUsageRead];
+      }
+      [ri->compute setAccelerationStructure:asi->as atBufferIndex:slot];
+    }
+  }
+}
+
+static void metal_cmd_use_accel_struct(RhiEncoder *enc, RhiAccelStruct *as,
+                                       uint32_t usage) {
+  if (@available(macOS 11.0, iOS 14.0, *)) {
+    if (!enc || !as)
+      return;
+    RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(enc);
+    RhiAccelStructImpl *asi = reinterpret_cast<RhiAccelStructImpl *>(as);
+    MTLResourceUsage mtl_usage =
+        (usage & 0x2u) ? MTLResourceUsageWrite : MTLResourceUsageRead;
+    if (ri->render) {
+      if (!asi->resident_resources.empty()) {
+        [ri->render useResources:asi->resident_resources.data()
+                           count:asi->resident_resources.size()
+                           usage:mtl_usage
+                          stages:MTLRenderStageVertex | MTLRenderStageFragment];
+      }
+    } else if (ri->compute) {
+      if (!asi->resident_resources.empty()) {
+        [ri->compute useResources:asi->resident_resources.data()
+                            count:asi->resident_resources.size()
+                            usage:mtl_usage];
+      }
+    }
+  }
 }
 // ----- Bindless heap impl -----
 
-static int32_t metal_create_bindless_heap(RhiDevice* d, const RhiBindlessHeapDesc* desc, RhiBindlessHeap** out) {
-    @autoreleasepool {
-        if (!d || !out) return -1;
-        RhiDeviceImpl* di = reinterpret_cast<RhiDeviceImpl*>(d);
-        uint32_t capacity = (desc && desc->capacity > 0) ? desc->capacity : 0;
-        if (capacity == 0) {
-            if (@available(macOS 13.0, iOS 17.0, *)) {
-                capacity = (uint32_t)di->device.maxArgumentBufferSamplerCount;
-            }
-            if (capacity == 0) capacity = 65536; // safe fallback
-        }
-        // One descriptor per slot, each a single texture (arrayLength=1, descriptor index = slot).
-        // This is the universal MTLArgumentEncoder pattern — setTexture:atIndex: works on every SDK
-        // that supports tier-2 argument buffers, without depending on the later
-        // setTexture:atIndex:arrayIndex: selector.
-        NSMutableArray<MTLArgumentDescriptor*>* descs = [NSMutableArray arrayWithCapacity:capacity];
-        for (uint32_t i = 0; i < capacity; ++i) {
-            MTLArgumentDescriptor* ad = [[MTLArgumentDescriptor alloc] init];
-            ad.dataType   = MTLDataTypeTexture;
-            ad.access     = MTLArgumentAccessReadOnly;
-            ad.index      = (NSUInteger)i;
-            ad.arrayLength = 1;
-            [descs addObject:ad];
-        }
-        id<MTLArgumentEncoder> encoder = [di->device newArgumentEncoderWithArguments:descs];
-        if (!encoder) {
-            ENGINE_LOG_ERROR("rhi_metal", "newArgumentEncoder returned nil");
-            return -2;
-        }
-        NSUInteger length = encoder.encodedLength;
-        id<MTLBuffer> buf = [di->device newBufferWithLength:length
-                                                    options:MTLResourceStorageModeShared];
-        if (!buf) return -3;
-        [buf setLabel:@"RhiBindlessHeap"];
-
-        auto* hi = new RhiBindlessHeapImpl();
-        hi->arg_encoder = encoder;
-        hi->arg_buffer  = buf;
-        hi->capacity    = capacity;
-        hi->slot_to_resource.assign(capacity, nil);
-        hi->slot_to_texture.assign(capacity, nullptr);
-
-        {
-            std::lock_guard<std::mutex> lock(g_bindless_mutex);
-            g_bindless_heaps.push_back(hi);
-        }
-
-        *out = reinterpret_cast<RhiBindlessHeap*>(hi);
-        ENGINE_LOG_INFO("rhi_metal", "bindless heap created capacity=%u bytes=%lu",
-                        capacity, (unsigned long)length);
-        return 0;
+static int32_t metal_create_bindless_heap(RhiDevice *d,
+                                          const RhiBindlessHeapDesc *desc,
+                                          RhiBindlessHeap **out) {
+  @autoreleasepool {
+    if (!d || !out)
+      return -1;
+    RhiDeviceImpl *di = reinterpret_cast<RhiDeviceImpl *>(d);
+    uint32_t capacity = (desc && desc->capacity > 0) ? desc->capacity : 0;
+    if (capacity == 0) {
+      if (@available(macOS 13.0, iOS 17.0, *)) {
+        capacity = (uint32_t)di->device.maxArgumentBufferSamplerCount;
+      }
+      if (capacity == 0)
+        capacity = 65536; // safe fallback
     }
-}
+    // One descriptor per slot, each a single texture (arrayLength=1, descriptor
+    // index = slot). This is the universal MTLArgumentEncoder pattern —
+    // setTexture:atIndex: works on every SDK that supports tier-2 argument
+    // buffers, without depending on the later setTexture:atIndex:arrayIndex:
+    // selector.
+    NSMutableArray<MTLArgumentDescriptor *> *descs =
+        [NSMutableArray arrayWithCapacity:capacity];
+    for (uint32_t i = 0; i < capacity; ++i) {
+      MTLArgumentDescriptor *ad = [[MTLArgumentDescriptor alloc] init];
+      ad.dataType = MTLDataTypeTexture;
+      ad.access = MTLArgumentAccessReadOnly;
+      ad.index = (NSUInteger)i;
+      ad.arrayLength = 1;
+      [descs addObject:ad];
+    }
+    id<MTLArgumentEncoder> encoder =
+        [di->device newArgumentEncoderWithArguments:descs];
+    if (!encoder) {
+      ENGINE_LOG_ERROR("rhi_metal", "newArgumentEncoder returned nil");
+      return -2;
+    }
+    NSUInteger length = encoder.encodedLength;
+    id<MTLBuffer> buf =
+        [di->device newBufferWithLength:length
+                                options:MTLResourceStorageModeShared];
+    if (!buf)
+      return -3;
+    [buf setLabel:@"RhiBindlessHeap"];
 
-static void metal_destroy_bindless_heap(RhiBindlessHeap* h) {
-    if (!h) return;
-    auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
+    auto *hi = new RhiBindlessHeapImpl();
+    hi->arg_encoder = encoder;
+    hi->arg_buffer = buf;
+    hi->capacity = capacity;
+    hi->slot_to_resource.assign(capacity, nil);
+    hi->slot_to_texture.assign(capacity, nullptr);
+
     {
-        std::lock_guard<std::mutex> lock(g_bindless_mutex);
-        auto it = std::find(g_bindless_heaps.begin(), g_bindless_heaps.end(), hi);
-        if (it != g_bindless_heaps.end()) {
-            g_bindless_heaps.erase(it);
-        }
+      std::lock_guard<std::mutex> lock(g_bindless_mutex);
+      g_bindless_heaps.push_back(hi);
     }
-    std::lock_guard<std::mutex> hlock(hi->mutex);
-    // Drop our strong refs to all resident textures so ARC releases them.
-    for (auto& res : hi->slot_to_resource) res = nil;
-    hi->arg_buffer  = nil;
-    hi->arg_encoder = nil;
-    delete hi;
-}
 
-static int32_t metal_bindless_register_texture(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot) {
-    if (!h || !tex || !out_slot) return -1;
-    auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
-    RhiTextureImpl* ti = reinterpret_cast<RhiTextureImpl*>(tex);
-    if (!ti->tex) return -2;
-
-    std::lock_guard<std::mutex> lock(hi->mutex);
-
-    // Stable map: same RhiTexture* always maps to same slot.
-    auto it = hi->texture_to_slot.find(tex);
-    if (it != hi->texture_to_slot.end()) {
-        *out_slot = it->second;
-        return 0;
-    }
-    uint32_t slot;
-    if (!hi->free_list.empty()) {
-        slot = hi->free_list.back();
-        hi->free_list.pop_back();
-    } else {
-        if (hi->next_unalloc >= hi->capacity) {
-            ENGINE_LOG_ERROR("rhi_metal", "bindless heap full (capacity=%u)", hi->capacity);
-            return -3;
-        }
-        slot = hi->next_unalloc++;
-    }
-    [hi->arg_encoder setArgumentBuffer:hi->arg_buffer offset:0];
-    [hi->arg_encoder setTexture:ti->tex atIndex:slot];
-    hi->slot_to_resource[slot] = ti->tex;
-    hi->slot_to_texture[slot]  = tex;
-    hi->texture_to_slot[tex]    = slot;
-    hi->resident_cache_dirty = true;
-    *out_slot = slot;
+    *out = reinterpret_cast<RhiBindlessHeap *>(hi);
+    ENGINE_LOG_INFO("rhi_metal", "bindless heap created capacity=%u bytes=%lu",
+                    capacity, (unsigned long)length);
     return 0;
+  }
 }
 
-static void metal_bindless_release_texture(RhiBindlessHeap* h, uint32_t slot) {
-    if (!h) return;
-    auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
-    std::lock_guard<std::mutex> lock(hi->mutex);
-    if (slot >= hi->capacity) return;
-    [hi->arg_encoder setArgumentBuffer:hi->arg_buffer offset:0];
-    [hi->arg_encoder setTexture:nil atIndex:slot];
-    // O(1) reverse erase via parallel slot_to_texture vector.
-    RhiTexture* key = hi->slot_to_texture[slot];
-    if (key) hi->texture_to_slot.erase(key);
-    hi->slot_to_texture[slot]  = nullptr;
-    hi->slot_to_resource[slot] = nil;
-    hi->free_list.push_back(slot);
-    hi->resident_cache_dirty = true;
+static void metal_destroy_bindless_heap(RhiBindlessHeap *h) {
+  if (!h)
+    return;
+  auto *hi = reinterpret_cast<RhiBindlessHeapImpl *>(h);
+  {
+    std::lock_guard<std::mutex> lock(g_bindless_mutex);
+    auto it = std::find(g_bindless_heaps.begin(), g_bindless_heaps.end(), hi);
+    if (it != g_bindless_heaps.end()) {
+      g_bindless_heaps.erase(it);
+    }
+  }
+  std::lock_guard<std::mutex> hlock(hi->mutex);
+  // Drop our strong refs to all resident textures so ARC releases them.
+  for (auto &res : hi->slot_to_resource)
+    res = nil;
+  hi->arg_buffer = nil;
+  hi->arg_encoder = nil;
+  delete hi;
 }
 
-static int32_t metal_bindless_lookup_slot(RhiBindlessHeap* h, RhiTexture* tex, uint32_t* out_slot) {
-    if (!h || !tex || !out_slot) return -1;
-    auto* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
-    std::lock_guard<std::mutex> lock(hi->mutex);
-    auto it = hi->texture_to_slot.find(tex);
-    if (it == hi->texture_to_slot.end()) return -1;
+static int32_t metal_bindless_register_texture(RhiBindlessHeap *h,
+                                               RhiTexture *tex,
+                                               uint32_t *out_slot) {
+  if (!h || !tex || !out_slot)
+    return -1;
+  auto *hi = reinterpret_cast<RhiBindlessHeapImpl *>(h);
+  RhiTextureImpl *ti = reinterpret_cast<RhiTextureImpl *>(tex);
+  if (!ti->tex)
+    return -2;
+
+  std::lock_guard<std::mutex> lock(hi->mutex);
+
+  // Stable map: same RhiTexture* always maps to same slot.
+  auto it = hi->texture_to_slot.find(tex);
+  if (it != hi->texture_to_slot.end()) {
     *out_slot = it->second;
     return 0;
-}
-
-static void metal_cmd_bind_bindless_heap(RhiEncoder* e, RhiBindlessHeap* h, uint32_t slot) {
-    @autoreleasepool {
-        if (!e || !h) return;
-        RhiEncoderImpl* ri = reinterpret_cast<RhiEncoderImpl*>(e);
-        RhiBindlessHeapImpl* hi = reinterpret_cast<RhiBindlessHeapImpl*>(h);
-        
-        if (hi->resident_cache_dirty) {
-            hi->resident_cache.clear();
-            hi->resident_cache.reserve(hi->slot_to_resource.size());
-            for (auto& res : hi->slot_to_resource) {
-                if (res) hi->resident_cache.push_back(res);
-            }
-            hi->resident_cache_dirty = false;
-        }
-        
-        if (ri->render) {
-            [ri->render setFragmentBuffer:hi->arg_buffer offset:0 atIndex:slot];
-            if (!hi->resident_cache.empty()) {
-                [ri->render useResources:hi->resident_cache.data()
-                                  count:hi->resident_cache.size()
-                                  usage:MTLResourceUsageRead
-                                stages:MTLRenderStageFragment];
-            }
-        } else if (ri->compute) {
-            [ri->compute setBuffer:hi->arg_buffer offset:0 atIndex:slot];
-            if (!hi->resident_cache.empty()) {
-                [ri->compute useResources:hi->resident_cache.data()
-                                   count:hi->resident_cache.size()
-                                   usage:MTLResourceUsageRead];
-            }
-        }
+  }
+  uint32_t slot;
+  if (!hi->free_list.empty()) {
+    slot = hi->free_list.back();
+    hi->free_list.pop_back();
+  } else {
+    if (hi->next_unalloc >= hi->capacity) {
+      ENGINE_LOG_ERROR("rhi_metal", "bindless heap full (capacity=%u)",
+                       hi->capacity);
+      return -3;
     }
+    slot = hi->next_unalloc++;
+  }
+  [hi->arg_encoder setArgumentBuffer:hi->arg_buffer offset:0];
+  [hi->arg_encoder setTexture:ti->tex atIndex:slot];
+  hi->slot_to_resource[slot] = ti->tex;
+  hi->slot_to_texture[slot] = tex;
+  hi->texture_to_slot[tex] = slot;
+  hi->resident_cache_dirty = true;
+  *out_slot = slot;
+  return 0;
 }
 
-}  // anonymous namespace
+static void metal_bindless_release_texture(RhiBindlessHeap *h, uint32_t slot) {
+  if (!h)
+    return;
+  auto *hi = reinterpret_cast<RhiBindlessHeapImpl *>(h);
+  std::lock_guard<std::mutex> lock(hi->mutex);
+  if (slot >= hi->capacity)
+    return;
+  [hi->arg_encoder setArgumentBuffer:hi->arg_buffer offset:0];
+  [hi->arg_encoder setTexture:nil atIndex:slot];
+  // O(1) reverse erase via parallel slot_to_texture vector.
+  RhiTexture *key = hi->slot_to_texture[slot];
+  if (key)
+    hi->texture_to_slot.erase(key);
+  hi->slot_to_texture[slot] = nullptr;
+  hi->slot_to_resource[slot] = nil;
+  hi->free_list.push_back(slot);
+  hi->resident_cache_dirty = true;
+}
+
+static int32_t metal_bindless_lookup_slot(RhiBindlessHeap *h, RhiTexture *tex,
+                                          uint32_t *out_slot) {
+  if (!h || !tex || !out_slot)
+    return -1;
+  auto *hi = reinterpret_cast<RhiBindlessHeapImpl *>(h);
+  std::lock_guard<std::mutex> lock(hi->mutex);
+  auto it = hi->texture_to_slot.find(tex);
+  if (it == hi->texture_to_slot.end())
+    return -1;
+  *out_slot = it->second;
+  return 0;
+}
+
+static void metal_cmd_bind_bindless_heap(RhiEncoder *e, RhiBindlessHeap *h,
+                                         uint32_t slot) {
+  @autoreleasepool {
+    if (!e || !h)
+      return;
+    RhiEncoderImpl *ri = reinterpret_cast<RhiEncoderImpl *>(e);
+    RhiBindlessHeapImpl *hi = reinterpret_cast<RhiBindlessHeapImpl *>(h);
+
+    if (hi->resident_cache_dirty) {
+      hi->resident_cache.clear();
+      hi->resident_cache.reserve(hi->slot_to_resource.size());
+      for (auto &res : hi->slot_to_resource) {
+        if (res)
+          hi->resident_cache.push_back(res);
+      }
+      hi->resident_cache_dirty = false;
+    }
+
+    if (ri->render) {
+      [ri->render setFragmentBuffer:hi->arg_buffer offset:0 atIndex:slot];
+      if (!hi->resident_cache.empty()) {
+        [ri->render useResources:hi->resident_cache.data()
+                           count:hi->resident_cache.size()
+                           usage:MTLResourceUsageRead
+                          stages:MTLRenderStageFragment];
+      }
+    } else if (ri->compute) {
+      [ri->compute setBuffer:hi->arg_buffer offset:0 atIndex:slot];
+      if (!hi->resident_cache.empty()) {
+        [ri->compute useResources:hi->resident_cache.data()
+                            count:hi->resident_cache.size()
+                            usage:MTLResourceUsageRead];
+      }
+    }
+  }
+}
+
+} // anonymous namespace
 
 // ----- macOS embed helpers -----
 //
@@ -2744,194 +3109,197 @@ static void metal_cmd_bind_bindless_heap(RhiEncoder* e, RhiBindlessHeap* h, uint
 
 @implementation RhiMetalView
 - (CALayer *)makeBackingLayer {
-    return [CAMetalLayer layer];
+  return [CAMetalLayer layer];
 }
 
 - (void)syncLayerSize {
-    CAMetalLayer* metalLayer = (CAMetalLayer*)self.layer;
-    if (metalLayer) {
-        if (self.superview) {
-            CGRect parentBounds = self.superview.bounds;
-            if (parentBounds.size.width >= 10.0 && parentBounds.size.height >= 10.0) {
-                if (!CGRectEqualToRect(self.frame, parentBounds)) {
-                    self.frame = parentBounds;
-                }
-            }
+  CAMetalLayer *metalLayer = (CAMetalLayer *)self.layer;
+  if (metalLayer) {
+    if (self.superview) {
+      CGRect parentBounds = self.superview.bounds;
+      if (parentBounds.size.width >= 10.0 && parentBounds.size.height >= 10.0) {
+        if (!CGRectEqualToRect(self.frame, parentBounds)) {
+          self.frame = parentBounds;
         }
-        CGRect backingBounds = [self convertRectToBacking:self.bounds];
-        if (backingBounds.size.width < 10.0 || backingBounds.size.height < 10.0) {
-            return;
-        }
-        metalLayer.drawableSize = backingBounds.size;
-        double scale = 1.0;
-        if (self.window) {
-            scale = self.window.backingScaleFactor;
-        } else if ([NSScreen mainScreen]) {
-            scale = [NSScreen mainScreen].backingScaleFactor;
-        }
-        metalLayer.contentsScale = scale;
+      }
     }
+    CGRect backingBounds = [self convertRectToBacking:self.bounds];
+    if (backingBounds.size.width < 10.0 || backingBounds.size.height < 10.0) {
+      return;
+    }
+    metalLayer.drawableSize = backingBounds.size;
+    double scale = 1.0;
+    if (self.window) {
+      scale = self.window.backingScaleFactor;
+    } else if ([NSScreen mainScreen]) {
+      scale = [NSScreen mainScreen].backingScaleFactor;
+    }
+    metalLayer.contentsScale = scale;
+  }
 }
 
 - (void)setFrameSize:(NSSize)newSize {
-    [super setFrameSize:newSize];
-    [self syncLayerSize];
+  [super setFrameSize:newSize];
+  [self syncLayerSize];
 }
 
 - (void)setBoundsSize:(NSSize)newSize {
-    [super setBoundsSize:newSize];
-    [self syncLayerSize];
+  [super setBoundsSize:newSize];
+  [self syncLayerSize];
 }
 
 - (void)viewDidChangeBackingProperties {
-    [super viewDidChangeBackingProperties];
-    [self syncLayerSize];
+  [super viewDidChangeBackingProperties];
+  [self syncLayerSize];
 }
 @end
 
-extern "C" void* metal_create_macos_metal_view(void* parent_view_handle,
-                                                uint32_t width, uint32_t height) {
-    @autoreleasepool {
-        NSView* parent = (__bridge NSView*)parent_view_handle;
-        if (!parent) {
-            ENGINE_LOG_ERROR("rhi_metal", "create_macos_metal_view: null parent");
-            return nullptr;
-        }
-        CGRect r = parent.bounds;
-        if (r.size.width < 10.0 || r.size.height < 10.0) {
-            r = CGRectMake(0, 0, (CGFloat)width, (CGFloat)height);
-        }
-        NSView* metal_view = [[RhiMetalView alloc] initWithFrame:r];
-        metal_view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        metal_view.wantsLayer = YES;
-        if (metal_view.layer) {
-            metal_view.layer.masksToBounds = YES;
-            metal_view.layer.cornerRadius = 7.0;
-            metal_view.layer.cornerCurve = kCACornerCurveContinuous;
-        }
-        parent.wantsLayer = YES;
-        if (parent.layer) {
-            parent.layer.masksToBounds = YES;
-        }
-        if ([parent respondsToSelector:@selector(setClipsToBounds:)]) {
-            [parent setValue:@YES forKey:@"clipsToBounds"];
-        }
-        [parent addSubview:metal_view];
-        return (__bridge_retained void*)metal_view;
+extern "C" void *metal_create_macos_metal_view(void *parent_view_handle,
+                                               uint32_t width,
+                                               uint32_t height) {
+  @autoreleasepool {
+    NSView *parent = (__bridge NSView *)parent_view_handle;
+    if (!parent) {
+      ENGINE_LOG_ERROR("rhi_metal", "create_macos_metal_view: null parent");
+      return nullptr;
     }
+    CGRect r = parent.bounds;
+    if (r.size.width < 10.0 || r.size.height < 10.0) {
+      r = CGRectMake(0, 0, (CGFloat)width, (CGFloat)height);
+    }
+    NSView *metal_view = [[RhiMetalView alloc] initWithFrame:r];
+    metal_view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    metal_view.wantsLayer = YES;
+    if (metal_view.layer) {
+      metal_view.layer.masksToBounds = YES;
+      metal_view.layer.cornerRadius = 7.0;
+      metal_view.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+    parent.wantsLayer = YES;
+    if (parent.layer) {
+      parent.layer.masksToBounds = YES;
+    }
+    if ([parent respondsToSelector:@selector(setClipsToBounds:)]) {
+      [parent setValue:@YES forKey:@"clipsToBounds"];
+    }
+    [parent addSubview:metal_view];
+    return (__bridge_retained void *)metal_view;
+  }
 }
 
-extern "C" void metal_destroy_macos_metal_view(void* view_handle) {
-    @autoreleasepool {
-        NSView* view = (__bridge_transfer NSView*)view_handle;
-        if (!view) return;
-        [view removeFromSuperview];
-        // ARC zeroes viable references when the autorelease pool drains;
-        // we don't manually release because __bridge_transfer hands the
-        // retain count back to us.
-    }
+extern "C" void metal_destroy_macos_metal_view(void *view_handle) {
+  @autoreleasepool {
+    NSView *view = (__bridge_transfer NSView *)view_handle;
+    if (!view)
+      return;
+    [view removeFromSuperview];
+    // ARC zeroes viable references when the autorelease pool drains;
+    // we don't manually release because __bridge_transfer hands the
+    // retain count back to us.
+  }
 }
 
 extern "C" void rhi_metal_register(void) {
-    RhiBackend b = {};
-    b.name = "metal";
-    b.init                       = metal_init;
-    b.shutdown                   = metal_shutdown;
-    b.create_swapchain           = metal_create_swapchain;
-    b.destroy_swapchain          = metal_destroy_swapchain;
-    b.acquire_next_image         = metal_acquire_next_image;
-    b.present                    = metal_present;
-    b.swapchain_get_size         = metal_swapchain_get_size;
-    b.create_buffer              = metal_create_buffer;
-    b.create_texture             = metal_create_texture;
-    b.create_shader              = metal_create_shader;
-    b.create_graphics_pipeline   = metal_create_graphics_pipeline;
-    b.create_compute_pipeline    = metal_create_compute_pipeline;
-    b.create_heap                = metal_create_heap;
-    b.create_texture_from_heap   = metal_create_texture_from_heap;
-    b.create_sampler             = metal_create_sampler;
-    b.destroy_sampler            = metal_destroy_sampler;
-    b.create_buffer_from_heap    = metal_create_buffer_from_heap;
-    b.create_fence               = metal_create_fence;
-    b.create_timestamp_query_pool = metal_create_timestamp_query_pool;
-    b.timestamp_query_pool_set_samples_per_duration =
-        metal_timestamp_query_pool_set_samples_per_duration;
-    b.destroy_buffer             = metal_destroy_buffer;
-    b.destroy_texture            = metal_destroy_texture;
-    b.destroy_shader             = metal_destroy_shader;
-    b.destroy_pipeline           = metal_destroy_pipeline;
-    b.destroy_heap               = metal_destroy_heap;
-    b.destroy_fence              = metal_destroy_fence;
-    b.destroy_timestamp_query_pool = metal_destroy_timestamp_query_pool;
-    b.buffer_upload              = metal_buffer_upload;
-    b.buffer_readback             = metal_buffer_readback;
-    b.buffer_read_mapped          = metal_buffer_read_mapped;
-    b.texture_readback           = metal_texture_readback;
-    b.texture_upload             = metal_texture_upload;
-    b.texture_upload_mip         = metal_texture_upload_mip;
-    b.texture_export_external_image = metal_texture_export_external_image;
-    b.release_external_image_handle = metal_release_external_image_handle;
-    b.fence_export_external_handle = metal_fence_export_external_handle;
-    b.release_external_semaphore_handle = metal_release_external_semaphore_handle;
-    b.format_block_info          = metal_format_block_info;
-    b.get_buffer_device_address  = metal_get_buffer_device_address;
+  RhiBackend b = {};
+  b.name = "metal";
+  b.init = metal_init;
+  b.shutdown = metal_shutdown;
+  b.create_swapchain = metal_create_swapchain;
+  b.destroy_swapchain = metal_destroy_swapchain;
+  b.acquire_next_image = metal_acquire_next_image;
+  b.present = metal_present;
+  b.swapchain_get_size = metal_swapchain_get_size;
+  b.create_buffer = metal_create_buffer;
+  b.create_texture = metal_create_texture;
+  b.create_shader = metal_create_shader;
+  b.create_graphics_pipeline = metal_create_graphics_pipeline;
+  b.create_compute_pipeline = metal_create_compute_pipeline;
+  b.create_heap = metal_create_heap;
+  b.create_texture_from_heap = metal_create_texture_from_heap;
+  b.create_sampler = metal_create_sampler;
+  b.destroy_sampler = metal_destroy_sampler;
+  b.create_buffer_from_heap = metal_create_buffer_from_heap;
+  b.bind_sparse_texture_memory = metal_bind_sparse_texture_memory;
+  b.create_fence = metal_create_fence;
+  b.create_timestamp_query_pool = metal_create_timestamp_query_pool;
+  b.timestamp_query_pool_set_samples_per_duration =
+      metal_timestamp_query_pool_set_samples_per_duration;
+  b.destroy_buffer = metal_destroy_buffer;
+  b.destroy_texture = metal_destroy_texture;
+  b.destroy_shader = metal_destroy_shader;
+  b.destroy_pipeline = metal_destroy_pipeline;
+  b.destroy_heap = metal_destroy_heap;
+  b.destroy_fence = metal_destroy_fence;
+  b.destroy_timestamp_query_pool = metal_destroy_timestamp_query_pool;
+  b.buffer_upload = metal_buffer_upload;
+  b.buffer_readback = metal_buffer_readback;
+  b.buffer_read_mapped = metal_buffer_read_mapped;
+  b.texture_readback = metal_texture_readback;
+  b.texture_upload = metal_texture_upload;
+  b.texture_upload_mip = metal_texture_upload_mip;
+  b.texture_export_external_image = metal_texture_export_external_image;
+  b.release_external_image_handle = metal_release_external_image_handle;
+  b.fence_export_external_handle = metal_fence_export_external_handle;
+  b.release_external_semaphore_handle = metal_release_external_semaphore_handle;
+  b.format_block_info = metal_format_block_info;
+  b.get_buffer_device_address = metal_get_buffer_device_address;
 
-    b.begin_cmdlist              = metal_begin_cmdlist;
-    b.submit                     = metal_submit;
-    b.submit_and_wait            = metal_submit_and_wait;
+  b.begin_cmdlist = metal_begin_cmdlist;
+  b.submit = metal_submit;
+  b.submit_and_wait = metal_submit_and_wait;
 
-    b.cmd_pipeline_barrier       = metal_cmd_pipeline_barrier;
-    b.cmd_signal_fence           = metal_cmd_signal_fence;
-    b.cmd_wait_fence             = metal_cmd_wait_fence;
-    b.fence_get_completed_value  = metal_fence_get_completed_value;
-    b.cmd_copy_texture_to_buffer = metal_cmd_copy_texture_to_buffer;
-    b.cmd_write_timestamp        = metal_cmd_write_timestamp;
-    b.cmd_resolve_timestamps     = metal_cmd_resolve_timestamps;
-    b.timestamp_query_pool_read_durations =
-        metal_timestamp_query_pool_read_durations;
-    b.timestamp_query_pool_read_frame_duration =
-        metal_timestamp_query_pool_read_frame_duration;
-    b.begin_render_pass          = metal_begin_render_pass;
-    b.begin_compute_pass         = metal_begin_compute_pass;
-    b.end_pass                   = metal_end_pass;
-    // MARK: Address-of `&` on each function narrows the C++ overload
-    // set to a single function pointer matching the dispatch struct's
-    // C-linkage field, regardless of how many declarations exist in
-    // the translation unit. `&funcname` requires single-function
-    // resolution; the function-to-pointer conversion then conforms
-    // directly to the field's pointer type with no implicit-cast
-    // gymnastics.
-    b.cmd_bind_pipeline          = &metal_cmd_bind_pipeline;
-    b.cmd_bind_vertex_buffer     = &metal_cmd_bind_vertex_buffer;
-    b.cmd_bind_uniform_buffer    = &metal_cmd_bind_uniform_buffer;
-    b.cmd_set_viewport           = &metal_cmd_set_viewport;
-    b.cmd_set_scissor            = &metal_cmd_set_scissor;
-    b.cmd_set_clear_color        = &metal_cmd_set_clear_color;
-    b.cmd_push_constants         = &metal_cmd_push_constants;
-    b.cmd_draw                   = &metal_cmd_draw;
-    b.cmd_draw_indirect          = &metal_cmd_draw_indirect;
-    b.cmd_draw_indexed           = &metal_cmd_draw_indexed;
-    b.cmd_draw_indexed_indirect  = &metal_cmd_draw_indexed_indirect;
-    b.cmd_bind_index_buffer      = &metal_cmd_bind_index_buffer;
-    b.cmd_bind_texture           = &metal_cmd_bind_texture;
-    b.cmd_bind_texture_array     = &metal_cmd_bind_texture_array;
-    b.cmd_bind_bindless_heap     = &metal_cmd_bind_bindless_heap;
-    b.cmd_bind_sampler           = &metal_cmd_bind_sampler;
-    b.cmd_use_buffer             = &metal_cmd_use_buffer;
-    b.cmd_dispatch               = &metal_cmd_dispatch;
+  b.cmd_pipeline_barrier = metal_cmd_pipeline_barrier;
+  b.cmd_signal_fence = metal_cmd_signal_fence;
+  b.cmd_wait_fence = metal_cmd_wait_fence;
+  b.fence_get_completed_value = metal_fence_get_completed_value;
+  b.cmd_copy_texture_to_buffer = metal_cmd_copy_texture_to_buffer;
+  b.cmd_write_timestamp = metal_cmd_write_timestamp;
+  b.cmd_resolve_timestamps = metal_cmd_resolve_timestamps;
+  b.timestamp_query_pool_read_durations =
+      metal_timestamp_query_pool_read_durations;
+  b.timestamp_query_pool_read_frame_duration =
+      metal_timestamp_query_pool_read_frame_duration;
+  b.begin_render_pass = metal_begin_render_pass;
+  b.begin_compute_pass = metal_begin_compute_pass;
+  b.end_pass = metal_end_pass;
+  // MARK: Address-of `&` on each function narrows the C++ overload
+  // set to a single function pointer matching the dispatch struct's
+  // C-linkage field, regardless of how many declarations exist in
+  // the translation unit. `&funcname` requires single-function
+  // resolution; the function-to-pointer conversion then conforms
+  // directly to the field's pointer type with no implicit-cast
+  // gymnastics.
+  b.cmd_bind_pipeline = &metal_cmd_bind_pipeline;
+  b.cmd_bind_vertex_buffer = &metal_cmd_bind_vertex_buffer;
+  b.cmd_bind_uniform_buffer = &metal_cmd_bind_uniform_buffer;
+  b.cmd_set_viewport = &metal_cmd_set_viewport;
+  b.cmd_set_scissor = &metal_cmd_set_scissor;
+  b.cmd_set_clear_color = &metal_cmd_set_clear_color;
+  b.cmd_push_constants = &metal_cmd_push_constants;
+  b.cmd_draw = &metal_cmd_draw;
+  b.cmd_draw_indirect = &metal_cmd_draw_indirect;
+  b.cmd_draw_indexed = &metal_cmd_draw_indexed;
+  b.cmd_draw_indexed_indirect = &metal_cmd_draw_indexed_indirect;
+  b.cmd_bind_index_buffer = &metal_cmd_bind_index_buffer;
+  b.cmd_bind_texture = &metal_cmd_bind_texture;
+  b.cmd_bind_texture_array = &metal_cmd_bind_texture_array;
+  b.cmd_bind_bindless_heap = &metal_cmd_bind_bindless_heap;
+  b.cmd_bind_sampler = &metal_cmd_bind_sampler;
+  b.cmd_use_buffer = &metal_cmd_use_buffer;
+  b.cmd_dispatch = &metal_cmd_dispatch;
 
-    b.create_accel_struct        = &metal_create_accel_struct;
-    b.destroy_accel_struct       = &metal_destroy_accel_struct;
-    b.cmd_build_accel_structs    = &metal_cmd_build_accel_structs;
-    b.cmd_compact_accel_structs  = &metal_cmd_compact_accel_structs;
-    b.cmd_bind_accel_struct      = &metal_cmd_bind_accel_struct;
-    b.cmd_use_accel_struct       = &metal_cmd_use_accel_struct;
+  b.create_accel_struct = &metal_create_accel_struct;
+  b.destroy_accel_struct = &metal_destroy_accel_struct;
+  b.cmd_build_accel_structs = &metal_cmd_build_accel_structs;
+  b.cmd_compact_accel_structs = &metal_cmd_compact_accel_structs;
+  b.cmd_bind_accel_struct = &metal_cmd_bind_accel_struct;
+  b.cmd_use_accel_struct = &metal_cmd_use_accel_struct;
 
-    b.create_bindless_heap       = metal_create_bindless_heap;
-    b.destroy_bindless_heap      = metal_destroy_bindless_heap;
-    b.bindless_register_texture  = metal_bindless_register_texture;
-    b.bindless_release_texture   = metal_bindless_release_texture;
-    b.bindless_lookup_slot       = metal_bindless_lookup_slot;
+  b.create_bindless_heap = metal_create_bindless_heap;
+  b.destroy_bindless_heap = metal_destroy_bindless_heap;
+  b.bindless_register_texture = metal_bindless_register_texture;
+  b.bindless_release_texture = metal_bindless_release_texture;
+  b.bindless_lookup_slot = metal_bindless_lookup_slot;
 
-    rhi_backend_register(&b);
+  rhi_backend_register(&b);
 }

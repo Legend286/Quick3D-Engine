@@ -227,11 +227,13 @@ Source-of-truth for level layout. References compiled assets by path (relative t
 ### 5.2 Pipeline stages
 
 1. **Mesh shader (object cull + LOD selection)** — per-task cull into threadgroups, per-mesh LOD index → output draw-list.
-2. **Clustered light culling** — compute shader builds tile/cluster light lists.
-3. **Forward+ opaque pass** — vertex + mesh-shader dispatched with light clusters.
-4. **Forward transparency pass** — sort required here, no clusters interaction (single light baked into vertex).
-5. **Particles** — separate pass with depth read for soft particle intersection.
-6. **Post-processing chain** — SMAA edge detect + blend → bloom (optional) → ACES → tonemap → present.
+2. **Visibility Buffer Rasterization** — renders opaque geometry to visbuffer (Triangle ID + Barycentrics) and depth.
+3. **Virtual Shadow Maps (VSM)** — compute feedback from visbuffer depth, allocate sparse pages, bind memory, and rasterize shadow casters into active pages.
+4. **Clustered light culling** — compute shader builds tile/cluster light lists.
+5. **Visibility Buffer Resolve** — compute shader reconstructs surface attributes and evaluates materials with clustered lights.
+6. **Forward transparency pass** — sort required here, uses clustered lights.
+7. **Particles** — separate pass with depth read for soft particle intersection.
+8. **Post-processing chain** — SMAA edge detect + blend → bloom (optional) → ACES → tonemap → present.
 
 ### 5.3 Material system (Disney PBR)
 
@@ -271,6 +273,7 @@ typedef struct RhiTexture RhiTexture;
 typedef struct RhiPipeline RhiPipeline;
 typedef struct RhiCommandList RhiCommandList;
 typedef struct RhiShader RhiShader;
+typedef struct RhiHeap RhiHeap;
 
 ENGINE_API RhiDevice*    rhi_create_device(void);
 ENGINE_API void          rhi_destroy_device(RhiDevice*);
@@ -279,12 +282,17 @@ ENGINE_API RhiSwapchain* rhi_create_swapchain(RhiDevice*, void* ns_window);
 ENGINE_API uint32_t      rhi_acquire_next_image(RhiSwapchain*);
 ENGINE_API void          rhi_present(RhiSwapchain*);
 
+ENGINE_API RhiHeap*      rhi_create_heap(RhiDevice*, const RhiHeapDesc*);
+ENGINE_API void          rhi_destroy_heap(RhiHeap*);
+
 ENGINE_API RhiBuffer*    rhi_create_buffer(RhiDevice*, const RhiBufferDesc*);
 ENGINE_API RhiTexture*   rhi_create_texture(RhiDevice*, const RhiTextureDesc*);
 ENGINE_API RhiPipeline*  rhi_create_pipeline(RhiDevice*, const RhiPipelineDesc*);
 ENGINE_API RhiShader*    rhi_compile_shader(RhiDevice*, const RhiShaderDesc*);
 ENGINE_API void          rhi_destroy_buffer(RhiBuffer*);
 // ...
+
+ENGINE_API void          rhi_bind_sparse_texture_memory(RhiDevice*, RhiTexture*, const RhiSparseBindRegion*, uint32_t);
 
 ENGINE_API RhiCommandList* rhi_begin_cmdlist(RhiDevice*, RhiSwapchain*);
 ENGINE_API void            rhi_cmd_bind_pipeline(RhiCommandList*, RhiPipeline*);
