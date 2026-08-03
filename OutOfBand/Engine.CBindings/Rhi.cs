@@ -94,6 +94,7 @@ public static partial class RhiNative
     public const uint TextureCopyDst = 1u << 3;
     public const uint TextureStorage = 1u << 4;
     public const uint TextureExternalImage = 1u << 5;
+    public const uint TextureSparse = 1u << 6;
 
     // ---- structs (mirror C layouts; abi first, then fields) ----
 
@@ -180,6 +181,22 @@ public static partial class RhiNative
     public const uint HeapUsageRenderTarget = 1u << 0;
     public const uint HeapUsageShaderRead    = 1u << 1;
     public const uint HeapUsageStorage       = 1u << 2;
+    public const uint HeapUsageSparse        = 1u << 3;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SparseBindRegion
+    {
+        public uint MipLevel;
+        public uint ArrayLayer;
+        public uint XOffset;
+        public uint YOffset;
+        public uint ZOffset;
+        public uint Width;
+        public uint Height;
+        public uint Depth;
+        public IntPtr MemoryHeap; // RhiHeap*
+        public ulong HeapOffset;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct PassAttachment
@@ -661,4 +678,7 @@ public static partial class RhiNative
     public static partial void RhiCmdDispatch(IntPtr encoder,
                                                uint gx, uint gy, uint gz,
                                                uint tg_x, uint tg_y, uint tg_z);
+
+    [LibraryImport(Library, EntryPoint = "rhi_bind_sparse_texture_memory")]
+    public static partial void RhiBindSparseTextureMemory(IntPtr device, IntPtr texture, in SparseBindRegion binds, uint bind_count);
 }

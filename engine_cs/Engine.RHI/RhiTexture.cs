@@ -35,6 +35,12 @@ public sealed class RhiTexture : IDisposable
         _owns = ownsHandle;
     }
 
+    public void BindSparseMemory(RhiDevice device, ReadOnlySpan<RhiNative.SparseBindRegion> binds)
+    {
+        if (binds.Length == 0) return;
+        RhiNative.RhiBindSparseTextureMemory(device.Handle, Handle, in binds[0], (uint)binds.Length);
+    }
+
     public static RhiTexture CreateRenderTarget(RhiDevice device, uint w, uint h,
                                                 RhiNative.TextureFormat format)
     {
