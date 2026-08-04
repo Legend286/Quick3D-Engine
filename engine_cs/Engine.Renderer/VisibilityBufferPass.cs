@@ -78,7 +78,7 @@ internal sealed class VisibilityBufferPass : RenderPass, IDisposable
             ResourceState.DepthStencil);
         builder.Read(
             _owner.DrawCommandsHandle,
-            ResourceState.ShaderRead);
+            ResourceState.IndirectRead);
     }
 
     public override unsafe void Execute(

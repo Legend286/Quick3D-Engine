@@ -99,8 +99,8 @@ public sealed class VisibilityBufferContractTests
             "GameRenderer.cs");
 
         Assert.Contains("RhiPipeline.CreateGraphicsMrt", pass);
-        Assert.Contains("LoadShaderSource(", pass);
-        Assert.Contains("foreach (string includeDir in includeDirs)", pass);
+        Assert.Contains("ShaderIncludeResolver.LoadSource(", pass);
+        Assert.DoesNotContain("LoadShaderSource(", pass);
         Assert.Contains("RhiNative.TextureFormat.Rg32Uint", pass);
         Assert.Contains("RhiNative.TextureFormat.Rg16Unorm", pass);
         Assert.Contains("VisibilityIdentifiersHandle", pass);
@@ -171,6 +171,8 @@ public sealed class VisibilityBufferContractTests
         Assert.Equal(18, (int)ViewportDebugView.ReconstructedInstance);
         Assert.Equal(19, (int)ViewportDebugView.ReconstructedTangent);
         Assert.Equal(20, (int)ViewportDebugView.VisibilityPbr);
+        Assert.Equal(21, (int)ViewportDebugView.VsmShadowMap);
+        Assert.Equal(29, (int)ViewportDebugView.MaterialQualifier);
         string pass = ReadRepositoryFile(
             "engine_cs",
             "Engine.Renderer",
@@ -201,7 +203,7 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("sink.BindTexture(2, depth)", pass);
         Assert.Contains("sink.BindTexture(3, reconstruction)", pass);
         Assert.Contains("sink.BindTexture(4, reconstruction)", pass);
-        Assert.DoesNotContain("VisibilityReferenceHandle", pass);
+        Assert.Contains("VisibilityReferenceHandle", pass);
         Assert.Contains("Texture2D<uint2> visibilityIdentifiers", shader);
         Assert.Contains("Texture2D<float2> visibilityBarycentrics", shader);
         Assert.Contains("Texture2D<float> sceneDepth", shader);
@@ -213,6 +215,10 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("float3 ErrorHeatMap(float value)", shader);
         Assert.Contains("push.mode >= 14u && push.mode <= 19u", shader);
         Assert.Contains("push.mode == 20u", shader);
+        Assert.Contains(
+            "(push.mode >= 21u && push.mode <= 29u)",
+            shader);
+        Assert.Contains("return reconstructionOutput.Load(int3(pixel, 0));", shader);
         Assert.DoesNotContain("ReconstructionErrorAmplification", shader);
         Assert.Contains("pixelX < width / 2u", common);
         Assert.Contains("identifiers.x", common);
@@ -274,11 +280,15 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("ThreadGroupSize = 8", pass);
         Assert.Contains("IsReconstructionView", pass);
         Assert.Contains("sink.Dispatch(", pass);
+        Assert.Contains(
+            "            ThreadGroupSize,\n            ThreadGroupSize,\n            1);",
+            pass);
         Assert.Contains("sink.BindTexture(0, output)", pass);
-        Assert.Contains("sink.BindHeap(1, _owner.BindlessHeap)", pass);
-        Assert.Contains("SampleGrad(textureSampler, uv, uvDx, uvDy)", shader);
-        Assert.Contains("material.normalTexIndex", shader);
-        Assert.DoesNotContain(
+        Assert.Contains("sink.UseBuffer(_sceneCache.CameraBuffer, 1)", pass);
+        Assert.DoesNotContain("sink.BindHeap(1, _owner.BindlessHeap)", pass);
+        Assert.DoesNotContain("SampleGrad(textureSampler", shader);
+        Assert.DoesNotContain("material.normalTexIndex", shader);
+        Assert.Contains(
             "CreateVisibilityReconstructionPass()",
             plugin);
         Assert.Contains("VisibilityReconstructionHandle", renderer);
@@ -302,6 +312,87 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("VisibilityIdentifiersHandle", picking);
         Assert.Contains("CopyTextureToBuffer", picking);
         Assert.Contains("ReadMapped<VisibilityIdentifiers>", picking);
+    }
+
+    [Fact]
+    public void VisibilityCompute_ClassifiesMaterialBeforeOptionalVertexLoads()
+    {
+        string sceneData = ReadRepositoryFile(
+            "Content",
+            "shaders",
+            "scene_data.slang");
+        string shading = ReadRepositoryFile(
+            "Content",
+            "shaders",
+            "visibility_shade.slang");
+        string reconstruction = ReadRepositoryFile(
+            "Content",
+            "shaders",
+            "visibility_reconstruct.slang");
+        string pathTracer = ReadRepositoryFile(
+            "Content",
+            "shaders",
+            "path_tracer.slang");
+
+        Assert.Contains("static const uint kMaterialNeedsUv", sceneData);
+        Assert.Contains("static const uint kMaterialDisneyDiffuse", sceneData);
+        Assert.Contains("static const uint kMaterialDisneySubsurface", sceneData);
+        Assert.Contains("static const uint kMaterialDisneyMetallicOnly", sceneData);
+        Assert.Contains("uint featureFlags", sceneData);
+        Assert.Contains("bool MaterialNeedsUv(MaterialData material)", sceneData);
+        Assert.Contains("bool MaterialNeedsTangent(MaterialData material)", sceneData);
+        Assert.Contains("bool MaterialNeedsNormalGradient(MaterialData material)", sceneData);
+        Assert.Contains("MaterialData material = push.materials[part.materialIdx]", shading);
+        Assert.Contains("bool validPart = identifiers.x < push.partCount", shading);
+        Assert.Contains("bool needsUv = MaterialNeedsUv(material)", shading);
+        Assert.Contains("kMaterialNormalTexture", sceneData);
+        Assert.Contains("MaterialHasFeature(material, kMaterialNormalTexture)",
+            ReadRepositoryFile("Content", "shaders", "visibility_reference.slang"));
+        string disney = ReadRepositoryFile(
+            "Content",
+            "shaders",
+            "disney_bsdf.slang");
+        Assert.Contains("uint featureFlags", disney);
+        Assert.Contains("float3 DisneyDiffuseOpaque", disney);
+        Assert.Contains("float3 DisneyDiffuseSubsurface", disney);
+        Assert.Contains("kMaterialDisneyDiffuse", disney);
+        Assert.Contains("kMaterialDisneySubsurface", disney);
+        Assert.Contains("EvaluateDisneyBSDFIsotropic(\n        dmat,\n        N,\n        V,\n        L,\n        materialFeatureFlags)",
+            ReadRepositoryFile("Content", "shaders", "pbr.slang"));
+        Assert.Contains("mat.featureFlags);", ReadRepositoryFile(
+            "Content",
+            "shaders",
+            "pbr.slang"));
+        Assert.Contains("bool needsTangent = MaterialNeedsTangent(material)", shading);
+        Assert.Contains("[numthreads(8, 8, 1)]", shading);
+        Assert.Contains("if (needsUv)", shading);
+        Assert.Contains("if (needsTangent)", shading);
+        Assert.Contains("if (needsNormalGradient)", shading);
+        Assert.Contains("groupshared uint g_tileMaterialTypeHash", shading);
+        Assert.Contains("groupshared uint g_tileMaterialTypeCount", shading);
+        Assert.Contains("MaterialQualifierCode(material)", shading);
+        Assert.Contains(
+            "qualifier * 0x9e3779b9u",
+            shading);
+        Assert.Contains("if (debugView == 29u)", shading);
+        Assert.Contains("MaterialTypeColorFromHash(", sceneData);
+        Assert.Contains("MaterialTypeColor(MaterialData material)", sceneData);
+        Assert.Contains("visibilityShadingOutput[pixel] = float4(materialColor, 1.0)", shading);
+        Assert.Contains("return;", shading.Substring(
+            shading.IndexOf("if (debugView == 29u)", StringComparison.Ordinal)));
+        Assert.Contains("LoadVertexUv(part, index0)", shading);
+        Assert.Contains("LoadVertexTangent(part, index0)", shading);
+        Assert.Contains("MaterialData material = push.materials[part.materialIdx]", reconstruction);
+        Assert.DoesNotContain("needsNormalMap", reconstruction);
+        Assert.DoesNotContain("SampleGrad(textureSampler", reconstruction);
+        Assert.Contains("if (needsTangent)", reconstruction);
+        Assert.DoesNotContain("Vertex vertex0 = part.vertices[index0]", shading);
+        Assert.DoesNotContain("Vertex vertex0 = part.vertices[index0]", reconstruction);
+        Assert.Contains("bool needsUv = MaterialNeedsUv(mat)", pathTracer);
+        Assert.Contains("bool needsTangent = MaterialNeedsTangent(mat)", pathTracer);
+        Assert.DoesNotContain("Vertex v0 = part.vertices[i0]", pathTracer);
+        Assert.DoesNotContain("Vertex vertex0 = visibilityPart.vertices", pathTracer);
+        Assert.DoesNotContain("float2 uv0e = float2(part.vertices", pathTracer);
     }
 
     [Fact]
@@ -333,7 +424,7 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("material.normalTexIndex", shader);
         Assert.Contains(".Sample(textureSampler, input.uv)", shader);
         Assert.Contains("float3x3(tangent, bitangent, normal)", shader);
-        Assert.DoesNotContain("CreateVisibilityReferencePass()", plugin);
+        Assert.Contains("CreateVisibilityReferencePass()", plugin);
         Assert.Contains("VisibilityReferenceHandle", renderer);
         Assert.Contains("_visibilityReferenceTexture", renderer);
         Assert.Contains("bool referenceRequired = false", renderer);
@@ -415,8 +506,14 @@ public sealed class VisibilityBufferContractTests
         Assert.Contains("_owner.SetupShadingReads(builder)", pass);
         Assert.Contains("_owner.BindShadingResources(sink)", pass);
         Assert.Contains("sink.Dispatch(", pass);
+        Assert.Contains(
+            "            ThreadGroupSize,\n            ThreadGroupSize,\n            1);",
+            pass);
         Assert.Contains("CreateVisibilityShadingPass()", plugin);
         Assert.Contains("push.mode == 20u", debugShader);
+        Assert.Contains(
+            "(push.mode >= 21u && push.mode <= 29u)",
+            debugShader);
         Assert.Contains("length(reference - reconstructed) * 8.0", debugShader);
         Assert.Contains("ErrorHeatMap(error)", debugShader);
         Assert.DoesNotContain("float3 compared = lerp", debugShader);
@@ -430,7 +527,9 @@ public sealed class VisibilityBufferContractTests
             "!VisibilityReconstructionPass.IsReconstructionView(view)",
             pass);
         Assert.Contains("IsComparisonView(debugView)", referencePass);
-        Assert.Contains("if (push.mode <= 12u)", debugShader);
+        Assert.Contains(
+            "if (push.mode <= 12u ||\n        (push.mode >= 21u && push.mode <= 29u))",
+            debugShader);
         Assert.True(
             renderer.IndexOf(
                 "new VisibilityBufferDebugPass(",
@@ -438,8 +537,8 @@ public sealed class VisibilityBufferContractTests
             renderer.IndexOf(
                 "new OutlineSelectionDepthPass(",
                 StringComparison.Ordinal));
-        Assert.DoesNotContain("\"Visibility PBR\",", viewModel);
-        Assert.DoesNotContain("\"Reconstructed UV\",", viewModel);
+        Assert.Contains("\"Visibility PBR\",", viewModel);
+        Assert.Contains("\"Reconstructed UV\",", viewModel);
         Assert.Contains("\"Visibility Buffer Renderer\"", viewModel);
         Assert.DoesNotContain(
             "\"Clustered Forward Renderer\"",

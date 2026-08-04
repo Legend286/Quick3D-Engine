@@ -17,7 +17,6 @@ internal sealed class VisibilityReconstructionPass : RenderPass, IDisposable
     private readonly PbrPass _owner;
     private readonly RhiShader _shader;
     private readonly RhiPipeline _pipeline;
-    private readonly RhiSampler _sampler;
 
     public VisibilityReconstructionPass(
         RhiDevice device,
@@ -46,7 +45,6 @@ internal sealed class VisibilityReconstructionPass : RenderPass, IDisposable
             cliArgs,
             resolvedIncludeDirs);
         _pipeline = RhiPipeline.CreateCompute(device, _shader);
-        _sampler = RhiSampler.Create(device);
         _pipeline.SetDebugName(
             "Visibility Attribute Reconstruction",
             "Visibility Buffer");
@@ -102,16 +100,12 @@ internal sealed class VisibilityReconstructionPass : RenderPass, IDisposable
         sink.UseBuffer(_sceneCache.InstanceBuffer, 1);
         sink.UseBuffer(_sceneCache.PartBuffer, 1);
         sink.UseBuffer(_sceneCache.MaterialBuffer, 1);
+        sink.UseBuffer(_sceneCache.CameraBuffer, 1);
         frameData.BindGeometry(sink);
         sink.BindTexture(4, identifiers);
         sink.BindTexture(5, barycentrics);
         sink.BindTexture(6, depth);
         sink.BindTexture(0, output);
-        if (_owner.BindlessHeap.IsInitialized)
-        {
-            sink.BindHeap(1, _owner.BindlessHeap);
-            sink.BindSampler(0, _sampler);
-        }
         sink.PushConstants(
             0,
             (uint)sizeof(ScenePushData),
@@ -128,7 +122,6 @@ internal sealed class VisibilityReconstructionPass : RenderPass, IDisposable
 
     public void Dispose()
     {
-        _sampler.Dispose();
         _pipeline.Dispose();
         _shader.Dispose();
     }

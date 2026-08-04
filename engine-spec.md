@@ -292,7 +292,19 @@ ENGINE_API RhiShader*    rhi_compile_shader(RhiDevice*, const RhiShaderDesc*);
 ENGINE_API void          rhi_destroy_buffer(RhiBuffer*);
 // ...
 
+ENGINE_API int32_t       rhi_try_bind_sparse_texture_memory(RhiDevice*, RhiTexture*, const RhiSparseBindRegion*, uint32_t);
 ENGINE_API void          rhi_bind_sparse_texture_memory(RhiDevice*, RhiTexture*, const RhiSparseBindRegion*, uint32_t);
+```
+
+`rhi_try_bind_sparse_texture_memory` validates the complete batch before queueing
+it and returns zero when the batch is accepted. A successful call means
+validated/queued, not synchronously completed; the backend's resource-state
+synchronization orders later GPU work. A null `memory_heap` requests an unmap.
+The legacy void export remains for compatibility and discards the status.
+`RHI_STATE_INDIRECT_READ` is the reserved state for indirect-command reads;
+Vulkan maps it to `DRAW_INDIRECT/INDIRECT_COMMAND_READ` after a compute
+shader write, while Metal retains the existing backend barrier no-op contract.
+The C and managed `RhiResourceState` enums remain numerically aligned.
 
 ENGINE_API RhiCommandList* rhi_begin_cmdlist(RhiDevice*, RhiSwapchain*);
 ENGINE_API void            rhi_cmd_bind_pipeline(RhiCommandList*, RhiPipeline*);

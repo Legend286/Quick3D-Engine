@@ -43,20 +43,60 @@ float G_SmithGGX_Clearcoat(float dotNV, float dotNL) {
 }
 
 // Disney Diffuse & Subsurface
-float3 DisneyDiffuse(float3 baseColor, float roughness, float dotNV, float dotNL, float dotLH, float subsurface) {
+float3 DisneyDiffuseOpaque(
+    float3 baseColor,
+    float roughness,
+    float dotNV,
+    float dotNL,
+    float dotLH)
+{
     float FL = pow(1.0 - dotNL, 5.0);
     float FV = pow(1.0 - dotNV, 5.0);
-    
-    // Base diffuse
     float Fd90 = 0.5 + 2.0 * dotLH * dotLH * roughness;
     float Fd = lerp(1.0, Fd90, FL) * lerp(1.0, Fd90, FV);
-    
-    // Subsurface approximation (Hanrahan-Krueger)
+    return baseColor / PI * Fd;
+}
+
+float3 DisneyDiffuseSubsurface(
+    float3 baseColor,
+    float roughness,
+    float dotNV,
+    float dotNL,
+    float dotLH,
+    float subsurface)
+{
+    float FL = pow(1.0 - dotNL, 5.0);
+    float FV = pow(1.0 - dotNV, 5.0);
+    float Fd90 = 0.5 + 2.0 * dotLH * dotLH * roughness;
+    float Fd = lerp(1.0, Fd90, FL) * lerp(1.0, Fd90, FV);
     float Fss90 = dotLH * dotLH * roughness;
     float Fss = lerp(1.0, Fss90, FL) * lerp(1.0, Fss90, FV);
     float ss = 1.25 * (Fss * (1.0 / (dotNL + dotNV + 1e-5) - 0.5) + 0.5);
-    
     return baseColor / PI * lerp(Fd, ss, subsurface) * (1.0 - subsurface);
+}
+
+float3 DisneyDiffuse(
+    float3 baseColor,
+    float roughness,
+    float dotNV,
+    float dotNL,
+    float dotLH,
+    float subsurface)
+{
+    return subsurface > 0.001
+        ? DisneyDiffuseSubsurface(
+            baseColor,
+            roughness,
+            dotNV,
+            dotNL,
+            dotLH,
+            subsurface)
+        : DisneyDiffuseOpaque(
+            baseColor,
+            roughness,
+            dotNV,
+            dotNL,
+            dotLH);
 }
 
 // Multiple Scattering Approximation (Kulla-Conty energy compensation)
@@ -83,6 +123,86 @@ struct DisneyMaterial {
     float clearcoat;
     float clearcoatGloss;
 };
+
+float3 EvaluateDisneyBSDFIsotropic(
+    DisneyMaterial mat,
+    float3 N,
+    float3 V,
+    float3 L,
+    uint featureFlags)
+{
+    float3 H = normalize(L + V);
+    float dotNL = clamp(dot(N, L), 0.001, 1.0);
+    float dotNV = clamp(dot(N, V), 0.001, 1.0);
+    float dotNH = clamp(dot(N, H), 0.001, 1.0);
+    float dotLH = clamp(dot(L, H), 0.001, 1.0);
+    float luminance = dot(mat.baseColor, float3(0.3, 0.6, 0.1));
+    float3 Ctint = luminance > 0.0
+        ? mat.baseColor / luminance
+        : float3(1.0);
+    float3 Cspec0 = lerp(
+        mat.specular * 0.08 *
+            lerp(float3(1.0), Ctint, mat.specularTint),
+        mat.baseColor,
+        mat.metallic);
+    float3 diffuse = float3(0.0);
+    if ((featureFlags & kMaterialDisneyDiffuse) != 0u)
+    {
+        if ((featureFlags & kMaterialDisneySubsurface) != 0u)
+        {
+            diffuse = DisneyDiffuseSubsurface(
+                mat.baseColor,
+                mat.roughness,
+                dotNV,
+                dotNL,
+                dotLH,
+                mat.subsurface);
+        }
+        else
+        {
+            diffuse = DisneyDiffuseOpaque(
+                mat.baseColor,
+                mat.roughness,
+                dotNV,
+                dotNL,
+                dotLH);
+        }
+        diffuse *= 1.0 - mat.metallic;
+    }
+    float alpha = sqr(mat.roughness);
+    float alpha2 = sqr(alpha);
+    float dDenominator =
+        PI * sqr((alpha2 - 1.0) * dotNH * dotNH + 1.0);
+    float Ds = alpha2 / max(dDenominator, 1.0e-5);
+    float Gs = G_SmithGGX(dotNV, dotNL, mat.roughness);
+    float3 Fs = F_Schlick(dotLH, Cspec0);
+    float3 specular = Ds * Gs * Fs;
+    specular += MultiScatterApprox(
+        Cspec0,
+        mat.roughness,
+        dotNV,
+        dotNL) * mat.metallic;
+    return diffuse + specular;
+}
+
+float3 EvaluateDisneyBSDFIsotropic(
+    DisneyMaterial mat,
+    float3 N,
+    float3 V,
+    float3 L)
+{
+    uint featureFlags = mat.metallic >= 0.999
+        ? kMaterialDisneyMetallicOnly
+        : kMaterialDisneyDiffuse;
+    if (mat.subsurface > 0.001)
+        featureFlags |= kMaterialDisneySubsurface;
+    return EvaluateDisneyBSDFIsotropic(
+        mat,
+        N,
+        V,
+        L,
+        featureFlags);
+}
 
 // Master Evaluate Function
 float3 EvaluateDisneyBSDF(DisneyMaterial mat, float3 N, float3 V, float3 L, float3 X, float3 Y) {

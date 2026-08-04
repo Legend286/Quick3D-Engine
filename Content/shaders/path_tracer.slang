@@ -215,7 +215,8 @@ void SampleLocalLight(LightData light, float3 shadingPos, inout uint seed, out f
 // Material Evaluation
 // =====================================================================
 
-DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics, uint primId, 
+DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics, uint primId,
+                           uint debugView,
                            float3 worldPos, inout uint seed,
                            out float3 hitNormal, out float3 vertexNormal,
                            out float3 hitTangent, out float3 hitBitangent,
@@ -237,52 +238,99 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics
         i2 = ((primId * 3 + 2) % 2 == 0) ? (dword2 & 0xFFFF) : (dword2 >> 16);
     }
     
-    Vertex v0 = part.vertices[i0];
-    Vertex v1 = part.vertices[i1];
-    Vertex v2 = part.vertices[i2];
-    
-    float3 n0 = float3(v0.nx, v0.ny, v0.nz);
-    float3 n1 = float3(v1.nx, v1.ny, v1.nz);
-    float3 n2 = float3(v2.nx, v2.ny, v2.nz);
-    float3 localNormal = normalize(n0 * barycentrics.x + n1 * barycentrics.y + n2 * barycentrics.z);
-    
-    float3 t0 = float3(v0.tx, v0.ty, v0.tz);
-    float3 t1 = float3(v1.tx, v1.ty, v1.tz);
-    float3 t2 = float3(v2.tx, v2.ty, v2.tz);
-    float3 localTangent = normalize(t0 * barycentrics.x + t1 * barycentrics.y + t2 * barycentrics.z);
-    float tangentW = v0.tw;
-    
-    float2 uv0 = float2(v0.u, v0.v);
-    float2 uv1 = float2(v1.u, v1.v);
-    float2 uv2 = float2(v2.u, v2.v);
-    float2 uv = uv0 * barycentrics.x + uv1 * barycentrics.y + uv2 * barycentrics.z;
+    MaterialData mat = push.materials[part.materialIdx];
+    bool needsUv = MaterialNeedsUv(mat) || debugView == 10u;
+    bool needsTangent = MaterialNeedsTangent(mat) ||
+        debugView == 11u || debugView == 12u || debugView == 19u;
+
+    float3 n0 = LoadVertexNormal(part, i0);
+    float3 n1 = LoadVertexNormal(part, i1);
+    float3 n2 = LoadVertexNormal(part, i2);
+    float3 localNormal = normalize(
+        n0 * barycentrics.x +
+        n1 * barycentrics.y +
+        n2 * barycentrics.z);
+
+    if (debugView >= 21u)
+    {
+        hitNormal = normalize(mul((float3x3)inst.modelMatrix, localNormal));
+        vertexNormal = hitNormal;
+        hitTangent = 0.0;
+        hitBitangent = 0.0;
+        surfaceUv = 0.0;
+        albedo = mat.baseColor.rgb;
+        ambientOcclusion = 1.0;
+        subsurface = mat.subsurface;
+        subsurfaceRadius = mat.subsurfaceRadius.xyz;
+        subsurfaceColor = mat.subsurfaceColor.xyz;
+        return (DisneyMaterial)0;
+    }
+
+    float3 localTangent = 0.0;
+    float tangentW = 1.0;
+    if (needsTangent)
+    {
+        float4 t0 = LoadVertexTangent(part, i0);
+        float4 t1 = LoadVertexTangent(part, i1);
+        float4 t2 = LoadVertexTangent(part, i2);
+        localTangent = normalize(
+            t0.xyz * barycentrics.x +
+            t1.xyz * barycentrics.y +
+            t2.xyz * barycentrics.z);
+        tangentW =
+            t0.w * barycentrics.x +
+            t1.w * barycentrics.y +
+            t2.w * barycentrics.z;
+    }
+
+    float2 uv0 = 0.0;
+    float2 uv1 = 0.0;
+    float2 uv2 = 0.0;
+    if (needsUv)
+    {
+        uv0 = LoadVertexUv(part, i0);
+        uv1 = LoadVertexUv(part, i1);
+        uv2 = LoadVertexUv(part, i2);
+    }
+    float2 uv = needsUv
+        ? uv0 * barycentrics.x +
+            uv1 * barycentrics.y +
+            uv2 * barycentrics.z
+        : 0.0;
     surfaceUv = uv;
-    
-    hitNormal   = normalize(mul((float3x3)inst.modelMatrix, localNormal));
+
+    hitNormal = normalize(mul((float3x3)inst.modelMatrix, localNormal));
     vertexNormal = hitNormal;
-    hitTangent  = normalize(mul((float3x3)inst.modelMatrix, localTangent));
-    if (!(dot(hitTangent, hitTangent) > 0.001)) {
-        float3 up = abs(hitNormal.y) < 0.999 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    if (needsTangent)
+        hitTangent = normalize(mul((float3x3)inst.modelMatrix, localTangent));
+    else
+        hitTangent = 0.0;
+    if (!(dot(hitTangent, hitTangent) > 0.001))
+    {
+        float3 up = abs(hitNormal.y) < 0.999
+            ? float3(0.0, 1.0, 0.0)
+            : float3(1.0, 0.0, 0.0);
         hitTangent = normalize(cross(up, hitNormal));
     }
     hitBitangent = cross(hitNormal, hitTangent) * tangentW;
-    if (!(dot(hitBitangent, hitBitangent) > 0.001)) hitBitangent = cross(hitNormal, hitTangent);
+    if (!(dot(hitBitangent, hitBitangent) > 0.001))
+        hitBitangent = cross(hitNormal, hitTangent);
     hitBitangent = normalize(hitBitangent);
-    hitTangent   = normalize(cross(hitBitangent, hitNormal));
-    
-    MaterialData mat = push.materials[part.materialIdx];
-    
+    hitTangent = normalize(cross(hitBitangent, hitNormal));
+
     float3 baseColor = mat.baseColor.rgb;
-    if (mat.albedoTexIndex != 0xFFFFFFFF) {
+    if (MaterialHasFeature(mat, kMaterialAlbedoTexture)) {
         float4 texColor = bindless.textures[mat.albedoTexIndex].SampleLevel(tex_sampler, uv, 0);
         baseColor *= texColor.rgb;
     }
     float metallic  = mat.metallic;
     float roughness = mat.roughness;
     ambientOcclusion = 1.0;
-    if (mat.rmaTexIndex != 0xFFFFFFFF) {
+    if (MaterialHasFeature(mat, kMaterialRmaTexture)) {
         float3 rma = bindless.textures[mat.rmaTexIndex].SampleLevel(tex_sampler, uv, 0).rgb;
-        ambientOcclusion = rma.r;
+        ambientOcclusion = MaterialHasFeature(mat, kMaterialRmaContainsOcclusion)
+            ? rma.r
+            : 1.0;
         roughness *= rma.g;
         metallic  *= rma.b;
     }
@@ -333,7 +381,7 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics
             }
         } else if (mat.layer2MaskType == 6) { // Height
             mask2 = smoothstep(-0.5, 0.5, worldPos.y);
-        } else if (mat.layer2MaskType == 7 && mat.layer2MaskTexIndex != 0xFFFFFFFF) { // Texture Mask
+        } else if (MaterialHasFeature(mat, kMaterialLayer2MaskTexture)) { // Texture Mask
             mask2 = bindless.textures[mat.layer2MaskTexIndex].SampleLevel(tex_sampler, uv, 0).r;
         }
 
@@ -389,7 +437,7 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics
             }
         } else if (mat.topMaskType == 6) { // Height
             mask1 = smoothstep(-0.5, 0.5, worldPos.y);
-        } else if (mat.topMaskType == 7 && mat.topMaskTexIndex != 0xFFFFFFFF) { // Texture Mask
+        } else if (MaterialHasFeature(mat, kMaterialTopMaskTexture)) { // Texture Mask
             mask1 = bindless.textures[mat.topMaskTexIndex].SampleLevel(tex_sampler, uv, 0).r;
         }
 
@@ -404,7 +452,7 @@ DisneyMaterial GetMaterial(PartData part, InstanceData inst, float3 barycentrics
     // Energy conservation: scale diffuse by (1 - subsurface) to allow SSS lobe room
     albedo = baseColor * (1.0 - mat.subsurface);
     
-    if (mat.normalTexIndex != 0xFFFFFFFF) {
+    if (MaterialHasFeature(mat, kMaterialNormalTexture)) {
         float3 normalMap = bindless.textures[mat.normalTexIndex].SampleLevel(tex_sampler, uv, 0).rgb;
         normalMap = normalMap * 2.0 - 1.0;
         float3x3 TBN = float3x3(hitTangent, hitBitangent, hitNormal);
@@ -529,12 +577,13 @@ float3 RandomWalkSSS(float3 entryPos, float3 entryDir, float3 N,
                 ei1 = ((primId * 3 + 1) % 2 == 0) ? (ew1 & 0xFFFF) : (ew1 >> 16);
                 ei2 = ((primId * 3 + 2) % 2 == 0) ? (ew2 & 0xFFFF) : (ew2 >> 16);
             }
-            Vertex en0 = exitPart.vertices[ei0];
-            Vertex en1 = exitPart.vertices[ei1];
-            Vertex en2 = exitPart.vertices[ei2];
-            float3 localN = normalize(float3(en0.nx, en0.ny, en0.nz) * bary.x +
-                                      float3(en1.nx, en1.ny, en1.nz) * bary.y +
-                                      float3(en2.nx, en2.ny, en2.nz) * bary.z);
+            float3 exitNormal0 = LoadVertexNormal(exitPart, ei0);
+            float3 exitNormal1 = LoadVertexNormal(exitPart, ei1);
+            float3 exitNormal2 = LoadVertexNormal(exitPart, ei2);
+            float3 localN = normalize(
+                exitNormal0 * bary.x +
+                exitNormal1 * bary.y +
+                exitNormal2 * bary.z);
             exitNorm = normalize(mul((float3x3)exitInst.modelMatrix, localN));
         }
         
@@ -603,6 +652,81 @@ float3 RandomWalkSSS(float3 entryPos, float3 entryDir, float3 N,
     return float3(0.0);
 }
 
+float3 PathTraceVsmPhysicalPageColor(uint64_t physicalOffset)
+{
+    uint value = (uint)physicalOffset ^
+        ((uint)(physicalOffset >> 32) * 0x9e3779b9u);
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    return float3(
+        0.2 + 0.8 * float(value & 255u) / 255.0,
+        0.2 + 0.8 * float((value >> 8u) & 255u) / 255.0,
+        0.2 + 0.8 * float((value >> 16u) & 255u) / 255.0);
+}
+
+float3 EvaluatePathTraceVsmDebug(
+    float3 worldPos,
+    MaterialData material,
+    uint debugView)
+{
+    if (debugView == 29u)
+        return MaterialTypeColor(material);
+
+    if (push.vsmTextureIndex == 0xFFFFFFFF)
+        return float3(1.0, 0.0, 1.0);
+    float4 clip = mul(push.vsmLightViewProj, float4(worldPos, 1.0));
+    if (clip.w <= 0.0)
+        return float3(1.0, 0.0, 1.0);
+    float3 ndc = clip.xyz / clip.w;
+    float2 uv = ndc.xy * float2(0.5, -0.5) + 0.5;
+    if (any(uv < 0.0) || any(uv >= 1.0) || ndc.z < 0.0 || ndc.z > 1.0)
+        return float3(1.0, 0.0, 1.0);
+
+    uint pagesX = 64u;
+    uint pageX = min((uint)(uv.x * float(pagesX)), pagesX - 1u);
+    uint pageY = min((uint)(uv.y * float(pagesX)), pagesX - 1u);
+    uint pageIndex = pageY * pagesX + pageX;
+    float depth = bindless.textures[push.vsmTextureIndex].SampleLevel(
+        tex_sampler, uv, 0.0).x;
+    if (debugView == 21u)
+        return float3(uv, depth);
+    if (debugView == 22u)
+        return float3(saturate(depth));
+    if (debugView == 27u)
+        return depth < 0.999999
+            ? float3(0.1, 0.85, 0.2)
+            : float3(0.05, 0.15, 0.8);
+    if (debugView == 28u)
+        return float3(float(pageX) / 63.0, float(pageY) / 63.0, 0.0);
+    if (push.vsmPageTable == nullptr || pageIndex >= push.vsmPageTableSize)
+        return float3(1.0, 0.0, 1.0);
+
+    uint64_t physicalOffset = push.vsmPageTable[pageIndex];
+    bool resident = physicalOffset != 0xFFFFFFFFFFFFFFFF;
+    if (debugView == 23u)
+        return resident ? float3(0.08, 0.85, 0.25) : float3(0.9, 0.08, 0.05);
+    if (debugView == 24u)
+        return resident ? PathTraceVsmPhysicalPageColor(physicalOffset) : float3(0.05, 0.05, 0.05);
+    if (debugView == 25u)
+    {
+        bool requested = push.vsmPageRequests != nullptr &&
+            push.vsmPageRequests[pageIndex] != 0u;
+        return requested ? float3(0.0, 0.95, 0.95) : float3(0.08, 0.08, 0.1);
+    }
+    if (debugView == 26u)
+    {
+        uint queueCount = push.vsmAllocateQueue != nullptr
+            ? push.vsmAllocateQueue[0]
+            : 0u;
+        float occupancy = saturate(
+            float(queueCount) /
+            max(float(push.vsmAllocateQueueCapacity - 1u), 1.0));
+        return float3(occupancy, 1.0 - occupancy, 0.1);
+    }
+    return resident ? float3(0.08, 0.85, 0.25) : float3(0.9, 0.08, 0.05);
+}
+
 // =====================================================================
 // Main compute shader
 // =====================================================================
@@ -645,21 +769,19 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
             uint index0 = LoadPartVertexIndex(part, triangleOffset);
             uint index1 = LoadPartVertexIndex(part, triangleOffset + 1u);
             uint index2 = LoadPartVertexIndex(part, triangleOffset + 2u);
-            Vertex vertex0 = part.vertices[index0];
-            Vertex vertex1 = part.vertices[index1];
-            Vertex vertex2 = part.vertices[index2];
+            float3 position0 = LoadVertexPosition(part, index0);
+            float3 position1 = LoadVertexPosition(part, index1);
+            float3 position2 = LoadVertexPosition(part, index2);
             float3 localPosition =
-                barycentrics.x * float3(vertex0.px, vertex0.py, vertex0.pz) +
-                barycentrics.y * float3(vertex1.px, vertex1.py, vertex1.pz) +
-                barycentrics.z * float3(vertex2.px, vertex2.py, vertex2.pz) +
+                barycentrics.x * position0 +
+                barycentrics.y * position1 +
+                barycentrics.z * position2 +
                 part.localOffset.xyz;
             InstanceData instance =
                 push.instances[part.instanceIdx];
             float3 hitPosition = mul(
                 instance.modelMatrix,
                 float4(localPosition, 1.0)).xyz;
-            InstanceData instance =
-                push.instances[part.instanceIdx];
             uint debugSeed =
                 dispatchThreadID.y *
                     uint(push.resolution.x) +
@@ -679,6 +801,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
                 instance,
                 barycentrics,
                 primitiveId,
+                debugView,
                 hitPosition,
                 debugSeed,
                 normal,
@@ -782,6 +905,11 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
                         instance.entityIdLow ^ instance.entityIdHigh));
             } else if (debugView == 19u) {
                 dbgColor = tangent * 0.5 + 0.5;
+            } else if (debugView >= 21u) {
+                dbgColor = EvaluatePathTraceVsmDebug(
+                    hitPosition,
+                    materialData,
+                    debugView);
             }
         }
         if (!visibilityHit)
@@ -864,13 +992,16 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
                     uint index2 = LoadPartVertexIndex(
                         visibilityPart,
                         triangleOffset + 2u);
-                    Vertex vertex0 = visibilityPart.vertices[index0];
-                    Vertex vertex1 = visibilityPart.vertices[index1];
-                    Vertex vertex2 = visibilityPart.vertices[index2];
+                    float3 position0 =
+                        LoadVertexPosition(visibilityPart, index0);
+                    float3 position1 =
+                        LoadVertexPosition(visibilityPart, index1);
+                    float3 position2 =
+                        LoadVertexPosition(visibilityPart, index2);
                     float3 localPosition =
-                        bary.x * float3(vertex0.px, vertex0.py, vertex0.pz) +
-                        bary.y * float3(vertex1.px, vertex1.py, vertex1.pz) +
-                        bary.z * float3(vertex2.px, vertex2.py, vertex2.pz) +
+                        bary.x * position0 +
+                        bary.y * position1 +
+                        bary.z * position2 +
                         visibilityPart.localOffset.xyz;
                     InstanceData visibilityInstance =
                         push.instances[visibilityPart.instanceIdx];
@@ -917,7 +1048,7 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
             
             PartData    part = push.parts[partIdx];
             InstanceData inst = push.instances[part.instanceIdx];
-            DisneyMaterial mat = GetMaterial(part, inst, bary, primId, hitPos, seed, N, vertexNormal, T, B, surfaceUv, albedo, ambientOcclusion,
+            DisneyMaterial mat = GetMaterial(part, inst, bary, primId, debugView, hitPos, seed, N, vertexNormal, T, B, surfaceUv, albedo, ambientOcclusion,
                                              surfSubsurface, subsurfaceRadius, subsurfaceColor);
             float3 V = -ray.Direction;
             bounce++;
@@ -932,22 +1063,8 @@ void computeMain(uint3 dispatchThreadID : SV_DispatchThreadID) {
                 MaterialData mdata = push.materials[part.materialIdx];
                 float3 emissive = mdata.emissiveColor.rgb;
                 if (mdata.emissiveTexIndex != 0xFFFFFFFF) {
-                    uint e0, e1, e2;
-                    if ((part.flags & 1u) != 0u) {
-                        e0 = part.indices[primId * 3 + 0]; e1 = part.indices[primId * 3 + 1]; e2 = part.indices[primId * 3 + 2];
-                    } else {
-                        uint dw0 = part.indices[(primId * 3 + 0) / 2];
-                        uint dw1 = part.indices[(primId * 3 + 1) / 2];
-                        uint dw2 = part.indices[(primId * 3 + 2) / 2];
-                        e0 = ((primId * 3 + 0) % 2 == 0) ? (dw0 & 0xFFFF) : (dw0 >> 16);
-                        e1 = ((primId * 3 + 1) % 2 == 0) ? (dw1 & 0xFFFF) : (dw1 >> 16);
-                        e2 = ((primId * 3 + 2) % 2 == 0) ? (dw2 & 0xFFFF) : (dw2 >> 16);
-                    }
-                    float2 uv0e = float2(part.vertices[e0].u, part.vertices[e0].v);
-                    float2 uv1e = float2(part.vertices[e1].u, part.vertices[e1].v);
-                    float2 uv2e = float2(part.vertices[e2].u, part.vertices[e2].v);
-                    float2 uve  = uv0e * bary.x + uv1e * bary.y + uv2e * bary.z;
-                    emissive *= bindless.textures[mdata.emissiveTexIndex].SampleLevel(tex_sampler, uve, 0).rgb;
+                    emissive *= bindless.textures[mdata.emissiveTexIndex]
+                        .SampleLevel(tex_sampler, surfaceUv, 0).rgb;
                 }
                 radiance += throughput * emissive;
             }

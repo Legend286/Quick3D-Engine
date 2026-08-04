@@ -48,6 +48,37 @@ public sealed class RenderGraphExternalResourceTests
     }
 
     [Fact]
+    public void ImportedIndirectBuffer_ComputeWriteToDrawRead_EmitsIndirectBarrier()
+    {
+        RenderPass cull = new TestPass(
+            "Cull",
+            builder =>
+            {
+                builder.ImportBuffer(ProbePositions);
+                builder.Write(
+                    ProbePositions,
+                    ResourceState.UnorderedAccess);
+            });
+        RenderPass draw = new TestPass(
+            "Draw",
+            builder =>
+            {
+                builder.ImportBuffer(ProbePositions);
+                builder.Read(ProbePositions, ResourceState.IndirectRead);
+            });
+
+        RenderPlan plan = new RenderGraphCompiler().Compile(
+            new[] { cull, draw });
+
+        Assert.Contains(
+            plan.BarriersPerPass[1],
+            barrier =>
+                barrier.Resource == ProbePositions &&
+                barrier.StateBefore == ResourceState.UnorderedAccess &&
+                barrier.StateAfter == ResourceState.IndirectRead);
+    }
+
+    [Fact]
     public void ImportedTexture_UpdateToPbr_EmitsShaderReadBarrier()
     {
         RenderPass update = new TestPass(
@@ -98,6 +129,7 @@ public sealed class RenderGraphExternalResourceTests
     [InlineData(ResourceState.CopySrc, RhiNative.ResourceState.CopySource)]
     [InlineData(ResourceState.CopyDst, RhiNative.ResourceState.CopyDest)]
     [InlineData(ResourceState.Present, RhiNative.ResourceState.Present)]
+    [InlineData(ResourceState.IndirectRead, RhiNative.ResourceState.IndirectRead)]
     public void RenderGraphState_MapsToNativeState(
         ResourceState graphState,
         RhiNative.ResourceState nativeState)

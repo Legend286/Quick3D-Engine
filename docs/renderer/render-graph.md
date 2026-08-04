@@ -3,7 +3,7 @@
 **Purpose**: The Render Graph framework manages high-level GPU execution logic, transient resource aliasing, and render pass dependencies.
 
 ## Public API Surface
-- `RenderGraphCompiler`: Sorts passes, determines lifetimes, and calculates optimal memory aliasing.
+- `RenderGraphCompiler`: Captures pass declarations, computes lifetimes/barriers/aliasing, and caches immutable graph templates by deterministic signature.
 - `RenderGraphExecutor`: Traverses the compiled graph, allocating and executing transient resources efficiently via heap-based memory.
 - `RenderPass`: Base class for user-defined rendering passes (e.g., `PbrPass`, `GridPass`).
 - `MemoryAliasingPlan`: Represents overlapping resource layouts over time.
@@ -32,6 +32,8 @@ executor.Execute(plan, sink);
 ```
 
 ## Performance
+Pass setup remains on the owning render thread because existing pass instances may own mutable RHI state. Builder-created transient handles use the reserved `0x01000000`–`0x01FFFFFF` namespace and are graph-local/deterministic, so equivalent declaration sets do not depend on process-wide counters. Imported handles must remain outside that namespace. The compiler caches immutable declaration-analysis templates per renderer; a `RenderPlan` still owns its pass instances, while the reusable template contains only copied declarations, access timelines, barriers, final states, and aliasing metadata. This separation is the foundation for later background and parallel pure-graph analysis.
+
 Leverages `RhiHeap` for memory aliasing. Transient textures are created and destroyed using aliased memory from a central heap, significantly lowering memory footprints and allocation overhead.
 
 Plans with no transient resource declarations do not create a minimum-sized
@@ -80,6 +82,19 @@ Graphs whose compute passes form a prefix are partitioned across compute and
 graphics command queues. Compute output resources are collected from declared
 writes. The graphics queue renders independent work first, then waits on an RHI
 timeline fence immediately before the first consumer of a compute output.
+
+Every access advances the compiler's tracked state, including read-only
+accesses. This is required when consecutive consumers use different backend
+layouts or access scopes, such as shader-read followed by indirect-command
+read. Compute culling passes that issue indirect draws inside the same
+`Execute` call keep the UAV-to-indirect transition explicit in the pass; a
+same-pass `Read(IndirectRead)` declaration would incorrectly schedule that
+transition before the culling dispatch.
+
+The canonical PBR, visibility, directional-shadow, punctual-shadow, and VSM
+paths all declare indirect command buffers with `ResourceState.IndirectRead`
+where the command processor consumes them and emit the corresponding explicit
+compute-write to indirect-read barrier at the intra-pass boundary.
 Graphs with a later compute pass fall back to serial graphics execution until
 the compiler supports arbitrary multi-batch queue DAGs.
 

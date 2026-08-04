@@ -142,7 +142,7 @@ internal sealed class VisibilityReferencePass : RenderPass, IDisposable
             ResourceState.DepthStencil);
         builder.Read(
             _owner.DrawCommandsHandle,
-            ResourceState.ShaderRead);
+            ResourceState.IndirectRead);
         _owner.SetupShadingReads(builder);
     }
 

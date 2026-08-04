@@ -22,8 +22,8 @@ visibility buffers, such as asset thumbnails.
 | `RenderGraphResources.VisibilityReconstructionHandle` | Identifies the `RGBA16Float` compute diagnostic texture. |
 | `RenderGraphResources.VisibilityReferenceHandle` | Reserves an `RGBA16Float` Forward PBR reference identifier for focused validation plans. |
 | `VisibilityBufferPass` | Rasterizes opaque indirect draws into both textures and scene depth. |
-| `VisibilityReconstructionPass` | Implements focused attribute validation outside the default plan. |
-| `VisibilityReferencePass` | Implements focused Forward PBR validation outside the default plan. |
+| `VisibilityReconstructionPass` | Reconstructs selected surface attributes for live validation modes. |
+| `VisibilityReferencePass` | Implements focused Forward PBR validation for parity comparison. |
 | `VisibilityShadingPass` | Runs shared PBR evaluation from visibility data with a tile-local deduplicated light list. |
 | `VisibilityBufferDebugPass` | Presents normal compute shading or a selected visibility diagnostic before editor overlays. |
 | `VisibilityPickingPass` | Enqueues one-pixel identifier and depth copies for non-blocking editor selection. |
@@ -121,18 +121,46 @@ reads and validates the visibility-buffer textures themselves.
 
 ## Attribute Reconstruction
 
-The focused reconstruction shader reads each 8×8 tile's part and primitive
-identifiers, decodes either
-16-bit or 32-bit mesh indices, loads the three vertices, renormalizes the stored
-barycentrics, and interpolates the selected attributes. Tangent-space normal
-maps are sampled with reconstructed UV gradients so mip selection tracks the
-derivative-based sampling used by Forward PBR. Magenta output means a stored
-primitive index exceeded its part's index range.
+The visibility compute paths classify the material immediately after resolving
+the part and before loading optional vertex attributes. Position and vertex
+normal are mandatory. UVs are loaded only when a bound albedo, RMA, occlusion,
+emissive, normal, or texture-mask channel needs them (or when a UV debug view
+is explicitly selected). Tangent and handedness are loaded only for normal-map
+and tangent-frame debug paths. Normal gradients are loaded only for curvature
+mask evaluation. This keeps materials with only constant values from reading
+UV and tangent fields from the interleaved vertex record.
 
-These transitional channels are not scheduled by the default renderer and do
-not appear in the viewport dropdown. Their shader and pass remain available to
-focused renderer tests while the raw visibility split is the supported live
-diagnostic.
+The renderer computes a compact feature mask once while extracting each material
+record. The mask covers every effective optional dependency: albedo, normal,
+RMA, occlusion, emissive, texture masks, procedural layers, RMA-as-occlusion,
+UVs, tangents, and curvature gradients. Materials with no texture slots or
+active layers are classified as constant-material paths: they sample material
+values and world-space geometric normal only, and skip UV, tangent, normal-map,
+scalar-texture, texture-mask, procedural-layer, and curvature-gradient reads.
+RMA containing AO is sampled once and its red channel is reused; a separate AO
+sample is not issued.The VSM/material-qualifier pointers add only the current feedback-buffer addresses to `ScenePushData`; the scene part count also travels in the existing scalar push-data slot so stale visibility identifiers can be rejected before address loads. The material feature mask lives
+in each `MaterialData` record and is recomputed during per-frame extraction so
+editor and hot-reload changes cannot leave stale classification bits. The shader uses scalar vertex loaders
+rather than materializing `Vertex` structs, allowing the compiler and backend
+to issue only the selected field reads. Explicit neighbor-based UV and normal
+gradients remain gated by the same classification; they do not rely on implicit
+derivatives in compute.
+The focused reconstruction shader reads each pixel's part and primitive
+identifiers, decodes either 16-bit or 32-bit mesh indices, loads the required
+attributes, renormalizes the stored barycentrics, and interpolates them.
+Tangent-space normal maps are sampled with reconstructed UV gradients so mip
+selection tracks the derivative-based sampling used by Forward PBR. The path
+tracer uses the same classification helpers for its primary and ray-hit
+material reconstruction. Magenta output means a stored primitive index exceeded
+its part's index range.
+
+The reconstruction pass is scheduled after visibility rasterization and before
+compute shading. It executes only for reconstruction modes, while the shading
+pass executes for lit, material, VSM, and other non-reconstruction modes. The
+fullscreen presentation pass reads the same RGBA16F output for both families,
+so the selected mode always has a producer before it is displayed. The Forward PBR reference pass is present in the graph for mode 20 but
+records no geometry work for ordinary modes; it is only active when the parity
+comparison is selected.
 
 ## Compute PBR Validation
 
@@ -163,24 +191,75 @@ Tiles with no covered geometry take a group-uniform early exit before clearing
 the 1,024-entry light hash. They evaluate only the sky path, so sparse scenes
 do not pay the light-list setup cost across the entire viewport.
 The dispatch runs in a compute encoder on the graphics queue because it consumes
-the same-frame visibility raster. The earlier culling and cluster assignment
-remain eligible for async compute ahead of graphics work.
+the same-frame visibility raster. Both visibility compute shaders use an 8×8×1
+workgroup and the C# passes explicitly dispatch 8×8×1 threads per group; this
+matches the 64-lane tile indexing (`lane = y * 8 + x`) and keeps the group
+shared light-list synchronization scope identical to the screen tile. Dispatch
+group counts are ceil-divided independently in X and Y, so partial edge groups
+are safe through the shader's bounds checks. The earlier culling and cluster
+assignment remain eligible for async compute ahead of graphics work.
 
-The compute shader fixes its sampled texture registers at `t4`, `t5`, and
-`t6`, while its writable output uses `u0`. Slang preserves the sampled Metal
+The compute shader fixes its sampled texture registers at `t4`, `t5`, `t6`,
+and `t7`, while its writable output uses `u0`. Optional material work is
+feature-gated before vertex attribute reconstruction and texture evaluation;
+ordinary lit constant materials still execute clustered lighting, VSM,
+punctual shadows, DDGI, and constant emissive evaluation. Their tangent frame
+uses a normal-derived fallback only when a normal-map or tangent diagnostic
+requires it. The 8x8 tile remains one pipeline initially; mixed material
+classes may diverge, so class-specific dispatches are deferred until GPU
+profiling demonstrates that divergence costs more than the extra scheduling
+and compaction work. The final sampled binding is a
+typed `Texture2D<float>` view of the VSM depth atlas; depth textures do not use
+the ordinary colour-texture bindless array in visibility compute shading.
+Slang preserves the sampled Metal
 texture indices but maps UAV registers into their own zero-based Metal texture
 range. The RHI bindings therefore use 4–6 for identifiers, barycentrics, and
-depth, and 0 for the writable output. Vulkan descriptor bindings mirror these
+depth, 7 for VSM depth, and 0 for the writable output. Vulkan descriptor bindings mirror these
 explicit values so both backends share the same shader contract.
 
-The default renderer does not schedule the Forward PBR reference or expose
-this transitional mode. All ordinary lit and material debug modes present
-compute shading directly without a second opaque draw.
+The default renderer schedules the Forward PBR reference pass as a dormant
+mode-gated validation stage. All ordinary lit and material debug modes present
+compute shading directly without a second opaque draw; reconstruction modes use
+the dedicated reconstruction dispatch.
 
-The reconstruction and PBR parity modes remain internal diagnostics and are
-not listed in the normal viewport dropdown. The public dropdown retains the
-raw **Visibility Buffer** split view alongside the regular Lit and material
-channels.
+The VSM atlas registration is persistent across scene changes. Scene resource
+teardown clears the shared bindless heap and immediately re-registers the
+persistent atlas so visibility compute shading never receives a stale texture
+slot after loading or creating a scene.
+
+The reconstruction and PBR parity modes remain internal diagnostics. The
+viewport dropdown also exposes the VSM validation family: **VSM Shadow Map**
+(virtual UV plus sampled depth), **VSM Depth**, **VSM Page Residency**, **VSM
+Physical Page**, **VSM Page Requests**, **VSM Allocation Queue**, **VSM Raster
+Coverage**, and **VSM Page Coordinates**. Magenta means that the receiver is
+outside the valid light projection or that the required diagnostic resource is
+not available; red/green/cyan/blue have mode-specific meanings described by
+the labels and shader contract. **Material Qualifier** is available in the same
+selector and renders a distinct categorical colour for every material type.
+Constant materials are fixed green; every other feature-qualifier code is
+hashed through a golden-ratio hue sequence so different material types receive
+well-separated colours while identical materials stay identical. The visibility
+tile path accumulates the golden-ratio-weighted qualifier codes of every
+covered lane into one group-shared hash and displays the per-tile type colour.
+Additive mixing preserves the type signature, so tiles of identical material
+stay the same colour instead of cancelling; mixed tiles blend the weighted
+signatures of their covered material types. The path tracer and Forward PBR fallbacks use
+the same mapping. The qualifier is evaluated before optional UV/tangent
+reconstruction. Its itemized Disney bits also distinguish metallic-only
+materials, ordinary Disney diffuse, and subsurface diffuse. The visibility
+shade evaluator uses those bits to skip the diffuse lobe entirely for fully
+metallic materials, use an opaque Disney diffuse path without subsurface terms
+for ordinary diffuse materials, and retain the full Disney diffuse/subsurface
+path only when required. The opaque and subsurface implementations are separate
+functions, so the non-subsurface path does not carry the Hanrahan–Krueger
+reciprocal and interpolation work. This does not skip clustered
+lighting, VSM, punctual shadows, DDGI, or constant emissive values.
+
+The 8x8 visibility tile keeps light-list state in group-shared memory. Every
+lane participates in initialization and barriers; covered lanes contribute
+material workload metadata before the normal light-list path. Material feature
+classification remains per pixel because a tile may contain mixed materials;
+only the light list is shared across the tile.
 
 ## Performance Characteristics
 

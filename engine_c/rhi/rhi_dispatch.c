@@ -123,10 +123,14 @@ int32_t rhi_create_buffer_from_heap(RhiDevice* d, RhiHeap* h, const RhiBufferDes
     return g_backends[g_active].create_buffer_from_heap(d, h, desc, offset, out);
 }
 
+int32_t rhi_try_bind_sparse_texture_memory(RhiDevice* d, RhiTexture* tex, const RhiSparseBindRegion* binds, uint32_t bind_count) {
+    if (g_active < 0 || !g_backends[g_active].try_bind_sparse_texture_memory)
+        return -1;
+    return g_backends[g_active].try_bind_sparse_texture_memory(d, tex, binds, bind_count);
+}
+
 void rhi_bind_sparse_texture_memory(RhiDevice* d, RhiTexture* tex, const RhiSparseBindRegion* binds, uint32_t bind_count) {
-    if (g_active >= 0 && g_backends[g_active].bind_sparse_texture_memory) {
-        g_backends[g_active].bind_sparse_texture_memory(d, tex, binds, bind_count);
-    }
+    (void)rhi_try_bind_sparse_texture_memory(d, tex, binds, bind_count);
 }
 
 void rhi_destroy_buffer(RhiBuffer* b) { g_backends[g_active].destroy_buffer(b); }
