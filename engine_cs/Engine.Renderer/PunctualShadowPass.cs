@@ -468,6 +468,8 @@ internal sealed class PunctualShadowState : IDisposable
 internal sealed class PunctualShadowPass : RenderPass, IDisposable
 {
     internal const int MaximumFacesPerBatch = 48;
+    private static readonly ResourceHandle DrawCommandsHandle =
+        new(0x83000001);
     private const int MovedLightFreshnessFaces = 24;
 
     private const ulong DrawCommandSize = 16;
@@ -586,6 +588,8 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
 
     public override void Setup(RenderGraphBuilder builder)
     {
+        builder.ImportBuffer(DrawCommandsHandle);
+        builder.Write(DrawCommandsHandle, ResourceState.UnorderedAccess);
         for (int pageIndex = 4; pageIndex < 24; ++pageIndex)
         {
             builder.Write(
@@ -948,6 +952,16 @@ internal sealed class PunctualShadowPass : RenderPass, IDisposable
             (uint)jobs.Count,
             1);
         sink.EndComputePass();
+        sink.PipelineBarrier(
+            new[]
+            {
+                new RhiNative.Barrier
+                {
+                    Resource = DrawCommandsHandle.Id,
+                    StateBefore = RhiNative.ResourceState.UnorderedAccess,
+                    StateAfter = RhiNative.ResourceState.IndirectRead,
+                },
+            });
 
         int firstJob = 0;
         while (firstJob < jobs.Count)

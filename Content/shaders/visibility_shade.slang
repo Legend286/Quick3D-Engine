@@ -19,6 +19,8 @@ static const uint kInvalidTileLight = 0xffffffffu;
 
 groupshared uint g_tileDepthSliceMask;
 groupshared uint g_tileHasGeometry;
+groupshared uint g_tileMaterialTypeHash;
+groupshared uint g_tileMaterialTypeCount;
 groupshared uint g_tileLightCount;
 groupshared uint g_tileLightHash[kTileLightCapacity];
 groupshared uint g_tileLights[kTileLightCapacity];
@@ -211,13 +213,53 @@ void computeMain(
         : 1.0;
     bool covered = inBounds && depth < 0.999999;
 
+    uint debugView = push.debugFlags & 0xffu;
     if (lane == 0u)
     {
         g_tileDepthSliceMask = 0u;
         g_tileHasGeometry = 0u;
+        g_tileMaterialTypeHash = 0u;
+        g_tileMaterialTypeCount = 0u;
         g_tileLightCount = 0u;
     }
     GroupMemoryBarrierWithGroupSync();
+
+    if (debugView == 29u && covered)
+    {
+        uint2 identifiers = visibilityIdentifiers.Load(int3(pixel, 0));
+        bool validPart = identifiers.x < push.partCount;
+        if (validPart)
+        {
+            PartData part = push.parts[identifiers.x];
+            if (identifiers.y < part.indexCount / 3u)
+            {
+                MaterialData material = push.materials[part.materialIdx];
+                uint qualifier = MaterialQualifierCode(material);
+                InterlockedAdd(g_tileMaterialTypeCount, 1u);
+                if (qualifier != 0u)
+                    InterlockedAdd(
+                        g_tileMaterialTypeHash,
+                        qualifier * 0x9e3779b9u);
+            }
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (debugView == 29u)
+    {
+        if (inBounds && covered)
+        {
+            float3 materialColor = MaterialTypeColorFromHash(
+                g_tileMaterialTypeHash,
+                g_tileMaterialTypeCount > 0u);
+            visibilityShadingOutput[pixel] = float4(materialColor, 1.0);
+        }
+        else if (inBounds)
+        {
+            visibilityShadingOutput[pixel] = float4(0.005, 0.008, 0.02, 1.0);
+        }
+        return;
+    }
 
     bool useClusters =
         push.clusterGrid.w > 0.0 && push.clusterParams.y > 0.0;
@@ -334,49 +376,85 @@ void computeMain(
 
     float3 barycentrics = DecodeBarycentrics(
         visibilityBarycentrics.Load(int3(pixel, 0)));
+    InstanceData instance = push.instances[part.instanceIdx];
+    MaterialData material = push.materials[part.materialIdx];
+    bool needsUv = MaterialNeedsUv(material) || debugView == 10u;
+    bool needsTangent = MaterialNeedsTangent(material) ||
+        debugView == 11u || debugView == 12u;
+    bool needsNormalGradient = MaterialNeedsNormalGradient(material);
+
     uint index0 = LoadPartVertexIndex(part, triangleOffset);
     uint index1 = LoadPartVertexIndex(part, triangleOffset + 1u);
     uint index2 = LoadPartVertexIndex(part, triangleOffset + 2u);
-    Vertex vertex0 = part.vertices[index0];
-    Vertex vertex1 = part.vertices[index1];
-    Vertex vertex2 = part.vertices[index2];
-    InstanceData instance = push.instances[part.instanceIdx];
+    float3 position0 = LoadVertexPosition(part, index0);
+    float3 position1 = LoadVertexPosition(part, index1);
+    float3 position2 = LoadVertexPosition(part, index2);
+    float3 normal0 = LoadVertexNormal(part, index0);
+    float3 normal1 = LoadVertexNormal(part, index1);
+    float3 normal2 = LoadVertexNormal(part, index2);
 
     float3 localPosition =
-        barycentrics.x * float3(vertex0.px, vertex0.py, vertex0.pz) +
-        barycentrics.y * float3(vertex1.px, vertex1.py, vertex1.pz) +
-        barycentrics.z * float3(vertex2.px, vertex2.py, vertex2.pz) +
+        barycentrics.x * position0 +
+        barycentrics.y * position1 +
+        barycentrics.z * position2 +
         part.localOffset.xyz;
     float3 worldNormal0 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex0.nx, vertex0.ny, vertex0.nz)));
+        (float3x3)instance.modelMatrix, normal0));
     float3 worldNormal1 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex1.nx, vertex1.ny, vertex1.nz)));
+        (float3x3)instance.modelMatrix, normal1));
     float3 worldNormal2 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex2.nx, vertex2.ny, vertex2.nz)));
-    float3 worldTangent0 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex0.tx, vertex0.ty, vertex0.tz)));
-    float3 worldTangent1 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex1.tx, vertex1.ty, vertex1.tz)));
-    float3 worldTangent2 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex2.tx, vertex2.ty, vertex2.tz)));
-    float2 uv0 = float2(vertex0.u, vertex0.v);
-    float2 uv1 = float2(vertex1.u, vertex1.v);
-    float2 uv2 = float2(vertex2.u, vertex2.v);
+        (float3x3)instance.modelMatrix, normal2));
+    float3 worldPosition = mul(
+        instance.modelMatrix,
+        float4(localPosition, 1.0)).xyz;
+    if (debugView >= 21u)
+    {
+        visibilityShadingOutput[pixel] = float4(
+            EvaluateVsmValidationView(
+                worldPosition,
+                material,
+                debugView),
+            1.0);
+        return;
+    }
+
+    float3 worldTangent0 = 0.0;
+    float3 worldTangent1 = 0.0;
+    float3 worldTangent2 = 0.0;
+    float2 uv0 = 0.0;
+    float2 uv1 = 0.0;
+    float2 uv2 = 0.0;
+    float tangentSign0 = 1.0;
+    float tangentSign1 = 1.0;
+    float tangentSign2 = 1.0;
+    if (needsTangent)
+    {
+        float4 tangent0 = LoadVertexTangent(part, index0);
+        float4 tangent1 = LoadVertexTangent(part, index1);
+        float4 tangent2 = LoadVertexTangent(part, index2);
+        worldTangent0 = normalize(mul(
+            (float3x3)instance.modelMatrix, tangent0.xyz));
+        worldTangent1 = normalize(mul(
+            (float3x3)instance.modelMatrix, tangent1.xyz));
+        worldTangent2 = normalize(mul(
+            (float3x3)instance.modelMatrix, tangent2.xyz));
+        tangentSign0 = tangent0.w;
+        tangentSign1 = tangent1.w;
+        tangentSign2 = tangent2.w;
+    }
+    if (needsUv)
+    {
+        uv0 = LoadVertexUv(part, index0);
+        uv1 = LoadVertexUv(part, index1);
+        uv2 = LoadVertexUv(part, index2);
+    }
 
     VertexOutput input;
     input.position = float4(
         float2(pixel) + 0.5,
         depth,
         1.0);
-    input.worldPos = mul(
-        instance.modelMatrix,
-        float4(localPosition, 1.0)).xyz;
+    input.worldPos = worldPosition;
     input.normal =
         barycentrics.x * worldNormal0 +
         barycentrics.y * worldNormal1 +
@@ -385,16 +463,20 @@ void computeMain(
         barycentrics.x * worldTangent0 +
         barycentrics.y * worldTangent1 +
         barycentrics.z * worldTangent2,
-        barycentrics.x * vertex0.tw +
-            barycentrics.y * vertex1.tw +
-            barycentrics.z * vertex2.tw);
+        barycentrics.x * tangentSign0 +
+            barycentrics.y * tangentSign1 +
+            barycentrics.z * tangentSign2);
     input.uv =
         barycentrics.x * uv0 +
         barycentrics.y * uv1 +
         barycentrics.z * uv2;
     input.materialIdx = part.materialIdx;
 
-    float2 uvDx = ReconstructUvGradient(
+    float2 uvDx = 0.0;
+    float2 uvDy = 0.0;
+    if (needsUv)
+    {
+        uvDx = ReconstructUvGradient(
         int2(pixel),
         int2(1, 0),
         dimensions,
@@ -403,17 +485,22 @@ void computeMain(
         uv0,
         uv1,
         uv2);
-    float2 uvDy = ReconstructUvGradient(
-        int2(pixel),
-        int2(0, 1),
-        dimensions,
-        identifiers,
-        barycentrics,
-        uv0,
-        uv1,
-        uv2);
-    float3 normalDx = ReconstructNormalGradient(
-        int2(pixel),
+        uvDy = ReconstructUvGradient(
+            int2(pixel),
+            int2(0, 1),
+            dimensions,
+            identifiers,
+            barycentrics,
+            uv0,
+            uv1,
+            uv2);
+    }
+    float3 normalDx = 0.0;
+    float3 normalDy = 0.0;
+    if (needsNormalGradient)
+    {
+        normalDx = ReconstructNormalGradient(
+            int2(pixel),
         int2(1, 0),
         dimensions,
         identifiers,
@@ -421,43 +508,48 @@ void computeMain(
         worldNormal0,
         worldNormal1,
         worldNormal2);
-    float3 normalDy = ReconstructNormalGradient(
-        int2(pixel),
-        int2(0, 1),
-        dimensions,
-        identifiers,
-        barycentrics,
-        worldNormal0,
-        worldNormal1,
-        worldNormal2);
-    float3 barycentricsDx;
-    float3 barycentricsDy;
-    bool hasBarycentricsDx = TryLoadNeighborBarycentrics(
-        int2(pixel),
-        int2(1, 0),
-        dimensions,
-        identifiers,
-        barycentricsDx);
-    bool hasBarycentricsDy = TryLoadNeighborBarycentrics(
-        int2(pixel),
-        int2(0, 1),
-        dimensions,
-        identifiers,
-        barycentricsDy);
-    float edgeDistance = min(
-        barycentrics.x,
-        min(barycentrics.y, barycentrics.z));
-    float edgeDx = hasBarycentricsDx
-        ? min(
-            barycentricsDx.x,
-            min(barycentricsDx.y, barycentricsDx.z)) - edgeDistance
-        : 0.0;
-    float edgeDy = hasBarycentricsDy
-        ? min(
-            barycentricsDy.x,
-            min(barycentricsDy.y, barycentricsDy.z)) - edgeDistance
-        : 0.0;
-    float barycentricWidth = abs(edgeDx) + abs(edgeDy);
+        normalDy = ReconstructNormalGradient(
+            int2(pixel),
+            int2(0, 1),
+            dimensions,
+            identifiers,
+            barycentrics,
+            worldNormal0,
+            worldNormal1,
+            worldNormal2);
+    }
+    float barycentricWidth = 0.0;
+    if (debugView == 1u)
+    {
+        float3 barycentricsDx;
+        float3 barycentricsDy;
+        bool hasBarycentricsDx = TryLoadNeighborBarycentrics(
+            int2(pixel),
+            int2(1, 0),
+            dimensions,
+            identifiers,
+            barycentricsDx);
+        bool hasBarycentricsDy = TryLoadNeighborBarycentrics(
+            int2(pixel),
+            int2(0, 1),
+            dimensions,
+            identifiers,
+            barycentricsDy);
+        float edgeDistance = min(
+            barycentrics.x,
+            min(barycentrics.y, barycentrics.z));
+        float edgeDx = hasBarycentricsDx
+            ? min(
+                barycentricsDx.x,
+                min(barycentricsDx.y, barycentricsDx.z)) - edgeDistance
+            : 0.0;
+        float edgeDy = hasBarycentricsDy
+            ? min(
+                barycentricsDy.x,
+                min(barycentricsDy.y, barycentricsDy.z)) - edgeDistance
+            : 0.0;
+        barycentricWidth = abs(edgeDx) + abs(edgeDy);
+    }
 
     visibilityShadingOutput[pixel] = ShadePbrSurface(
         input,

@@ -8,9 +8,13 @@ struct ShadowVertexOutput {
 };
 
 [shader("vertex")]
-ShadowVertexOutput vertexMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
+ShadowVertexOutput vertexMain(
+    uint vid : SV_VertexID,
+    uint iid : SV_InstanceID,
+    uint startInstance : SV_StartInstanceLocation)
 {
-    PartData part = push.parts[iid];
+    uint partIndex = startInstance + iid;
+    PartData part = push.parts[partIndex];
     InstanceData inst = push.instances[part.instanceIdx];
     uint index = LoadPartVertexIndex(part, vid);
     Vertex vertex = part.vertices[index];

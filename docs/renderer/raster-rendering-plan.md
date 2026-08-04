@@ -38,6 +38,18 @@ state that also maps cleanly to Vulkan.
   sun-projected displacement cannot reach the outer sampled band.
 - Split raster culling and clustered-light assignment into a graph-visible
   compute pass that overlaps directional shadow rendering on async compute.
+- VSM feedback, allocation, sparse-atlas writes, page-table reads, and final
+  shading reads are imported into the render graph so the request → allocate →
+  raster → shade chain emits explicit state transitions. Bring-up residency is
+  bounded to 2,048 physical pages; page-table buffers rotate across the frame
+  ring, and an LRU victim may be unmapped only after the feedback safety window
+  expires. Sparse mapping commits host page-table state only after the
+  transactional RHI bind succeeds. Inactive frames bind a read-only fallback
+  page table so imported graph resources remain resolvable without rebinding a
+  busy ring slot. VSM culling declares its indirect-command buffer as a graph
+  resource and emits an explicit unordered-write to shader/indirect-read
+  barrier before raster draws. Resized command buffers are retained until the
+  renderer's queue-idle plan-disposal boundary.
 
 ## Public API Surface
 
@@ -110,7 +122,12 @@ dispatch-indirect for GPU-adaptive workloads.
    snapping, fixed square sphere footprints, 500-unit coverage,
    per-part GPU culling, 3x3 PCF, and transition blending.
 3. Spot shadows use lazily allocated page tiers, cached static depth, and a
-   separately refreshed movable overlay.
+   separately refreshed movable overlay. When VSM owns directional shadows,
+   this punctual atlas remains active for point and spot lights; enabling VSM
+   must not suppress local-light shadows. VSM feedback rejects the standard
+   depth background value (approximately 1.0), atomically marks requested
+   receiver pages, and publishes VSM data only while its pass chain has a valid
+   shadow-casting directional light.
 4. Point shadows atomically allocate six faces from one tier. Visible point
    lights retain every face and batch eight lights per 48-face submission.
    Point and spot faces use camera-frustum versus shadow-frustum rejection;
@@ -226,6 +243,10 @@ solve entry and exit analytically before stepping.
    entity/part identifiers remain pending.
 7. Wireframe is implemented in both renderers from triangle barycentrics and
    uses the same viewport debug-state path as the filled visualizations.
+8. VSM validation modes expose light-space UV/depth, page residency,
+   physical-page identity, request/allocate feedback, raster coverage, and
+   virtual page coordinates. Material Qualifier identifies textureless
+   constant-material paths before optional reconstruction.
 
 ## Phase 10: Advanced Debug Views
 

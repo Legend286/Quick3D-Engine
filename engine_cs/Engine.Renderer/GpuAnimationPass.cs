@@ -24,7 +24,7 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
 {
     private const int PoseBufferCount = 3;
     private const uint EmptyBufferBytes = 16;
-    private static int _nextResourceHandle = unchecked((int)0x71000000);
+    private const uint GraphResourceBase = 0x71000000;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct DispatchData
@@ -58,19 +58,33 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
     private readonly RhiShader _skinShader;
     private readonly RhiPipeline _animationPipeline;
     private readonly RhiPipeline _skinPipeline;
-    private readonly ResourceHandle _skeletonHandle = NextHandle();
-    private readonly ResourceHandle _boneHandle = NextHandle();
-    private readonly ResourceHandle _hierarchyLevelHandle = NextHandle();
-    private readonly ResourceHandle _hierarchyIndexHandle = NextHandle();
-    private readonly ResourceHandle _inverseBindHandle = NextHandle();
-    private readonly ResourceHandle _referencePoseHandle = NextHandle();
-    private readonly ResourceHandle _clipHandle = NextHandle();
-    private readonly ResourceHandle _sampleHandle = NextHandle();
-    private readonly ResourceHandle _stateHandle = NextHandle();
-    private readonly ResourceHandle _localPoseHandle = NextHandle();
-    private readonly ResourceHandle _globalMatrixHandle = NextHandle();
-    private readonly ResourceHandle _skinMatrixHandle = NextHandle();
-    private readonly ResourceHandle _skinWorkHandle = NextHandle();
+    private static readonly ResourceHandle SkeletonHandle = new(GraphResourceBase + 1u);
+    private static readonly ResourceHandle BoneHandle = new(GraphResourceBase + 2u);
+    private static readonly ResourceHandle HierarchyLevelHandle = new(GraphResourceBase + 3u);
+    private static readonly ResourceHandle HierarchyIndexHandle = new(GraphResourceBase + 4u);
+    private static readonly ResourceHandle InverseBindHandle = new(GraphResourceBase + 5u);
+    private static readonly ResourceHandle ReferencePoseHandle = new(GraphResourceBase + 6u);
+    private static readonly ResourceHandle ClipHandle = new(GraphResourceBase + 7u);
+    private static readonly ResourceHandle SampleHandle = new(GraphResourceBase + 8u);
+    private static readonly ResourceHandle StateHandle = new(GraphResourceBase + 9u);
+    private static readonly ResourceHandle LocalPoseHandle = new(GraphResourceBase + 10u);
+    private static readonly ResourceHandle GlobalMatrixHandle = new(GraphResourceBase + 11u);
+    private static readonly ResourceHandle SkinMatrixHandle = new(GraphResourceBase + 12u);
+    private static readonly ResourceHandle SkinWorkHandle = new(GraphResourceBase + 13u);
+
+    private readonly ResourceHandle _skeletonHandle = SkeletonHandle;
+    private readonly ResourceHandle _boneHandle = BoneHandle;
+    private readonly ResourceHandle _hierarchyLevelHandle = HierarchyLevelHandle;
+    private readonly ResourceHandle _hierarchyIndexHandle = HierarchyIndexHandle;
+    private readonly ResourceHandle _inverseBindHandle = InverseBindHandle;
+    private readonly ResourceHandle _referencePoseHandle = ReferencePoseHandle;
+    private readonly ResourceHandle _clipHandle = ClipHandle;
+    private readonly ResourceHandle _sampleHandle = SampleHandle;
+    private readonly ResourceHandle _stateHandle = StateHandle;
+    private readonly ResourceHandle _localPoseHandle = LocalPoseHandle;
+    private readonly ResourceHandle _globalMatrixHandle = GlobalMatrixHandle;
+    private readonly ResourceHandle _skinMatrixHandle = SkinMatrixHandle;
+    private readonly ResourceHandle _skinWorkHandle = SkinWorkHandle;
 
     private RhiBuffer? _skeletonBuffer;
     private RhiBuffer? _boneBuffer;
@@ -578,9 +592,6 @@ internal sealed class GpuAnimationPass : RenderPass, IDisposable
         => _deltaTime = float.IsFinite(deltaTime)
             ? Math.Clamp(deltaTime, 0.0f, 0.1f)
             : 1.0f / 60.0f;
-
-    private static ResourceHandle NextHandle()
-        => new(unchecked((uint)System.Threading.Interlocked.Increment(ref _nextResourceHandle)));
 
     public void Dispose()
     {

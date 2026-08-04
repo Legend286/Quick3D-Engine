@@ -148,102 +148,69 @@ void computeMain(uint3 threadIndex : SV_DispatchThreadID)
     uint index0 = LoadPartVertexIndex(part, triangleOffset);
     uint index1 = LoadPartVertexIndex(part, triangleOffset + 1u);
     uint index2 = LoadPartVertexIndex(part, triangleOffset + 2u);
-    Vertex vertex0 = part.vertices[index0];
-    Vertex vertex1 = part.vertices[index1];
-    Vertex vertex2 = part.vertices[index2];
     InstanceData instance = push.instances[part.instanceIdx];
+    MaterialData material = push.materials[part.materialIdx];
+    uint debugView = push.debugFlags & 0xffu;
+    bool needsUv = debugView == 16u;
+    bool needsTangent = debugView == 19u;
 
+    float3 position0 = LoadVertexPosition(part, index0);
+    float3 position1 = LoadVertexPosition(part, index1);
+    float3 position2 = LoadVertexPosition(part, index2);
+    float3 normal0 = LoadVertexNormal(part, index0);
+    float3 normal1 = LoadVertexNormal(part, index1);
+    float3 normal2 = LoadVertexNormal(part, index2);
     float3 localPosition =
-        barycentrics.x * float3(vertex0.px, vertex0.py, vertex0.pz) +
-        barycentrics.y * float3(vertex1.px, vertex1.py, vertex1.pz) +
-        barycentrics.z * float3(vertex2.px, vertex2.py, vertex2.pz) +
+        barycentrics.x * position0 +
+        barycentrics.y * position1 +
+        barycentrics.z * position2 +
         part.localOffset.xyz;
     float3 worldPosition = mul(
         instance.modelMatrix,
         float4(localPosition, 1.0)).xyz;
     float3 worldNormal0 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex0.nx, vertex0.ny, vertex0.nz)));
+        (float3x3)instance.modelMatrix, normal0));
     float3 worldNormal1 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex1.nx, vertex1.ny, vertex1.nz)));
+        (float3x3)instance.modelMatrix, normal1));
     float3 worldNormal2 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex2.nx, vertex2.ny, vertex2.nz)));
+        (float3x3)instance.modelMatrix, normal2));
     float3 worldNormal = normalize(
         barycentrics.x * worldNormal0 +
         barycentrics.y * worldNormal1 +
         barycentrics.z * worldNormal2);
-    float3 worldTangent0 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex0.tx, vertex0.ty, vertex0.tz)));
-    float3 worldTangent1 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex1.tx, vertex1.ty, vertex1.tz)));
-    float3 worldTangent2 = normalize(mul(
-        (float3x3)instance.modelMatrix,
-        float3(vertex2.tx, vertex2.ty, vertex2.tz)));
-    float3 worldTangent = normalize(
-        barycentrics.x * worldTangent0 +
-        barycentrics.y * worldTangent1 +
-        barycentrics.z * worldTangent2);
-    float tangentSign =
-        barycentrics.x * vertex0.tw +
-        barycentrics.y * vertex1.tw +
-        barycentrics.z * vertex2.tw;
-    if (!(dot(worldTangent, worldTangent) > 0.001))
-    {
-        float3 up = abs(worldNormal.y) < 0.999
-            ? float3(0.0, 1.0, 0.0)
-            : float3(1.0, 0.0, 0.0);
-        worldTangent = normalize(cross(up, worldNormal));
-    }
-    float3 worldBitangent =
-        cross(worldNormal, worldTangent) * tangentSign;
-    if (!(dot(worldBitangent, worldBitangent) > 0.001))
-        worldBitangent = cross(worldNormal, worldTangent);
-    worldBitangent = normalize(worldBitangent);
-    worldTangent = normalize(cross(worldBitangent, worldNormal));
-    float2 uv0 = float2(vertex0.u, vertex0.v);
-    float2 uv1 = float2(vertex1.u, vertex1.v);
-    float2 uv2 = float2(vertex2.u, vertex2.v);
-    float2 uv =
-        barycentrics.x * uv0 +
-        barycentrics.y * uv1 +
-        barycentrics.z * uv2;
 
-    uint debugView = push.debugFlags & 0xffu;
-    MaterialData material = push.materials[part.materialIdx];
-    if ((debugView == 15u || debugView == 19u) &&
-        material.normalTexIndex != 0xffffffffu)
+    float3 worldTangent = 0.0;
+    float tangentSign = 1.0;
+    float3 worldBitangent = 0.0;
+    float2 uv0 = 0.0;
+    float2 uv1 = 0.0;
+    float2 uv2 = 0.0;
+    if (needsTangent)
     {
-        float2 uvDx = ReconstructUvGradient(
-            int2(pixel),
-            int2(1, 0),
-            dimensions,
-            identifiers,
-            uv,
-            uv0,
-            uv1,
-            uv2);
-        float2 uvDy = ReconstructUvGradient(
-            int2(pixel),
-            int2(0, 1),
-            dimensions,
-            identifiers,
-            uv,
-            uv0,
-            uv1,
-            uv2);
-        float3 tangentNormal =
-            bindless.textures[material.normalTexIndex]
-                .SampleGrad(textureSampler, uv, uvDx, uvDy).rgb * 2.0 - 1.0;
-        worldNormal = normalize(mul(
-            tangentNormal,
-            float3x3(
-                worldTangent,
-                worldBitangent,
-                worldNormal)));
+        float4 tangent0 = LoadVertexTangent(part, index0);
+        float4 tangent1 = LoadVertexTangent(part, index1);
+        float4 tangent2 = LoadVertexTangent(part, index2);
+        float3 worldTangent0 = normalize(mul(
+            (float3x3)instance.modelMatrix, tangent0.xyz));
+        float3 worldTangent1 = normalize(mul(
+            (float3x3)instance.modelMatrix, tangent1.xyz));
+        float3 worldTangent2 = normalize(mul(
+            (float3x3)instance.modelMatrix, tangent2.xyz));
+        worldTangent = normalize(
+            barycentrics.x * worldTangent0 +
+            barycentrics.y * worldTangent1 +
+            barycentrics.z * worldTangent2);
+        tangentSign =
+            barycentrics.x * tangent0.w +
+            barycentrics.y * tangent1.w +
+            barycentrics.z * tangent2.w;
+        if (!(dot(worldTangent, worldTangent) > 0.001))
+        {
+            float3 up = abs(worldNormal.y) < 0.999
+                ? float3(0.0, 1.0, 0.0)
+                : float3(1.0, 0.0, 0.0);
+            worldTangent = normalize(cross(up, worldNormal));
+        }
         worldBitangent =
             cross(worldNormal, worldTangent) * tangentSign;
         if (!(dot(worldBitangent, worldBitangent) > 0.001))
@@ -251,7 +218,17 @@ void computeMain(uint3 threadIndex : SV_DispatchThreadID)
         worldBitangent = normalize(worldBitangent);
         worldTangent = normalize(cross(worldBitangent, worldNormal));
     }
-
+    if (needsUv)
+    {
+        uv0 = LoadVertexUv(part, index0);
+        uv1 = LoadVertexUv(part, index1);
+        uv2 = LoadVertexUv(part, index2);
+    }
+    float2 uv = needsUv
+        ? barycentrics.x * uv0 +
+            barycentrics.y * uv1 +
+            barycentrics.z * uv2
+        : 0.0;
     float3 color = float3(1.0, 0.0, 1.0);
     if (debugView == 14u)
         color = worldPosition;

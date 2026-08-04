@@ -68,6 +68,8 @@ internal sealed class DirectionalShadowState
 internal sealed class DirectionalShadowPass : RenderPass, IDisposable
 {
     private const ulong DrawIndirectCommandSizeBytes = 16;
+    private static readonly ResourceHandle DrawCommandsHandle =
+        new(0x83000000);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct ShadowCullPushData
@@ -149,6 +151,8 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
 
     public override void Setup(RenderGraphBuilder builder)
     {
+        builder.ImportBuffer(DrawCommandsHandle);
+        builder.Write(DrawCommandsHandle, ResourceState.UnorderedAccess);
         for (int cascadeIndex = 0;
              cascadeIndex < DirectionalShadowState.CascadeCount;
              ++cascadeIndex)
@@ -249,6 +253,16 @@ internal sealed class DirectionalShadowPass : RenderPass, IDisposable
                 1);
         }
         sink.EndComputePass();
+        sink.PipelineBarrier(
+            new[]
+            {
+                new RhiNative.Barrier
+                {
+                    Resource = DrawCommandsHandle.Id,
+                    StateBefore = RhiNative.ResourceState.UnorderedAccess,
+                    StateAfter = RhiNative.ResourceState.IndirectRead,
+                },
+            });
 
         for (int workIndex = 0;
              workIndex < dirtyCascadeCount;

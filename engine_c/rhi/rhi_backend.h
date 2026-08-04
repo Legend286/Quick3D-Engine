@@ -42,7 +42,7 @@ typedef struct RhiBackend {
     void (*destroy_sampler)(RhiSampler *s);
     int32_t (*create_buffer_from_heap)(RhiDevice *d, RhiHeap *h, const RhiBufferDesc *desc, uint64_t offset,
                                        RhiBuffer **out);
-    void (*bind_sparse_texture_memory)(RhiDevice *d, RhiTexture *tex, const RhiSparseBindRegion *binds, uint32_t bind_count);
+    int32_t (*try_bind_sparse_texture_memory)(RhiDevice *d, RhiTexture *tex, const RhiSparseBindRegion *binds, uint32_t bind_count);
     int32_t (*create_fence)(RhiDevice *d, RhiFence **out);
     int32_t (*create_timestamp_query_pool)(RhiDevice *d, uint32_t sample_count,
                                            RhiTimestampQueryPool **out);

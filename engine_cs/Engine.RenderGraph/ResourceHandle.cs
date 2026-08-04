@@ -15,6 +15,7 @@ public enum ResourceState
     CopySrc          = 5,
     CopyDst          = 6,
     Present          = 7,
+    IndirectRead     = 8,
 }
 
 public enum ResourceAccess
@@ -36,19 +37,22 @@ public enum ResourceKind { Texture, Buffer }
 
 public sealed class TextureDesc
 {
-    public uint Width;
-    public uint Height;
-    public uint MipLevels = 1;
-    public Engine.CBindings.RhiNative.TextureFormat Format =
+    public uint Width { get; init; }
+    public uint Height { get; init; }
+    public uint MipLevels { get; init; } = 1;
+    public Engine.CBindings.RhiNative.TextureFormat Format { get; init; } =
         Engine.CBindings.RhiNative.TextureFormat.Bgra8Unorm;
-    public uint UsageFlags;
+    public uint UsageFlags { get; init; }
 
     public TextureDesc(uint w, uint h)
-    { Width = w; Height = h; }
+    {
+        Width = w;
+        Height = h;
+    }
 }
 
 public sealed class BufferDesc
 {
-    public ulong Size;
-    public Engine.CBindings.RhiNative.BufferUsage Usage;
+    public ulong Size { get; init; }
+    public Engine.CBindings.RhiNative.BufferUsage Usage { get; init; }
 }

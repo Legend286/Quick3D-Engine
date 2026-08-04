@@ -102,6 +102,8 @@ internal sealed class VisibilityShadingPass : RenderPass, IDisposable
         sink.BindTexture(4, identifiers);
         sink.BindTexture(5, barycentrics);
         sink.BindTexture(6, depth);
+        if (_owner.VsmSystem is { HasValidShadowLight: true } vsmSystem)
+            sink.BindTexture(7, vsmSystem.VirtualShadowTexture);
         sink.BindTexture(0, output);
         sink.PushConstants(
             0,

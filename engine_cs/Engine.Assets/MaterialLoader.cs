@@ -152,6 +152,7 @@ public class Material
     public string? NormalTexturePath { get; set; }
     public RhiTexture? RmaTexture { get; set; }
     public string? RmaTexturePath { get; set; }
+    public bool RmaContainsAo { get; set; }
     public RhiTexture? OcclusionTexture { get; set; }
     public string? OcclusionTexturePath { get; set; }
     public float Metallic { get; set; }
@@ -224,6 +225,7 @@ public static class MaterialLoader
             AlbedoTexturePath = def.AlbedoTexture,
             NormalTexturePath = def.NormalTexture,
             RmaTexturePath = def.RmaTexture,
+            RmaContainsAo = def.RmaContainsAo && string.IsNullOrEmpty(def.OcclusionTexture),
             OcclusionTexturePath = def.OcclusionTexture,
             TopMaskTexturePath = def.TopMaskTexture,
         };

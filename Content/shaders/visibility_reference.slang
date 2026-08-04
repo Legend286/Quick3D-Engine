@@ -80,7 +80,7 @@ void BuildReferenceTangentFrame(
     tangent = normalize(cross(bitangent, normal));
 
     MaterialData material = push.materials[input.materialIndex];
-    if (material.normalTexIndex != 0xffffffffu)
+    if (MaterialHasFeature(material, kMaterialNormalTexture))
     {
         float3 tangentNormal =
             bindless.textures[material.normalTexIndex]
