@@ -64,3 +64,5 @@ logs/
 !AGENTS.md
 !engine-spec.md
 !docs/**/*.md
+.catcode/history
+/.catcode
